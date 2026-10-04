@@ -1,0 +1,34 @@
+[package]
+name = "vn-ide"
+version = "0.1.0"
+description = "Ren'Inspector: inspect, edit and run Ren'Py games, in development or already released"
+license = "GPL-3.0-or-later"
+edition = "2021"
+rust-version = "1.77.2"
+publish = false
+
+[lib]
+name = "vn_ide_lib"
+crate-type = ["rlib", "staticlib", "cdylib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+log = "0.4"
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+notify = "6"
+renpy-core = { path = "renpy-core" }
+sha2 = "0.10"
+ureq = { version = "2.12", default-features = false, features = ["tls"] }
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
+spellbook = "0.4.2"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

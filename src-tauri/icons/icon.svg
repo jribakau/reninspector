@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#232838"/>
+      <stop offset="1" stop-color="#0f1117"/>
+    </linearGradient>
+    <linearGradient id="py" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5b9bd5"/>
+      <stop offset="1" stop-color="#3776ab"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="40" y="40" width="944" height="944" rx="210" fill="url(#bg)"/>
+  <rect x="40" y="40" width="944" height="944" rx="210" fill="none" stroke="#353b4f" stroke-width="12"/>
+
+  <!-- File, centered in the tile (folded corner) -->
+  <path fill="url(#py)" d="M 318 160 H 632 L 762 290 V 808 A 56 56 0 0 1 706 864 H 318 A 56 56 0 0 1 262 808 V 216 A 56 56 0 0 1 318 160 Z"/>
+  <path fill="#a9cdf0" d="M 632 160 V 234 A 56 56 0 0 0 688 290 H 762 Z"/>
+
+  <!-- ".rpy" drawn as strokes so it needs no font -->
+  <g transform="translate(-9 -120)" fill="none" stroke="#ffd43b" stroke-width="34" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="330" cy="545" r="9" fill="#ffd43b"/>
+    <path d="M 392 470 V 560"/>
+    <path d="M 392 515 Q 392 470 440 470"/>
+    <path d="M 490 470 V 650"/>
+    <path d="M 490 470 H 530 A 45 45 0 0 1 530 560 H 490"/>
+    <path d="M 612 470 L 654 556"/>
+    <path d="M 696 470 L 636 630"/>
+  </g>
+
+  <!-- Patch, stitched on, with a plus -->
+  <g transform="translate(580 712) rotate(-7)">
+    <rect x="-125" y="-125" width="250" height="250" rx="40" fill="#ffd43b" stroke="#14161c" stroke-width="14"/>
+    <rect x="-94" y="-94" width="188" height="188" rx="20" fill="none" stroke="#14161c" stroke-width="16" stroke-linecap="round" stroke-dasharray="36 34"/>
+    <path d="M -36 0 H 36 M 0 -36 V 36" stroke="#14161c" stroke-width="26" stroke-linecap="round"/>
+  </g>
+</svg>
