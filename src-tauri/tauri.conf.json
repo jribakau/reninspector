@@ -2,7 +2,7 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Ren'Inspector",
   "version": "0.1.0",
-  "identifier": "com.vnide.desktop",
+  "identifier": "io.github.jribakau.reninspector",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5180",
