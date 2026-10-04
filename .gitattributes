@@ -1,0 +1,9 @@
+# Test fixtures are byte-exact inputs. A pickle protocol 0 index is plain ASCII
+# with newlines, so Git's line-ending conversion on Windows corrupts it.
+src-tauri/renpy-core/tests/fixtures/** -text
+
+# Archives and compiled scripts are never text.
+*.rpa binary
+*.rpi binary
+*.rpyc binary
+*.pickle binary

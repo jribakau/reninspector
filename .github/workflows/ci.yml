@@ -59,7 +59,17 @@ jobs:
       - run: npm run build
       - name: renpy-core tests
         working-directory: src-tauri/renpy-core
-        run: cargo test --all-targets
+        shell: bash
+        run: |
+          cargo test --all-targets --no-fail-fast 2>&1 | tee test.log
+          status=${PIPESTATUS[0]}
+          grep -E '^test .* FAILED|panicked at|^error' test.log | head -20 | while IFS= read -r line; do echo "::error::${line%$'\r'}"; done
+          exit "$status"
       - name: App tests
         working-directory: src-tauri
-        run: cargo test
+        shell: bash
+        run: |
+          cargo test --no-fail-fast 2>&1 | tee test.log
+          status=${PIPESTATUS[0]}
+          grep -E '^test .* FAILED|panicked at|^error' test.log | head -20 | while IFS= read -r line; do echo "::error::${line%$'\r'}"; done
+          exit "$status"
