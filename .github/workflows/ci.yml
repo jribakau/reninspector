@@ -61,15 +61,29 @@ jobs:
         working-directory: src-tauri/renpy-core
         shell: bash
         run: |
-          cargo test --all-targets --no-fail-fast 2>&1 | tee test.log
+          # GitHub runs bash with -e and pipefail, which would stop this script at the
+          # first failing command before it reports anything.
+          set +e +o pipefail
+          log=$(mktemp)
+          cargo test --all-targets --no-fail-fast 2>&1 | tee "$log"
           status=${PIPESTATUS[0]}
-          grep -E '^test .* FAILED|panicked at|^error' test.log | head -20 | while IFS= read -r line; do echo "::error::${line%$'\r'}"; done
+          if [ "$status" -ne 0 ]; then
+            { grep -E '^test .* FAILED|panicked at|^error' "$log" || tail -n 12 "$log"; } \
+              | head -n 10 \
+              | while IFS= read -r line; do echo "::error::${line%$'\r'}"; done
+          fi
           exit "$status"
       - name: App tests
         working-directory: src-tauri
         shell: bash
         run: |
-          cargo test --no-fail-fast 2>&1 | tee test.log
+          set +e +o pipefail
+          log=$(mktemp)
+          cargo test --no-fail-fast 2>&1 | tee "$log"
           status=${PIPESTATUS[0]}
-          grep -E '^test .* FAILED|panicked at|^error' test.log | head -20 | while IFS= read -r line; do echo "::error::${line%$'\r'}"; done
+          if [ "$status" -ne 0 ]; then
+            { grep -E '^test .* FAILED|panicked at|^error' "$log" || tail -n 12 "$log"; } \
+              | head -n 10 \
+              | while IFS= read -r line; do echo "::error::${line%$'\r'}"; done
+          fi
           exit "$status"
