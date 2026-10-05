@@ -114,6 +114,7 @@
   .bottom {
     flex: none;
     min-height: 0;
+    overflow: hidden;
     border-top: 1px solid var(--line);
   }
   .bottom.max {

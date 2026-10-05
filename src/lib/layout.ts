@@ -2,6 +2,8 @@ import ELK from 'elkjs/lib/elk-api'
 import type { ElkNode, ElkExtendedEdge } from 'elkjs/lib/elk-api'
 import elkWorkerUrl from 'elkjs/lib/elk-worker.min.js?url'
 import { api } from './api'
+import { roundedPath, storyDepth, type RoutePoint } from './graph'
+import { HELPERS_KEY, MISSING_KEY, UNLINKED_KEY, assignGroups, findHelpers, isTileGroup, type GroupMode } from './mapgroups'
 import type { FileInfo, GNode, LabelGraph, MapEdge, MapNode, ProjectMap } from './types'
 
 // ---------------------------------------------------------------- worker
@@ -58,32 +60,6 @@ function segmentBoxes(pts: { x: number; y: number }[], maxLen = 2048): SegBox[] 
   return out
 }
 
-/** Samples of a cubic so a long curve is indexed in pieces. The drawn `d` stays one command. */
-function cubicPoints(
-  x0: number,
-  y0: number,
-  c1x: number,
-  c1y: number,
-  c2x: number,
-  c2y: number,
-  x1: number,
-  y1: number,
-): { x: number; y: number }[] {
-  const steps = Math.max(4, Math.ceil(Math.hypot(x1 - x0, y1 - y0) / 2048))
-  const pts: { x: number; y: number }[] = []
-  for (let i = 0; i <= steps; i++) {
-    const t = i / steps
-    const u = 1 - t
-    const uu = u * u
-    const tt = t * t
-    pts.push({
-      x: uu * u * x0 + 3 * uu * t * c1x + 3 * u * tt * c2x + tt * t * x1,
-      y: uu * u * y0 + 3 * uu * t * c1y + 3 * u * tt * c2y + tt * t * y1,
-    })
-  }
-  return pts
-}
-
 function sectionPoints(edge: ElkExtendedEdge, dx: number, dy: number): { x: number; y: number }[] {
   const s = edge.sections?.[0]
   if (!s) return []
@@ -106,7 +82,7 @@ export function clusterHue(key: string): number {
 
 // ---------------------------------------------------------------- project map
 
-export type ClusterMode = 'prefix' | 'file'
+export type ClusterMode = GroupMode
 
 export interface LNode {
   id: string
@@ -132,6 +108,10 @@ export interface LEdge {
   kind: MapEdge['kind']
   count: number
   d: string
+  /** Fan from the source node to the shared trunk, then from the trunk to the target. Absent inside a group. */
+  fan?: string
+  /** A link to or from a side group (helpers or unlinked scenes). Drawn only for the selected scene. */
+  helper?: boolean
   /** Overall box. Used when a cached layout has no segment boxes. */
   x0: number
   y0: number
@@ -163,110 +143,154 @@ export interface MapLayout {
   height: number
 }
 
-const NODE_H = 38
-const CLUSTER_PAD = 18
-const CLUSTER_HEADER = 34
+/** Tall enough for a title at the largest zoomed-out size, or a title over a second line. */
+export const NODE_H = 44
+const CLUSTER_PAD = 26
+/** Room for the group name, which is drawn at 16px when the group is open. */
+const CLUSTER_HEADER = 44
 
 export function mapNodeWidth(n: { id: string }): number {
-  return Math.max(96, Math.min(240, n.id.length * 7.4 + 32))
+  return Math.max(112, Math.min(260, n.id.length * 7.6 + 40))
 }
 
-/** Assign every node to a cluster. `prefix` mode groups `v18...` style names and
- *  lets unprefixed labels join the cluster they are most connected to. */
-export function clusterNodes(
-  map: ProjectMap,
-  files: FileInfo[],
-  mode: ClusterMode,
-): Map<string, string> {
-  const out = new Map<string, string>()
-  if (mode === 'file') {
-    for (const n of map.nodes) {
-      out.set(n.id, n.kind === 'missing' ? '(missing)' : (files[n.file]?.path ?? '(unknown)'))
-    }
-    return out
-  }
-  const initial = new Map<string, string>()
-  const sizes = new Map<string, number>()
-  for (const n of map.nodes) {
-    if (n.kind === 'missing') continue
-    const m = /^([a-z]+\d+)/i.exec(n.id) ?? /^([a-z]+)_/i.exec(n.id)
-    if (m) {
-      const key = m[1].toLowerCase()
-      initial.set(n.id, key)
-      sizes.set(key, (sizes.get(key) ?? 0) + 1)
-    }
-  }
-  for (const [id, key] of [...initial]) {
-    if ((sizes.get(key) ?? 0) < 3) initial.delete(id)
-  }
-  const assigned = new Map(initial)
-  const neighbours = new Map<string, string[]>()
-  const link = (a: string, b: string) => {
-    if (!neighbours.has(a)) neighbours.set(a, [])
-    neighbours.get(a)!.push(b)
-  }
-  for (const e of map.edges) {
-    link(e.from, e.to)
-    link(e.to, e.from)
-  }
-  for (let round = 0; round < 8; round++) {
-    const next: [string, string][] = []
-    for (const n of map.nodes) {
-      if (n.kind === 'missing' || assigned.has(n.id)) continue
-      const votes = new Map<string, number>()
-      for (const nb of neighbours.get(n.id) ?? []) {
-        const k = assigned.get(nb)
-        if (k) votes.set(k, (votes.get(k) ?? 0) + 1)
-      }
-      let best = ''
-      let bestVotes = 0
-      for (const [k, v] of votes) {
-        if (v > bestVotes) {
-          best = k
-          bestVotes = v
-        }
-      }
-      if (best) next.push([n.id, best])
-    }
-    if (!next.length) break
-    for (const [id, k] of next) assigned.set(id, k)
-  }
-  for (const n of map.nodes) {
-    if (n.kind === 'missing') out.set(n.id, '(missing)')
-    else out.set(n.id, assigned.get(n.id) ?? 'misc')
-  }
-  return out
-}
-
-export function mapCacheKey(root: string, map: ProjectMap, mode: ClusterMode): string {
+export function mapCacheKey(root: string, map: ProjectMap, mode: ClusterMode, helpers = true): string {
   let h = 2166136261
-  for (const n of map.nodes) h = Math.imul(h ^ hashString(n.id), 16777619)
+  for (const n of map.nodes) {
+    // Helper detection reads these, so a change to them must not reuse a stored layout.
+    h = Math.imul(h ^ hashString(`${n.id}|${n.kind}|${n.returns ? 1 : 0}|${n.root ? 1 : 0}|${n.endsScript ? 1 : 0}`), 16777619)
+  }
   for (const e of map.edges) h = Math.imul(h ^ hashString(`${e.from}>${e.to}:${e.kind}`), 16777619)
-  return `map|v3|${root}|${mode}|${map.nodes.length}|${map.edges.length}|${h >>> 0}`
+  return `map|v6|${root}|${mode}|${helpers ? 'h' : 'n'}|${map.nodes.length}|${map.edges.length}|${h >>> 0}`
 }
 
 const INNER_OPTIONS = {
   'elk.algorithm': 'layered',
   'elk.direction': 'DOWN',
-  'elk.edgeRouting': 'POLYLINE',
-  'elk.spacing.nodeNode': '22',
-  'elk.layered.spacing.nodeNodeBetweenLayers': '38',
+  'elk.edgeRouting': 'ORTHOGONAL',
+  'elk.spacing.nodeNode': '32',
+  'elk.layered.spacing.nodeNodeBetweenLayers': '60',
+  'elk.spacing.edgeNode': '20',
+  'elk.spacing.edgeEdge': '14',
+  'elk.layered.spacing.edgeNodeBetweenLayers': '20',
+  'elk.layered.spacing.edgeEdgeBetweenLayers': '14',
   'elk.layered.thoroughness': '3',
-  'elk.layered.cycleBreaking.strategy': 'GREEDY',
-  'elk.layered.nodePlacement.strategy': 'SIMPLE',
+  'elk.layered.cycleBreaking.strategy': 'MODEL_ORDER',
+  'elk.layered.considerModelOrder.strategy': 'NODES_AND_EDGES',
+  'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
 }
 
 const OUTER_OPTIONS = {
   'elk.algorithm': 'layered',
   'elk.direction': 'RIGHT',
-  'elk.edgeRouting': 'POLYLINE',
-  'elk.spacing.nodeNode': '60',
-  'elk.layered.spacing.nodeNodeBetweenLayers': '140',
-  'elk.layered.cycleBreaking.strategy': 'GREEDY',
+  'elk.edgeRouting': 'ORTHOGONAL',
+  'elk.spacing.nodeNode': '110',
+  'elk.layered.spacing.nodeNodeBetweenLayers': '220',
+  'elk.spacing.edgeNode': '40',
+  'elk.spacing.edgeEdge': '24',
+  'elk.layered.spacing.edgeNodeBetweenLayers': '40',
+  'elk.layered.spacing.edgeEdgeBetweenLayers': '24',
+  'elk.layered.cycleBreaking.strategy': 'MODEL_ORDER',
+  'elk.layered.considerModelOrder.strategy': 'NODES_AND_EDGES',
+}
+
+const ROUTE_RADIUS = 8
+
+/**
+ * Ids ELK can pin to the first layer. A FIRST node with an incoming edge makes
+ * the layout throw, so a root or entry that something links to stays unpinned
+ * and story order is the only hint.
+ */
+export function firstLayerIds(
+  orderedIds: readonly string[],
+  incoming: ReadonlySet<string>,
+  roots: ReadonlySet<string>,
+): string[] {
+  const open = orderedIds.filter((id) => !incoming.has(id))
+  const rooted = open.filter((id) => roots.has(id))
+  if (rooted.length) return rooted
+  return open.length ? [open[0]] : []
+}
+
+function samePoint(a: RoutePoint, b: RoutePoint): boolean {
+  return Math.abs(a.x - b.x) < 0.5 && Math.abs(a.y - b.y) < 0.5
+}
+
+function dedupePoints(pts: RoutePoint[]): RoutePoint[] {
+  const out: RoutePoint[] = []
+  for (const p of pts) {
+    const last = out[out.length - 1]
+    if (last && samePoint(last, p)) continue
+    out.push(p)
+  }
+  return out
+}
+
+/** Horizontal-then-vertical, or vertical-then-horizontal, elbow. */
+function elbow(from: RoutePoint, to: RoutePoint, horizontalFirst: boolean): RoutePoint[] {
+  if (Math.abs(from.x - to.x) < 0.5 || Math.abs(from.y - to.y) < 0.5) return dedupePoints([from, to])
+  const mid = horizontalFirst ? { x: to.x, y: from.y } : { x: from.x, y: to.y }
+  return [from, mid, to]
+}
+
+function sidePort(n: { x: number; y: number; w: number; h: number }, towardX: number): RoutePoint {
+  return {
+    x: towardX >= n.x + n.w / 2 ? n.x + n.w : n.x,
+    y: n.y + n.h / 2,
+  }
+}
+
+function boundsOf(pts: RoutePoint[]): { x0: number; y0: number; x1: number; y1: number } {
+  let x0 = Infinity
+  let y0 = Infinity
+  let x1 = -Infinity
+  let y1 = -Infinity
+  for (const p of pts) {
+    if (p.x < x0) x0 = p.x
+    if (p.y < y0) y0 = p.y
+    if (p.x > x1) x1 = p.x
+    if (p.y > y1) y1 = p.y
+  }
+  return { x0, y0, x1, y1 }
 }
 
 export interface MapLayoutProgress {
   (done: number, total: number): void
+}
+
+export interface MapLayoutOptions {
+  /** Pull shared subroutines out of the story into a lane of their own. On by default. */
+  helpers?: boolean
+}
+
+/** Space between the story and the column of helpers beside it, and between boxes in that column. */
+const ASIDE_GAP = 160
+const ASIDE_ROW_GAP = 60
+const TILE_GAP_X = 24
+const TILE_GAP_Y = 18
+
+/** Tiles in rows, about as wide as they are tall. For groups with no flow to show. */
+function tileLayout(members: readonly MapNode[]): {
+  pos: Map<string, { x: number; y: number; w: number; h: number }>
+  w: number
+  h: number
+} {
+  const pos = new Map<string, { x: number; y: number; w: number; h: number }>()
+  if (!members.length) return { pos, w: 0, h: 0 }
+  const widths = members.map(mapNodeWidth)
+  const cellW = Math.max(...widths) + TILE_GAP_X
+  const cellH = NODE_H + TILE_GAP_Y
+  const cols = Math.max(1, Math.round(Math.sqrt((members.length * cellH) / cellW)))
+  const rows = Math.ceil(members.length / cols)
+  members.forEach((m, i) => {
+    pos.set(m.id, { x: (i % cols) * cellW, y: Math.floor(i / cols) * cellH, w: widths[i], h: NODE_H })
+  })
+  return { pos, w: cols * cellW - TILE_GAP_X, h: rows * cellH - TILE_GAP_Y }
+}
+
+/** Horizontal, vertical, horizontal. A readable route between two nodes in different groups. */
+function zRoute(from: RoutePoint, to: RoutePoint): RoutePoint[] {
+  const mid = (from.x + to.x) / 2
+  return dedupePoints([from, { x: mid, y: from.y }, { x: mid, y: to.y }, to])
 }
 
 export async function layoutProjectMap(
@@ -275,6 +299,7 @@ export async function layoutProjectMap(
   mode: ClusterMode,
   key: string,
   progress?: MapLayoutProgress,
+  options: MapLayoutOptions = {},
 ): Promise<MapLayout> {
   try {
     const cached = await api.layoutCacheGet(key)
@@ -283,11 +308,23 @@ export async function layoutProjectMap(
     /* cache is best effort */
   }
 
-  const clusterOf = clusterNodes(map, files, mode)
+  const helperSet = options.helpers === false ? new Set<string>() : findHelpers(map.nodes, map.edges)
+  const clusterOf = assignGroups(map.nodes, map.edges, files, mode, helperSet)
+  // Helpers are reached from everywhere, so they would flatten the story's depth.
+  const depth = storyDepth(
+    map.nodes.map((n) => ({ id: n.id, root: n.root, missing: n.kind === 'missing' })),
+    map.edges.filter((e) => !helperSet.has(e.from) && !helperSet.has(e.to)),
+  )
+  const byDepth = (a: { id: string }, b: { id: string }) => {
+    const d = (depth.get(a.id) ?? 0) - (depth.get(b.id) ?? 0)
+    if (d) return d
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+  }
   const keys = [...new Set(clusterOf.values())].sort()
   const clusterIndex = new Map(keys.map((k, i) => [k, i]))
   const byCluster: MapNode[][] = keys.map(() => [])
   for (const n of map.nodes) byCluster[clusterIndex.get(clusterOf.get(n.id)!)!].push(n)
+  for (const group of byCluster) group.sort(byDepth)
 
   // 1. lay out each cluster on its own
   interface Inner {
@@ -302,11 +339,48 @@ export async function layoutProjectMap(
   for (let ci = 0; ci < keys.length; ci++) {
     const members = byCluster[ci]
     const ids = new Set(members.map((m) => m.id))
-    const intraEdges = map.edges.filter((e) => ids.has(e.from) && ids.has(e.to) && e.from !== e.to)
+    const intraEdges = map.edges
+      .filter((e) => ids.has(e.from) && ids.has(e.to) && e.from !== e.to)
+      .sort((a, b) => {
+        const from = (depth.get(a.from) ?? 0) - (depth.get(b.from) ?? 0)
+        if (from) return from
+        const to = (depth.get(a.to) ?? 0) - (depth.get(b.to) ?? 0)
+        if (to) return to
+        if (a.kind !== b.kind) return a.kind < b.kind ? -1 : 1
+        return a.to < b.to ? -1 : a.to > b.to ? 1 : 0
+      })
+    if (isTileGroup(keys[ci])) {
+      const tiles = tileLayout([...members].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)))
+      inners.push({
+        key: keys[ci],
+        members,
+        pos: tiles.pos,
+        intra: [],
+        w: tiles.w + CLUSTER_PAD * 2,
+        h: tiles.h + CLUSTER_PAD * 2 + CLUSTER_HEADER,
+      })
+      progress?.(ci + 1, keys.length + 1)
+      continue
+    }
+    const incoming = new Set(intraEdges.map((e) => e.to))
+    const pinned = new Set(
+      keys[ci] === MISSING_KEY
+        ? []
+        : firstLayerIds(
+            members.map((m) => m.id),
+            incoming,
+            new Set(members.filter((m) => m.root).map((m) => m.id)),
+          ),
+    )
     const graph: ElkNode = {
       id: `c${ci}`,
       layoutOptions: INNER_OPTIONS,
-      children: members.map((m) => ({ id: m.id, width: mapNodeWidth(m), height: NODE_H })),
+      children: members.map((m) => ({
+        id: m.id,
+        width: mapNodeWidth(m),
+        height: NODE_H,
+        layoutOptions: pinned.has(m.id) ? { 'elk.layered.layering.layerConstraint': 'FIRST' } : undefined,
+      })),
       edges: intraEdges.map((e, i) => ({ id: `e${i}`, sources: [e.from], targets: [e.to] })),
     }
     const res = await elkLayout(graph)
@@ -314,9 +388,15 @@ export async function layoutProjectMap(
     for (const c of res.children ?? []) {
       pos.set(c.id, { x: c.x ?? 0, y: c.y ?? 0, w: c.width ?? 0, h: c.height ?? 0 })
     }
+    const routed = new Map<number, RoutePoint[]>()
+    for (let i = 0; i < (res.edges ?? []).length; i++) {
+      const edge = res.edges![i]
+      const parsed = Number(edge.id?.slice(1))
+      routed.set(Number.isNaN(parsed) ? i : parsed, sectionPoints(edge as ElkExtendedEdge, 0, 0))
+    }
     const intra = intraEdges.map((e, i) => ({
       edge: e,
-      points: sectionPoints((res.edges?.[i] as ElkExtendedEdge) ?? ({} as ElkExtendedEdge), 0, 0),
+      points: routed.get(i) ?? [],
     }))
     inners.push({
       key: keys[ci],
@@ -330,19 +410,65 @@ export async function layoutProjectMap(
   }
 
   // 2. lay out the clusters relative to each other
+  /** Helpers and unlinked scenes have no flow to follow, so they are set down beside the story. */
+  const aside = new Set(inners.flatMap((inner, i) => (isTileGroup(inner.key) ? [i] : [])))
   const weights = new Map<string, number>()
   for (const e of map.edges) {
     const a = clusterIndex.get(clusterOf.get(e.from)!)!
     const b = clusterIndex.get(clusterOf.get(e.to)!)!
-    if (a === b) continue
+    // Those groups take no part in placing the story's groups.
+    if (a === b || aside.has(a) || aside.has(b)) continue
     const k = `${a}>${b}`
     weights.set(k, (weights.get(k) ?? 0) + e.count)
+  }
+  /** Groups with no story flow sit after the story: unlinked, then missing targets, then helpers. */
+  const tail = (key: string) => (key === UNLINKED_KEY ? 1 : key === MISSING_KEY ? 2 : key === HELPERS_KEY ? 3 : 0)
+  const clusterDepth = inners.map((inner) => {
+    let d = Infinity
+    for (const m of inner.members) d = Math.min(d, depth.get(m.id) ?? Infinity)
+    return d === Infinity ? 0 : d
+  })
+  const outerOrder = inners.map((_, i) => i).sort((a, b) => {
+    const ta = tail(inners[a].key)
+    const tb = tail(inners[b].key)
+    if (ta !== tb) return ta - tb
+    if (clusterDepth[a] !== clusterDepth[b]) return clusterDepth[a] - clusterDepth[b]
+    return inners[a].key < inners[b].key ? -1 : inners[a].key > inners[b].key ? 1 : 0
+  })
+  const outerKeys = [...weights.keys()].sort((a, b) => {
+    const [aFrom, aTo] = a.split('>').map(Number)
+    const [bFrom, bTo] = b.split('>').map(Number)
+    if (clusterDepth[aFrom] !== clusterDepth[bFrom]) return clusterDepth[aFrom] - clusterDepth[bFrom]
+    if (clusterDepth[aTo] !== clusterDepth[bTo]) return clusterDepth[aTo] - clusterDepth[bTo]
+    return a < b ? -1 : a > b ? 1 : 0
+  })
+  const clusterIn = new Set<number>()
+  const clusterOut = new Set<number>()
+  for (const k of weights.keys()) {
+    const [a, b] = k.split('>').map(Number)
+    clusterOut.add(a)
+    clusterIn.add(b)
   }
   const outerGraph: ElkNode = {
     id: 'root',
     layoutOptions: OUTER_OPTIONS,
-    children: inners.map((c, i) => ({ id: `c${i}`, width: c.w, height: c.h })),
-    edges: [...weights.keys()].map((k, i) => {
+    children: outerOrder.filter((i) => !aside.has(i)).map((i) => {
+      const inner = inners[i]
+      // Same ELK rule as inside a group: FIRST forbids incoming edges, LAST forbids outgoing ones.
+      const constraint =
+        tail(inner.key) > 0 && !clusterOut.has(i)
+          ? 'LAST'
+          : inner.members.some((m) => m.root) && !clusterIn.has(i)
+            ? 'FIRST'
+            : ''
+      return {
+        id: `c${i}`,
+        width: inner.w,
+        height: inner.h,
+        layoutOptions: constraint ? { 'elk.layered.layering.layerConstraint': constraint } : undefined,
+      }
+    }),
+    edges: outerKeys.map((k, i) => {
       const [a, b] = k.split('>')
       return { id: `o${i}`, sources: [`c${a}`], targets: [`c${b}`] }
     }),
@@ -350,14 +476,25 @@ export async function layoutProjectMap(
   const outer = await elkLayout(outerGraph)
   progress?.(keys.length + 1, keys.length + 1)
 
+  const placed = new Map<number, { x: number; y: number }>()
+  for (const c of outer.children ?? []) placed.set(Number(c.id.slice(1)), { x: c.x ?? 0, y: c.y ?? 0 })
+  let storyRight = 0
+  for (const [i, p] of placed) storyRight = Math.max(storyRight, p.x + inners[i].w)
+  const asideX = storyRight + (placed.size > 0 ? ASIDE_GAP : 0)
+  let asideY = 0
+  for (const i of [...aside].sort((a, b) => tail(inners[a].key) - tail(inners[b].key))) {
+    placed.set(i, { x: asideX, y: asideY })
+    asideY += inners[i].h + ASIDE_ROW_GAP
+  }
+
   // 3. compose absolute coordinates
   const layoutNodes: LNode[] = []
   const layoutClusters: LCluster[] = []
   const nodePos = new Map<string, LNode>()
   const origin: { x: number; y: number }[] = []
-  const margin = 40
+  const margin = 60
   inners.forEach((inner, i) => {
-    const oc = outer.children?.find((c) => c.id === `c${i}`)
+    const oc = placed.get(i)
     const ox = (oc?.x ?? 0) + margin
     const oy = (oc?.y ?? 0) + margin
     origin.push({ x: ox, y: oy })
@@ -384,23 +521,41 @@ export async function layoutProjectMap(
     }
   })
 
+  const trunks = new Map<string, RoutePoint[]>()
+  for (let i = 0; i < (outer.edges ?? []).length; i++) {
+    const edge = outer.edges![i]
+    const parsed = Number(edge.id?.slice(1))
+    const pair = outerKeys[Number.isNaN(parsed) ? i : parsed]
+    if (!pair) continue
+    const pts = dedupePoints(sectionPoints(edge as ElkExtendedEdge, margin, margin))
+    if (pts.length >= 2) trunks.set(pair, pts)
+  }
+  const clusterTrunk = (a: number, b: number): RoutePoint[] => {
+    const routed = trunks.get(`${a}>${b}`)
+    if (routed && routed.length >= 2) return routed
+    const ca = layoutClusters[a]
+    const cb = layoutClusters[b]
+    return elbow(sidePort(ca, cb.x + cb.w / 2), sidePort(cb, ca.x + ca.w / 2), true)
+  }
+
   const edges: LEdge[] = []
   inners.forEach((inner, i) => {
     const dx = origin[i].x + CLUSTER_PAD
     const dy = origin[i].y + CLUSTER_HEADER + CLUSTER_PAD
     for (const { edge, points } of inner.intra) {
-      const pts = points.map((p) => ({ x: p.x + dx, y: p.y + dy }))
+      const pts = dedupePoints(points.map((p) => ({ x: p.x + dx, y: p.y + dy })))
       if (pts.length < 2) continue
+      const box = boundsOf(pts)
       edges.push({
         from: edge.from,
         to: edge.to,
         kind: edge.kind,
         count: edge.count,
-        d: pathOf(pts),
-        x0: Math.min(...pts.map((p) => p.x)),
-        y0: Math.min(...pts.map((p) => p.y)),
-        x1: Math.max(...pts.map((p) => p.x)),
-        y1: Math.max(...pts.map((p) => p.y)),
+        d: roundedPath(pts, ROUTE_RADIUS),
+        x0: box.x0,
+        y0: box.y0,
+        x1: box.x1,
+        y1: box.y1,
         segs: segmentBoxes(pts),
         intra: true,
       })
@@ -410,24 +565,46 @@ export async function layoutProjectMap(
     const a = nodePos.get(e.from)
     const b = nodePos.get(e.to)
     if (!a || !b || a.c === b.c) continue
-    const forward = b.x + b.w / 2 >= a.x + a.w / 2
-    const x0 = forward ? a.x + a.w : a.x
-    const y0 = a.y + a.h / 2
-    const x1 = forward ? b.x : b.x + b.w
-    const y1 = b.y + b.h / 2
-    const dx = Math.min(400, Math.max(40, Math.abs(x1 - x0) / 2)) * (forward ? 1 : -1)
-    const samples = cubicPoints(x0, y0, x0 + dx, y0, x1 - dx, y1, x1, y1)
+    if (aside.has(a.c) || aside.has(b.c)) {
+      const route = zRoute(sidePort(a, b.x + b.w / 2), sidePort(b, a.x + a.w / 2))
+      if (route.length < 2) continue
+      const hb = boundsOf(route)
+      edges.push({
+        from: e.from,
+        to: e.to,
+        kind: e.kind,
+        count: e.count,
+        d: roundedPath(route, ROUTE_RADIUS),
+        helper: true,
+        x0: hb.x0,
+        y0: hb.y0,
+        x1: hb.x1,
+        y1: hb.y1,
+        segs: segmentBoxes(route),
+        intra: false,
+      })
+      continue
+    }
+    const trunk = clusterTrunk(a.c, b.c)
+    const start = trunk[0]
+    const end = trunk[trunk.length - 1]
+    const fanOut = elbow(sidePort(a, start.x), start, true)
+    const fanIn = elbow(end, sidePort(b, end.x), false)
+    const full = dedupePoints([...fanOut, ...trunk.slice(1), ...fanIn.slice(1)])
+    if (full.length < 2) continue
+    const box = boundsOf(full)
     edges.push({
       from: e.from,
       to: e.to,
       kind: e.kind,
       count: e.count,
-      d: `M${round(x0)} ${round(y0)} C${round(x0 + dx)} ${round(y0)} ${round(x1 - dx)} ${round(y1)} ${round(x1)} ${round(y1)}`,
-      x0: Math.min(x0, x1),
-      y0: Math.min(y0, y1),
-      x1: Math.max(x0, x1),
-      y1: Math.max(y0, y1),
-      segs: segmentBoxes(samples),
+      d: roundedPath(full, ROUTE_RADIUS),
+      fan: `${roundedPath(fanOut, ROUTE_RADIUS)} ${roundedPath(fanIn, ROUTE_RADIUS)}`.trim(),
+      x0: box.x0,
+      y0: box.y0,
+      x1: box.x1,
+      y1: box.y1,
+      segs: segmentBoxes(full),
       intra: false,
     })
   }
@@ -435,25 +612,19 @@ export async function layoutProjectMap(
   const clusterEdges: LClusterEdge[] = []
   for (const [k, weight] of weights) {
     const [a, b] = k.split('>').map(Number)
-    const ca = layoutClusters[a]
-    const cb = layoutClusters[b]
-    const forward = cb.x + cb.w / 2 >= ca.x + ca.w / 2
-    const x0 = forward ? ca.x + ca.w : ca.x
-    const y0 = ca.y + ca.h / 2
-    const x1 = forward ? cb.x : cb.x + cb.w
-    const y1 = cb.y + cb.h / 2
-    const dx = Math.min(600, Math.max(60, Math.abs(x1 - x0) / 2)) * (forward ? 1 : -1)
-    const samples = cubicPoints(x0, y0, x0 + dx, y0, x1 - dx, y1, x1, y1)
+    const pts = clusterTrunk(a, b)
+    if (pts.length < 2) continue
+    const box = boundsOf(pts)
     clusterEdges.push({
       from: a,
       to: b,
       weight,
-      d: `M${round(x0)} ${round(y0)} C${round(x0 + dx)} ${round(y0)} ${round(x1 - dx)} ${round(y1)} ${round(x1)} ${round(y1)}`,
-      x0: Math.min(x0, x1),
-      y0: Math.min(y0, y1),
-      x1: Math.max(x0, x1),
-      y1: Math.max(y0, y1),
-      segs: segmentBoxes(samples),
+      d: roundedPath(pts, ROUTE_RADIUS),
+      x0: box.x0,
+      y0: box.y0,
+      x1: box.x1,
+      y1: box.y1,
+      segs: segmentBoxes(pts),
     })
   }
 

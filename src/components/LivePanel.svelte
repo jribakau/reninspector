@@ -65,7 +65,7 @@
   }
 </script>
 
-<div class="sb-panel">
+<div class="sb-panel live">
   <div class="sb-tools">
     {#if app.live.running}
       <div class="sb-meta">
@@ -78,7 +78,7 @@
     {/if}
     <label class="check">
       <input type="checkbox" checked={app.followGame} onchange={toggleFollowGame} />
-      Follow the game in the editor
+      <span>Follow the game in the editor</span>
     </label>
     {#if app.live.running}
       <div class="row">
@@ -180,10 +180,26 @@
 </div>
 
 <style>
+  /* The tools stay their natural height. The panel scrolls instead of painting over the status bar. */
+  .live {
+    overflow: auto;
+  }
+  .live :global(.sb-tools) {
+    min-width: 0;
+  }
+  .live :global(.sb-tools > *) {
+    min-width: 0;
+  }
+  .live :global(.sb-list) {
+    flex: 1 0 auto;
+    min-height: auto;
+    overflow: visible;
+  }
   .row {
     display: flex;
     gap: 6px;
     align-items: center;
+    min-width: 0;
   }
   .row > .sb-item {
     flex: 1;
@@ -191,14 +207,24 @@
     width: auto;
     height: auto;
   }
+  .row > input {
+    flex: 1;
+    min-width: 0;
+    width: auto;
+  }
   .check {
     display: flex;
     gap: 6px;
     align-items: center;
+    min-width: 0;
     font-size: var(--fs-md);
   }
-  input {
-    flex: 1;
+  .check input {
+    flex: none;
+    width: auto;
+    padding: 0;
+  }
+  .check span {
     min-width: 0;
   }
 </style>
