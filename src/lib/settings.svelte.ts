@@ -26,6 +26,7 @@ export interface Settings {
   restoreSession: boolean
   maxRecent: number
   maxTabs: number
+  previewTabs: boolean
   followGame: boolean
   stageAnimate: boolean
   followCaret: boolean
@@ -85,6 +86,7 @@ export const DEFAULTS: Settings = {
   restoreSession: true,
   maxRecent: 8,
   maxTabs: 16,
+  previewTabs: true,
   followGame: true,
   stageAnimate: !reducedMotion(),
   followCaret: true,
@@ -246,11 +248,18 @@ export const SETTINGS: SettingDef[] = [
     key: 'maxTabs',
     category: 'files',
     label: 'Maximum open tabs',
-    description: 'When this many tabs are open, opening another closes the oldest unpinned one.',
+    description: 'When this many tabs are open, opening another closes the preview tab, then the least recently used unpinned one.',
     type: 'number',
     min: 4,
     max: 64,
     step: 1,
+  },
+  {
+    key: 'previewTabs',
+    category: 'files',
+    label: 'Preview tabs',
+    description: 'Reuse one italic tab when you click around. Double-click the tab, or edit the file, to keep it.',
+    type: 'bool',
   },
   {
     key: 'followGame',

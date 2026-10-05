@@ -4,7 +4,21 @@ import { askSaveDiscard } from './dialog.svelte'
 import { fileOfNode, labelAt, nodeByName, nodesInFile } from './indexes.svelte'
 import { visibleProblems } from './problems.svelte'
 import { settings } from './settings.svelte'
-import { bulkTargets, moveTab, pinTab, restorePins, settle, unpinTab, type BulkClose, type TabOrder } from './tabs'
+import {
+  bulkTargets,
+  leastRecent,
+  mostRecent,
+  moveTab,
+  pinTab,
+  placePreview,
+  previewRoom,
+  restorePins,
+  settle,
+  touchMru,
+  unpinTab,
+  type BulkClose,
+  type TabOrder,
+} from './tabs'
 import {
   app,
   editorTabId,
@@ -28,8 +42,21 @@ const NAV_LIMIT = 50
 const CLOSED_LIMIT = 20
 const spots = $state({ back: [] as NavSpot[], forward: [] as NavSpot[] })
 const closedEditors = $state<EditorTab[]>([])
+/** Tab ids, most recently activated first. Not shown; it decides what to close and where to land. */
+let mru: string[] = []
 /** Set while Back or Forward calls goTo, so that jump is not recorded again. */
 let navigating = false
+/**
+ * Where the caret last was. A flow tab can replace the preview that held the open script,
+ * which clears `app.loc`; Back and Forward still need a place to start from.
+ */
+let lastLoc: NavSpot | null = null
+
+function currentSpot(): NavSpot | null {
+  const loc = app.loc
+  if (loc?.file) return { file: loc.file, line: loc.line }
+  return lastLoc
+}
 
 export function canGoBack(): boolean {
   return spots.back.length > 0
@@ -61,6 +88,96 @@ function rememberClosed(tabs: EditorTab[]) {
 function setTabs(next: EditorTab[]) {
   const byId = new Map(next.map((t) => [editorTabId(t), t]))
   applyOrder(settle([...byId.keys()], app.pinnedTabs), byId)
+  const open = new Set(app.editorTabs.map(editorTabId))
+  if (app.previewTab && !open.has(app.previewTab)) app.previewTab = null
+  mru = mru.filter((id) => open.has(id))
+}
+
+function noteUsed(id: string) {
+  mru = touchMru(mru, app.editorTabs.map(editorTabId), id)
+}
+
+/** The open file always has a tab. A peek that replaced that tab clears the caret. */
+function reconcileLoc() {
+  const file = app.loc?.file
+  if (!file) return
+  if (app.editorTabs.some((t) => t.kind === 'file' && t.path === file)) return
+  app.loc = null
+  if (app.cursor?.file === file) app.cursor = null
+}
+
+function tabDirty(tab: EditorTab): boolean {
+  return tab.kind === 'file' && app.dirtyFiles.includes(tab.path)
+}
+
+const dirtyIds = () => app.dirtyFiles.map((path) => editorTabId({ kind: 'file', path }))
+
+/** Drops tabs past the limit: the preview first, then the least recently used clean unpinned tab. */
+function trimToLimit(next: EditorTab[], keepId: string) {
+  const max = settings.maxTabs
+  let list = next
+  const evicted: EditorTab[] = []
+  const dropId = (id: string) => {
+    const i = list.findIndex((t) => editorTabId(t) === id)
+    if (i < 0) return
+    evicted.push(list[i])
+    list = list.filter((_, idx) => idx !== i)
+    if (app.previewTab === id) app.previewTab = null
+  }
+  if (list.length > max && app.previewTab && app.previewTab !== keepId) dropId(app.previewTab)
+  while (list.length > max) {
+    const candidates = list
+      .filter((t) => {
+        const id = editorTabId(t)
+        return id !== keepId && !isPinned(id) && !tabDirty(t)
+      })
+      .map((t) => editorTabId(t))
+    const victim = leastRecent(mru, candidates)
+    if (!victim) break
+    dropId(victim)
+  }
+  if (evicted.length) rememberClosed(evicted)
+  setTabs(list)
+  reconcileLoc()
+  if (!evicted.length) return
+  const text = `Closed ${evicted.map(tabLabel).join(', ')}. The editor keeps ${max} tabs.`
+  app.notice = text
+  app.noticeAction = { text, label: 'Reopen', run: () => void reopenClosedTab() }
+}
+
+function tabsFromIds(ids: string[], extra: EditorTab): EditorTab[] {
+  const byId = new Map(app.editorTabs.map((t) => [editorTabId(t), t]))
+  byId.set(editorTabId(extra), extra)
+  return ids.map((id) => byId.get(id)).filter((t): t is EditorTab => !!t)
+}
+
+/** A look at something. Reuses the italic tab instead of adding another. */
+function openPreview(tab: EditorTab) {
+  const id = editorTabId(tab)
+  const ids = app.editorTabs.map(editorTabId)
+  const placed = placePreview(ids, app.pinnedTabs, app.previewTab, id, dirtyIds())
+  // A replaced preview is not a closed tab, so it stays out of the reopen history.
+  app.previewTab = placed.preview
+  trimToLimit(tabsFromIds(placed.ids, tab), id)
+}
+
+/** A tab the user asked for. It is never the preview. */
+function openPermanent(tab: EditorTab) {
+  const id = editorTabId(tab)
+  if (app.previewTab === id) app.previewTab = null
+  const exists = app.editorTabs.some((t) => editorTabId(t) === id)
+  trimToLimit(exists ? app.editorTabs : [...app.editorTabs, tab], id)
+}
+
+/** Forgets recency, history, and the preview. Called when a different project is opened. */
+export function resetEditorMemory() {
+  mru = []
+  lastLoc = null
+  spots.back = []
+  spots.forward = []
+  closedEditors.splice(0, closedEditors.length)
+  app.previewTab = null
+  app.followHold = false
 }
 
 function applyOrder(order: TabOrder, byId = new Map(app.editorTabs.map((t) => [editorTabId(t), t]))) {
@@ -68,12 +185,15 @@ function applyOrder(order: TabOrder, byId = new Map(app.editorTabs.map((t) => [e
   app.pinnedTabs = order.pinned
 }
 
-/** Renames tab ids after files moved, so pins follow their tabs. */
+/** Renames tab ids after files moved, so pins, the preview, and recency follow their tabs. */
 export function replaceTabs(moved: Map<string, EditorTab>) {
-  app.pinnedTabs = app.pinnedTabs.map((id) => {
+  const nextId = (id: string) => {
     const tab = moved.get(id)
     return tab ? editorTabId(tab) : id
-  })
+  }
+  app.pinnedTabs = app.pinnedTabs.map(nextId)
+  if (app.previewTab) app.previewTab = nextId(app.previewTab)
+  mru = mru.map(nextId)
   setTabs(app.editorTabs.map((t) => moved.get(editorTabId(t)) ?? t))
 }
 
@@ -84,6 +204,7 @@ export function isPinned(id: string): boolean {
 export function pinEditor(id: string) {
   const ids = app.editorTabs.map(editorTabId)
   if (!ids.includes(id)) return
+  promoteTab(id)
   applyOrder(pinTab(ids, app.pinnedTabs, id))
   saveSession()
 }
@@ -107,6 +228,8 @@ function saveSession() {
     JSON.stringify({
       tabs: app.editorTabs,
       pinned: app.pinnedTabs,
+      preview: app.previewTab,
+      mru,
       active: app.activeEditor,
       recentFiles: app.recentFiles,
       file: app.loc?.file ?? null,
@@ -169,6 +292,8 @@ function applyLegacySidebar(sidebar: string) {
 interface SavedSession {
   tabs?: unknown
   pinned?: unknown
+  preview?: string | null
+  mru?: unknown
   active?: string | null
   file?: string | null
   line?: number
@@ -245,13 +370,20 @@ export function restoreSession(root: string): boolean {
     const restored = tabs.slice(-settings.maxTabs)
     app.pinnedTabs = restorePins(restored.map(editorTabId), saved.pinned).pinned
     setTabs(restored)
+    const openIds = new Set(app.editorTabs.map(editorTabId))
+    const preview = typeof saved.preview === 'string' ? saved.preview : null
+    app.previewTab = preview && settings.previewTabs && openIds.has(preview) && !app.pinnedTabs.includes(preview) ? preview : null
+    mru = Array.isArray(saved.mru) ? saved.mru.filter((id): id is string => typeof id === 'string' && openIds.has(id)) : []
     if (Array.isArray(saved.recentFiles)) {
       app.recentFiles = saved.recentFiles.filter((path): path is string => typeof path === 'string' && known.has(path)).slice(0, 8)
     }
     const active = typeof saved.active === 'string' ? saved.active : null
     const restoreActive = active !== null && app.editorTabs.some((t) => editorTabId(t) === active)
     if (restoreActive) app.activeEditor = active
-    if (saved.file && known.has(saved.file)) goTo(saved.file, saved.line ?? 1, saved.line ?? 1, { activate: !restoreActive, flow: false })
+    if (saved.file && known.has(saved.file)) {
+      const already = app.editorTabs.some((t) => t.kind === 'file' && t.path === saved.file)
+      goTo(saved.file, saved.line ?? 1, saved.line ?? 1, { activate: !restoreActive, flow: false, open: !already })
+    }
     else if (restoreActive) saveSession()
     return true
   } catch {
@@ -357,38 +489,11 @@ function rememberFile(file: string) {
   app.recentFiles = [file, ...app.recentFiles.filter((path) => path !== file)].slice(0, 8)
 }
 
-/** Keeps the newest tab and drops the oldest clean tabs first when the strip is full. */
-function adoptTabs(next: EditorTab[]) {
-  const MAX_TABS = settings.maxTabs
-  if (next.length <= MAX_TABS) {
-    setTabs(next)
-    return
-  }
-  const opened = next[next.length - 1]
-  const older = next.slice(0, -1)
-  const room = MAX_TABS - 1
-  const drop = older.length - room
-  const kept: EditorTab[] = []
-  const evicted: string[] = []
-  let dropped = 0
-  for (const tab of older) {
-    const dirty = tab.kind === 'file' && app.dirtyFiles.includes(tab.path)
-    if (dropped < drop && !dirty && !isPinned(editorTabId(tab))) {
-      dropped += 1
-      evicted.push(tabLabel(tab))
-      continue
-    }
-    kept.push(tab)
-  }
-  while (kept.length > room) {
-    const at = kept.findIndex((t) => !isPinned(editorTabId(t)))
-    // Only pinned tabs are left: let the strip run long rather than lose one.
-    if (at < 0) break
-    evicted.push(tabLabel(kept[at]))
-    kept.splice(at, 1)
-  }
-  setTabs([...kept, opened])
-  if (evicted.length) app.notice = `Closed ${evicted.join(', ')}. The editor keeps ${MAX_TABS} tabs.`
+/** Makes a preview tab permanent. Editing, pinning, or an explicit open does this. */
+export function promoteTab(id: string) {
+  if (app.previewTab !== id) return
+  app.previewTab = null
+  saveSession()
 }
 
 async function confirmDirty(path: string): Promise<boolean> {
@@ -444,10 +549,11 @@ function problemNotice(): string {
 }
 
 export function openMapTab() {
-  if (!app.editorTabs.some((t) => t.kind === 'map')) {
-    adoptTabs([...app.editorTabs, { kind: 'map' }])
-  }
+  if (!app.editorTabs.some((t) => t.kind === 'map')) openPermanent({ kind: 'map' })
+  else promoteTab('map')
   app.activeEditor = 'map'
+  noteUsed('map')
+  app.followHold = false
   saveSession()
 }
 
@@ -473,9 +579,11 @@ function showFileFlow(file: string, line: number, open: boolean, fallback: boole
 export function activateEditor(id: string) {
   const tab = app.editorTabs.find((t) => editorTabId(t) === id)
   if (!tab) return
+  app.followHold = false
   if (tab.kind === 'file') {
     if (app.loc?.file === tab.path) {
       app.activeEditor = id
+      noteUsed(id)
       showCode()
       showFileFlow(tab.path, app.loc.line, false, true)
       saveSession()
@@ -487,6 +595,7 @@ export function activateEditor(id: string) {
     return
   }
   app.activeEditor = id
+  noteUsed(id)
   if (tab.kind === 'graph') app.selectedLabel = tab.name
   saveSession()
 }
@@ -512,25 +621,56 @@ export function openFileHistory(path = '') {
   git.timeline += 1
 }
 
-export function goTo(file: string, line: number, endLine = line, opts: { activate?: boolean; flow?: boolean } = {}) {
-  const prev = app.loc
-  const fileChanged = prev?.file !== file
-  if (!navigating && prev?.file && (fileChanged || Math.abs(prev.line - line) > 10)) {
+export function goTo(
+  file: string,
+  line: number,
+  endLine = line,
+  opts: { activate?: boolean; flow?: boolean; open?: boolean; history?: boolean; evict?: boolean } = {},
+) {
+  const prev = currentSpot()
+  const fileChanged = app.loc?.file !== file
+  const id = file ? editorTabId({ kind: 'file', path: file }) : ''
+  const known = !!file && app.editorTabs.some((t) => t.kind === 'file' && t.path === file)
+  // A background jump (Run from here) must not swap out the preview tab the user is looking at.
+  const replacesActive = !known && opts.activate === false && app.previewTab !== null && app.previewTab === app.activeEditor
+  const permanent = opts.open === true || !settings.previewTabs || replacesActive
+  // Live follow must not close a tab the user opened in order to show the game's file.
+  if (
+    file &&
+    opts.evict === false &&
+    !permanent &&
+    previewRoom(app.editorTabs.map(editorTabId), app.pinnedTabs, app.previewTab, id, dirtyIds(), settings.maxTabs) === 'full'
+  ) {
+    return
+  }
+  if (opts.history !== false) app.followHold = false
+  const moved = !!prev && (prev.file !== file || Math.abs(prev.line - line) > 10)
+  if (!navigating && opts.history !== false && prev?.file && moved) {
     rememberSpot({ file: prev.file, line: prev.line })
   }
   locSeq += 1
   app.loc = { file, line, endLine: Math.max(line, endLine), seq: locSeq }
-  if (file && !app.editorTabs.some((t) => t.kind === 'file' && t.path === file)) {
-    adoptTabs([...app.editorTabs, { kind: 'file', path: file }])
+  if (file) {
+    lastLoc = { file, line }
+    if (!known) {
+      const tab: EditorTab = { kind: 'file', path: file }
+      if (permanent) openPermanent(tab)
+      else openPreview(tab)
+    } else if (opts.open === true || !settings.previewTabs) promoteTab(id)
+    rememberFile(file)
   }
-  if (file) rememberFile(file)
-  if (file && opts.activate !== false) app.activeEditor = editorTabId({ kind: 'file', path: file })
+  if (file && opts.activate !== false) {
+    app.activeEditor = id
+    noteUsed(id)
+  } else if (app.activeEditor && !app.editorTabs.some((t) => editorTabId(t) === app.activeEditor)) {
+    app.activeEditor = mostRecent(mru, app.editorTabs.map(editorTabId))
+  }
   if (file) showFileFlow(file, line, opts.flow ?? fileChanged, fileChanged || opts.flow === true)
   saveSession()
 }
 
 export function navBack() {
-  const cur = app.loc
+  const cur = currentSpot()
   if (!cur?.file || !spots.back.length) return
   const spot = spots.back.pop()
   if (!spot) return
@@ -542,7 +682,7 @@ export function navBack() {
 }
 
 export function navForward() {
-  const cur = app.loc
+  const cur = currentSpot()
   if (!cur?.file || !spots.forward.length) return
   const spot = spots.forward.pop()
   if (!spot) return
@@ -559,13 +699,13 @@ export function reopenClosedTab() {
     if (!tab) return
     if (tab.kind === 'file') {
       if (!app.info?.files.some((f) => f.path === tab.path)) continue
-      goTo(tab.path, 1)
+      goTo(tab.path, 1, 1, { open: true })
       return
     }
     if (tab.kind === 'graph') {
       const node = nodeByName(tab.name)
       if (!node || node.kind === 'missing') continue
-      openLabelGraph(tab.name)
+      openLabelGraph(tab.name, { open: true })
       return
     }
     if (tab.kind === 'diff') {
@@ -585,10 +725,11 @@ export function reopenClosedTab() {
 export function openRebase(path: string) {
   const tab: EditorTab = { kind: 'rebase', path }
   const id = editorTabId(tab)
-  if (!app.editorTabs.some((t) => editorTabId(t) === id)) {
-    adoptTabs([...app.editorTabs, tab])
-  }
+  if (!app.editorTabs.some((t) => editorTabId(t) === id)) openPermanent(tab)
+  else promoteTab(id)
   app.activeEditor = id
+  noteUsed(id)
+  app.followHold = false
   saveSession()
 }
 
@@ -596,10 +737,11 @@ export function openRebase(path: string) {
 export function openDiff(path: string, rev: string) {
   const tab: EditorTab = { kind: 'diff', path, rev }
   const id = editorTabId(tab)
-  if (!app.editorTabs.some((t) => editorTabId(t) === id)) {
-    adoptTabs([...app.editorTabs, tab])
-  }
+  if (!app.editorTabs.some((t) => editorTabId(t) === id)) openPermanent(tab)
+  else promoteTab(id)
   app.activeEditor = id
+  noteUsed(id)
+  app.followHold = false
   saveSession()
 }
 
@@ -636,23 +778,15 @@ export async function closeEditor(id: string) {
     saveSession()
     return
   }
-  const next = nextTabs[Math.min(i, nextTabs.length - 1)]
+  const recentId = mostRecent(mru, nextTabs.map(editorTabId))
+  const next = (recentId && nextTabs.find((t) => editorTabId(t) === recentId)) || nextTabs[Math.min(i, nextTabs.length - 1)]
   if (!next) {
     app.activeEditor = null
     clearOpenDocument()
     saveSession()
     return
   }
-  if (next.kind === 'file') {
-    if (app.loc?.file === next.path) {
-      app.activeEditor = editorTabId(next)
-      saveSession()
-    } else goTo(next.path, 1)
-    return
-  }
-  app.activeEditor = editorTabId(next)
-  if (next.kind === 'graph') app.selectedLabel = next.name
-  saveSession()
+  activateEditor(editorTabId(next))
 }
 
 export function closeFile(path: string) {
@@ -667,8 +801,6 @@ async function confirmClosing(tabs: EditorTab[]): Promise<boolean> {
   }
   return true
 }
-
-const dirtyIds = () => app.dirtyFiles.map((path) => editorTabId({ kind: 'file', path }))
 
 /** The tabs a bulk close would drop right now. Pinned tabs and the anchor stay. */
 export function bulkCloseCount(mode: BulkClose, anchor: string | null): number {
@@ -697,11 +829,11 @@ async function closeBulk(mode: BulkClose, anchor: string | null) {
     saveSession()
     return
   }
-  // Land on the anchor when there is one, otherwise the nearest tab that stayed.
+  // The tab the command was about stays put. Otherwise land on the one used most recently.
   const anchorTab = anchor === null ? undefined : keep.find((t) => editorTabId(t) === anchor)
-  const from = ids.indexOf(active)
-  const after = keep.find((t) => ids.indexOf(editorTabId(t)) > from)
-  activateEditor(editorTabId(anchorTab ?? after ?? keep[keep.length - 1]))
+  const recentId = mostRecent(mru, keep.map(editorTabId))
+  const recent = recentId ? keep.find((t) => editorTabId(t) === recentId) : undefined
+  activateEditor(editorTabId(anchorTab ?? recent ?? keep[keep.length - 1]))
 }
 
 export function closeOtherTabs(id: string) {
@@ -736,7 +868,9 @@ export function closeAllTabs() {
 export function moveEditor(id: string, slot: number) {
   const ids = app.editorTabs.map(editorTabId)
   if (!ids.includes(id)) return
-  applyOrder(moveTab(ids, app.pinnedTabs, id, slot))
+  const order = moveTab(ids, app.pinnedTabs, id, slot)
+  if (app.previewTab && order.pinned.includes(app.previewTab)) app.previewTab = null
+  applyOrder(order)
   saveSession()
 }
 
@@ -749,19 +883,18 @@ export function pruneEditors() {
   })
   if (next.length !== app.editorTabs.length) setTabs(next)
   if (app.activeEditor && !next.some((t) => editorTabId(t) === app.activeEditor)) {
-    const fallback = next[next.length - 1]
-    app.activeEditor = fallback ? editorTabId(fallback) : null
+    app.activeEditor = mostRecent(mru, next.map(editorTabId))
   }
 }
 
-/** Select a label: highlight it everywhere and show its source. */
-export function selectLabel(name: string, opts: { reveal?: boolean; activate?: boolean } = {}) {
+/** Select a label: highlight it everywhere and show its source. `open` keeps the script tab. */
+export function selectLabel(name: string, opts: { reveal?: boolean; activate?: boolean; open?: boolean } = {}) {
   const node = nodeByName(name)
   app.selectedLabel = name
   if (!node || node.kind === 'missing') return
   if (opts.reveal !== false) {
     const file = fileOfNode(node)
-    if (file) goTo(file, node.line, node.endLine, { activate: opts.activate !== false })
+    if (file) goTo(file, node.line, node.endLine, { activate: opts.activate !== false, open: opts.open })
   }
 }
 
@@ -781,14 +914,15 @@ export function followFlowLabel(name: string) {
   selectLabel(name)
 }
 
-export function openLabelGraph(name: string) {
+/** Opens a label's flow. Without `open`, the graph reuses the preview slot instead of stacking tabs. */
+export function openLabelGraph(name: string, opts: { open?: boolean } = {}) {
   const node = nodeByName(name)
   if (!node || node.kind === 'missing') {
     app.notice = `\`${name}\` is not defined anywhere in the project.`
     return
   }
   if (node.kind === 'screen') {
-    selectLabel(name)
+    selectLabel(name, { open: opts.open })
     return
   }
   if (node.kind === 'compiled') {
@@ -796,11 +930,20 @@ export function openLabelGraph(name: string) {
     app.notice = `\`${name}\` comes from a compiled script or archive, so there is no source to draw.`
     return
   }
-  if (!app.editorTabs.some((t) => t.kind === 'graph' && t.name === name)) {
-    adoptTabs([...app.editorTabs, { kind: 'graph', name }])
-  }
-  app.activeEditor = editorTabId({ kind: 'graph', name })
-  selectLabel(name, { activate: false })
+  const tab: EditorTab = { kind: 'graph', name }
+  const id = editorTabId(tab)
+  const existing = app.editorTabs.some((t) => editorTabId(t) === id)
+  const permanent = opts.open === true || !settings.previewTabs
+  if (!existing) {
+    if (permanent) openPermanent(tab)
+    else openPreview(tab)
+  } else if (permanent) promoteTab(id)
+  app.activeEditor = id
+  noteUsed(id)
+  app.followHold = false
+  // The flow tab is the thing that was opened. Don't also open the script beside it.
+  selectLabel(name, { reveal: false })
+  saveSession()
 }
 
 /** Called when the user moves the caret in the code view. */

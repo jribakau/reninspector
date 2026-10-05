@@ -14,6 +14,9 @@
     <span class="busy"><i class="spinner"></i>{installProgressText(sdk.progress)}</span>
   {:else}
     <span class="dim notice">{app.notice}</span>
+    {#if app.noticeAction && app.noticeAction.text === app.notice}
+      <button class="bare" type="button" onclick={() => app.noticeAction?.run()}>{app.noticeAction.label}</button>
+    {/if}
   {/if}
   <span class="spacer"></span>
   <button class="bare wide-only" title="Command palette" aria-label="Open command palette" onclick={() => (app.palette = 'commands')}>

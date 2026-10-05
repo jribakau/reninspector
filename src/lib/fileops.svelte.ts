@@ -135,7 +135,7 @@ export async function renameEntry(from: string, to: string, isDir: boolean): Pro
     reopen = await applyTabs(plans)
     await afterTreeChange(`Renamed ${from}.`)
   })
-  if (!err && reopen) goTo(reopen, line)
+  if (!err && reopen) goTo(reopen, line, line, { open: true })
   return err
 }
 
@@ -152,7 +152,7 @@ export async function moveEntries(paths: string[], destDir: string): Promise<str
     reopen = await applyTabs(plans)
     await afterTreeChange(paths.length === 1 ? `Moved ${paths[0]}.` : `Moved ${paths.length} items.`)
   })
-  if (!err && reopen) goTo(reopen, line)
+  if (!err && reopen) goTo(reopen, line, line, { open: true })
   return err
 }
 

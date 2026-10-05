@@ -1,9 +1,9 @@
 import { confirm as confirmDialog } from '@tauri-apps/plugin-dialog'
 import { api, errorText, readFileText } from './api'
 import { ask, askText } from './dialog.svelte'
-import { app } from './model.svelte'
+import { app, editorTabId } from './model.svelte'
 import { createEntry, deleteEntry, gameTreePath, renameEntry } from './fileops.svelte'
-import { goTo } from './nav.svelte'
+import { goTo, promoteTab } from './nav.svelte'
 import { pullEditStatus, reloadAll } from './reload.svelte'
 import { stageScriptsReloaded } from './stage.svelte'
 import type { EditImpact } from './types'
@@ -64,7 +64,12 @@ export async function confirmDiscard(): Promise<boolean> {
 export function setDirty(file: string, dirty: boolean) {
   const has = app.dirtyFiles.includes(file)
   if (dirty && !has) app.dirtyFiles = [...app.dirtyFiles, file]
-  else if (!dirty && has) app.dirtyFiles = app.dirtyFiles.filter((f) => f !== file)
+  else if (!dirty && has) {
+    app.dirtyFiles = app.dirtyFiles.filter((f) => f !== file)
+    // Saving or reverting ends the edit, so follow stops waiting on it.
+    app.followHold = false
+  }
+  if (dirty) promoteTab(editorTabId({ kind: 'file', path: file }))
 }
 
 export function reloadEditor(path: string) {
@@ -190,7 +195,7 @@ export async function createScript() {
   app.error = ''
   const err = await createEntry(gameTreePath(name), false)
   if (err) app.error = err
-  else goTo(name, 1)
+  else goTo(name, 1, 1, { open: true })
 }
 
 export async function renameScript(path: string) {

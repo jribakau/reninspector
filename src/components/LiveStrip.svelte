@@ -2,7 +2,7 @@
   import { onMount } from 'svelte'
   import { readAsset } from '../lib/api'
   import { copyText, openContextMenu, placeItems } from '../lib/context.svelte'
-  import { app, goTo, searchDialogue, symbolsOf } from '../lib/store.svelte'
+  import { app, followPaused, goTo, resumeFollow, searchDialogue, symbolsOf } from '../lib/store.svelte'
 
   const PICTURE = /\.(png|jpe?g|webp|gif)$/i
 
@@ -13,6 +13,8 @@
   const urls = new Map<string, { path: string; url: string }>()
   let generation = 0
   let alive = true
+
+  const paused = $derived(followPaused())
 
   const waiting = $derived(
     app.live.running && !app.live.file && !app.live.line && !app.live.speaker && app.live.showing.length === 0,
@@ -111,6 +113,15 @@
     {#if app.live.file}
       <button class="tag" title="Go to the live line" onclick={() => app.live.file && goTo(app.live.file, app.live.line)}>
         {app.live.file.split('/').pop()}:{app.live.line}
+      </button>
+    {/if}
+    {#if paused}
+      <button
+        class="tag"
+        title="Follow waits while you type, or while this file has unsaved edits. It resumes when you save or go somewhere. Click to catch up to the game now."
+        onclick={resumeFollow}
+      >
+        Follow paused
       </button>
     {/if}
     {#if stale}<span class="warn">No update</span>{/if}

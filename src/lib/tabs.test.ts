@@ -1,5 +1,17 @@
 import { describe, expect, it } from 'vitest'
-import { bulkTargets, moveTab, pinTab, restorePins, settle, unpinTab } from './tabs'
+import {
+  bulkTargets,
+  leastRecent,
+  mostRecent,
+  moveTab,
+  pinTab,
+  placePreview,
+  previewRoom,
+  restorePins,
+  settle,
+  touchMru,
+  unpinTab,
+} from './tabs'
 
 const ids = ['a', 'b', 'c', 'd', 'e']
 
@@ -50,6 +62,63 @@ describe('moving tabs', () => {
 
   it('ignores unknown ids', () => {
     expect(moveTab(ids, [], 'zz', 1).ids).toEqual(ids)
+  })
+})
+
+describe('preview slot', () => {
+  const ids = ['a', 'b', 'c']
+
+  it('replaces the preview in place', () => {
+    expect(placePreview(ids, [], 'b', 'd')).toEqual({ ids: ['a', 'd', 'c'], preview: 'd' })
+  })
+
+  it('appends when there is no preview', () => {
+    expect(placePreview(ids, [], null, 'd')).toEqual({ ids: ['a', 'b', 'c', 'd'], preview: 'd' })
+  })
+
+  it('leaves a tab that is already open for real', () => {
+    expect(placePreview(ids, [], 'c', 'a')).toEqual({ ids, preview: 'c' })
+  })
+
+  it('keeps the same preview when peeked again', () => {
+    expect(placePreview(ids, [], 'b', 'b')).toEqual({ ids, preview: 'b' })
+  })
+
+  it('does not replace a pinned or locked preview', () => {
+    expect(placePreview(ids, ['b'], 'b', 'd')).toEqual({ ids: ['a', 'b', 'c', 'd'], preview: 'd' })
+    expect(placePreview(ids, [], 'b', 'd', ['b'])).toEqual({ ids: ['a', 'b', 'c', 'd'], preview: 'd' })
+  })
+
+  it('drops the preview flag when that tab is pinned or locked', () => {
+    expect(placePreview(ids, ['b'], 'b', 'b')).toEqual({ ids, preview: null })
+    expect(placePreview(ids, [], 'b', 'b', ['b'])).toEqual({ ids, preview: null })
+  })
+
+  it('reports whether a peek fits', () => {
+    expect(previewRoom(ids, [], 'b', 'a', [], 3)).toBe('have')
+    expect(previewRoom(ids, [], 'b', 'd', [], 3)).toBe('replace')
+    expect(previewRoom(ids, [], null, 'd', [], 4)).toBe('append')
+    expect(previewRoom(ids, [], null, 'd', [], 3)).toBe('full')
+    expect(previewRoom(ids, ['b'], 'b', 'd', [], 3)).toBe('full')
+    expect(previewRoom(ids, [], 'b', 'd', ['b'], 3)).toBe('full')
+  })
+})
+
+describe('recency', () => {
+  it('moves the used tab to the front and drops closed ones', () => {
+    expect(touchMru(['a', 'b', 'c'], ['b', 'c', 'd'], 'c')).toEqual(['c', 'b', 'd'])
+  })
+
+  it('treats a tab it has never seen as the oldest', () => {
+    expect(leastRecent(['c', 'b'], ['a', 'b', 'c'])).toBe('a')
+    expect(leastRecent(['c', 'b', 'a'], ['a', 'b'])).toBe('a')
+    expect(leastRecent([], [])).toBeNull()
+  })
+
+  it('picks the newest open tab, skipping one', () => {
+    expect(mostRecent(['c', 'b', 'a'], ['a', 'b'], 'c')).toBe('b')
+    expect(mostRecent([], ['a', 'b'], 'a')).toBe('b')
+    expect(mostRecent(['a'], ['a'], 'a')).toBeNull()
   })
 })
 

@@ -38,12 +38,39 @@ export function applyLive(s: LiveState) {
   }
   if (s.note && (s.running || was)) app.notice = s.note
   if (!s.running || !app.followGame || !s.file || s.line < 1 || !hasFile(s.file)) return
-  if (app.loc?.file !== s.file || app.loc.line !== s.line) {
-    const onFile = !app.activeEditor || app.activeEditor.startsWith('file:')
-    goTo(s.file, s.line, s.line, { activate: onFile, flow: false })
-  }
   const node = labelAt(s.file, s.line)
+  const onFile = !app.activeEditor || app.activeEditor.startsWith('file:')
+  // A flow, map, or diff tab stays where the user put it. Markers still update above.
+  if (!onFile) {
+    if (node && node.id !== app.selectedLabel) app.selectedLabel = node.id
+    return
+  }
+  if (followPaused()) return
+  if (app.loc?.file !== s.file || app.loc.line !== s.line) {
+    const seq = app.loc?.seq
+    goTo(s.file, s.line, s.line, { flow: false, history: false, evict: false })
+    if (app.loc?.seq === seq) return
+  }
   if (node && node.id !== app.selectedLabel) app.selectedLabel = node.id
+}
+
+/** Lets follow move the editor again after typing paused it, and catches up to the game's line. */
+export function resumeFollow() {
+  app.followHold = false
+  const s = app.live
+  if (s.running && s.file && s.line > 0) applyLive(s)
+}
+
+/** Follow is waiting: the user is typing, or the file they are in has unsaved edits. */
+export function followPaused(): boolean {
+  if (!app.followGame || !app.live.running) return false
+  if (app.followHold) return true
+  const active = app.activeEditor
+  if (active?.startsWith('file:')) {
+    const path = active.slice('file:'.length)
+    if (app.dirtyFiles.includes(path)) return true
+  }
+  return false
 }
 
 export async function runGame() {

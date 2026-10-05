@@ -14,12 +14,12 @@
   import LiveStrip from '../components/LiveStrip.svelte'
   import ProjectMap from '../components/ProjectMap.svelte'
   import Sidebar from '../components/Sidebar.svelte'
-  import { onDestroy } from 'svelte'
+  import { onDestroy, untrack } from 'svelte'
   import { openContextMenu, openMenuBelow, tabBarItems, tabItems, tabListItems } from '../lib/context.svelte'
   import { tabTitle } from '../lib/tabs'
   import { bindStage } from '../lib/stage.svelte'
   import { storedSize } from '../lib/pane'
-  import { layout } from '../lib/settings.svelte'
+  import { layout, settings } from '../lib/settings.svelte'
   import { previewKind } from '../lib/preview'
   import {
     activateEditor,
@@ -39,6 +39,7 @@
     openActivity,
     openLabelGraph,
     openMapTab,
+    promoteTab,
     renameSymbol,
     isPinned,
     moveEditor,
@@ -127,6 +128,13 @@
       },
     }
   }
+
+  $effect(() => {
+    const on = settings.previewTabs
+    const preview = app.previewTab
+    // Only these two are tracked. Saving the session reads far more state.
+    if (!on && preview) untrack(() => promoteTab(preview))
+  })
 
   $effect(() => {
     void app.activeEditor
@@ -371,6 +379,7 @@
               class:on={app.activeEditor === id}
               class:live={tabLive(t)}
               class:pinned
+              class:preview={app.previewTab === id}
               class:dragging={drag?.id === id}
               onpointerdown={(e) => beginTabDrag(e, id)}
               oncontextmenu={(e) => openContextMenu(e, tabItems(t))}
@@ -382,8 +391,15 @@
                 role="tab"
                 aria-selected={app.activeEditor === id}
                 onclick={() => activateEditor(id)}
+                ondblclick={() => promoteTab(id)}
                 onkeydown={(e) => onTabKey(e, id)}
-                title={pinned ? `Pinned: ${tabTitle(t)}` : t.kind === 'file' ? `${t.path}${dirty ? ' (unsaved)' : ''}` : tabTitle(t)}
+                title={pinned
+                  ? `Pinned: ${tabTitle(t)}`
+                  : app.previewTab === id
+                    ? `Preview: ${tabTitle(t)}. Double-click to keep it open.`
+                    : t.kind === 'file'
+                      ? `${t.path}${dirty ? ' (unsaved)' : ''}`
+                      : tabTitle(t)}
               >
                 <span class="ti"><Icon name={tabIcon(t)} size={14} /></span>
                 {#if !pinned}<span class="tt">{tabTitle(t)}</span>{/if}
@@ -790,6 +806,9 @@
   }
   .tab.pinned .tl {
     padding: 0 2px 0 10px;
+  }
+  .tab.preview .tt {
+    font-style: italic;
   }
   .tab.pinned .x:not(.dirty) .glyph {
     opacity: 0.65;

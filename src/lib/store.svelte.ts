@@ -19,6 +19,7 @@ export {
   isPinned,
   moveEditor,
   pinEditor,
+  promoteTab,
   unpinEditor,
   cycleTabs,
   cursorMoved,
@@ -73,10 +74,12 @@ export {
 } from './edit.svelte'
 
 export {
+  followPaused,
   jumpGameHere,
   jumpLiveLabel,
   playFromCursor,
   reloadLive,
+  resumeFollow,
   replayToCursor,
   runGame,
   setWatchVars,

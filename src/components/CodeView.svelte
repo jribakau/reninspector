@@ -31,7 +31,7 @@
   import { renpyComplete } from '../lib/editor/complete'
   import { onDictionaryChange, setSpelling, spellSupport } from '../lib/editor/spell'
   import { git } from '../lib/git.svelte'
-  import { fileInfo, lookupSymbol, nodeByName, openDiff, registerBufferSave, registerEditor, registerSave, type Loc } from '../lib/store.svelte'
+  import { app, fileInfo, lookupSymbol, nodeByName, openDiff, registerBufferSave, registerEditor, registerSave, type Loc } from '../lib/store.svelte'
   import type { Diagnostic, Severity, Symbol } from '../lib/types'
 
   interface Props {
@@ -658,6 +658,9 @@
           if (u.docChanged) {
             buffers.set(loadedFile, u.state)
             markDirty(loadedFile, u.state.doc)
+            if (u.transactions.some((tr) => tr.isUserEvent('input') || tr.isUserEvent('delete') || tr.isUserEvent('undo') || tr.isUserEvent('redo'))) {
+              app.followHold = true
+            }
             scheduleSyntax()
             scheduleSpell()
           }

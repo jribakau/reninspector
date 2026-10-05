@@ -1,7 +1,11 @@
 /**
- * Pure tab-strip rules: pinned ordering and which tabs a bulk close drops.
- * Tabs are plain ids here, so none of this needs the app state.
+ * Pure tab-strip rules: pinned ordering, the single preview slot, recency,
+ * and which tabs a bulk close drops. Tabs are plain ids here, so none of this
+ * needs the app state.
  */
+
+/** How a peek can land without closing a tab the user asked to keep. */
+export type PreviewRoom = 'have' | 'replace' | 'append' | 'full'
 
 import type { EditorTab } from './model.svelte'
 
@@ -74,6 +78,112 @@ export function moveTab(ids: string[], pinned: readonly string[], id: string, sl
   const pins = block.filter((x) => x !== id)
   if (pin) pins.push(id)
   return settle(next, pins)
+}
+
+/**
+ * Where a peek of `newId` would land.
+ * `have` — that tab is already open, so the strip stays put.
+ * `replace` — it takes the current preview's place.
+ * `append` — there is room for a new preview.
+ * `full` — a new preview would have to close some other tab.
+ * Pinned and locked tabs are never the preview.
+ */
+export function previewRoom(
+  ids: readonly string[],
+  pinned: readonly string[],
+  previewId: string | null,
+  newId: string,
+  locked: readonly string[],
+  max: number,
+): PreviewRoom {
+  if (ids.includes(newId)) return 'have'
+  if (canReplacePreview(ids, pinned, previewId, locked)) return 'replace'
+  if (ids.length < max) return 'append'
+  return 'full'
+}
+
+function canReplacePreview(
+  ids: readonly string[],
+  pinned: readonly string[],
+  previewId: string | null,
+  locked: readonly string[],
+): boolean {
+  if (!previewId || !ids.includes(previewId)) return false
+  const pins = new Set(pinned)
+  const lock = new Set(locked)
+  return !pins.has(previewId) && !lock.has(previewId)
+}
+
+/**
+ * Puts `newId` in the preview slot. An existing preview is replaced in place.
+ * A tab that is already open for real is left alone, and so is its preview.
+ * Pinned and locked tabs are never the preview: a locked preview is kept and
+ * the new tab is appended instead.
+ */
+export function placePreview(
+  ids: readonly string[],
+  pinned: readonly string[],
+  previewId: string | null,
+  newId: string,
+  locked: readonly string[] = [],
+): { ids: string[]; preview: string | null } {
+  const pins = new Set(pinned)
+  const lock = new Set(locked)
+  if (ids.includes(newId) && newId !== previewId) {
+    const preview = canReplacePreview(ids, pinned, previewId, locked) ? previewId : null
+    return { ids: [...ids], preview }
+  }
+  if (ids.includes(newId)) {
+    if (pins.has(newId) || lock.has(newId)) return { ids: [...ids], preview: null }
+    return { ids: [...ids], preview: newId }
+  }
+  if (canReplacePreview(ids, pinned, previewId, locked)) {
+    return { ids: ids.map((id) => (id === previewId ? newId : id)), preview: newId }
+  }
+  return { ids: [...ids, newId], preview: newId }
+}
+
+/**
+ * Moves `id` to the front. Ids that are no longer open are dropped.
+ * Open tabs the list has never seen stay at the end, so they count as oldest.
+ */
+export function touchMru(mru: readonly string[], open: readonly string[], id: string): string[] {
+  const have = new Set(open)
+  const next: string[] = []
+  if (have.has(id)) next.push(id)
+  for (const x of mru) {
+    if (x !== id && have.has(x) && !next.includes(x)) next.push(x)
+  }
+  for (const x of open) {
+    if (!next.includes(x)) next.push(x)
+  }
+  return next
+}
+
+/** The least recently used candidate. Tabs missing from `mru` are older than the ones it lists. */
+export function leastRecent(mru: readonly string[], candidates: readonly string[]): string | null {
+  if (!candidates.length) return null
+  const want = new Set(candidates)
+  const ranked = new Set(mru)
+  for (const id of candidates) {
+    if (!ranked.has(id)) return id
+  }
+  for (let i = mru.length - 1; i >= 0; i--) {
+    if (want.has(mru[i])) return mru[i]
+  }
+  return null
+}
+
+/** The most recently used open tab, skipping `skip` when it is still open. */
+export function mostRecent(mru: readonly string[], open: readonly string[], skip: string | null = null): string | null {
+  const have = new Set(open)
+  for (const id of mru) {
+    if (id !== skip && have.has(id)) return id
+  }
+  for (const id of open) {
+    if (id !== skip) return id
+  }
+  return null
 }
 
 /** The ids a bulk close would drop. Pinned tabs are never dropped, and neither is the anchor. */

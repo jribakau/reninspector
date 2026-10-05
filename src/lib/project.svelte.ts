@@ -6,7 +6,7 @@ import { checkWithEngine, runEngineLint } from './engine.svelte'
 import { nodeByName, setDiag, setInfo, setMap } from './indexes.svelte'
 import { applyLive, loadWatch, playFromCursor, runGame } from './live.svelte'
 import { app, emptyLive } from './model.svelte'
-import { openBottom, openLabelGraph, restoreSession, selectLabel } from './nav.svelte'
+import { openBottom, openLabelGraph, resetEditorMemory, restoreSession, selectLabel } from './nav.svelte'
 import { pullCatalog, pullEditStatus, refresh } from './reload.svelte'
 import { installVersion, loadCatalog, noteProgress, refreshSdks, resolveEngine, sdk } from './sdk.svelte'
 import { startAutosave } from './autosave.svelte'
@@ -92,7 +92,7 @@ export async function bootstrap() {
   if (initial) {
     await openProject(initial)
     const label = await api.initialLabel().catch(() => null)
-    if (label) openLabelGraph(label)
+    if (label) openLabelGraph(label, { open: true })
     const actions = await api.initialActions().catch(() => [] as string[])
     for (const action of actions) {
       if (action === 'engine') await checkWithEngine()
@@ -127,6 +127,7 @@ export async function openProject(path: string) {
     app.editorTabs = []
     app.pinnedTabs = []
     app.activeEditor = null
+    resetEditorMemory()
     app.flowOpen = false
     app.flowDetail = false
     app.sceneExpanded = false

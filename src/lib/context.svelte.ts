@@ -255,7 +255,7 @@ export function tabItems(tab: EditorTab): MenuEntry[] {
         label: 'Open Flow',
         enabled: !!flow,
         hint: flow ? undefined : 'This script has no label to draw.',
-        run: () => flow && openLabelGraph(flow.id),
+        run: () => flow && openLabelGraph(flow.id, { open: true }),
       },
       { kind: 'item', label: 'Open File History', run: () => openFileHistory(path) },
       { kind: 'sep' },
@@ -275,7 +275,7 @@ export function tabItems(tab: EditorTab): MenuEntry[] {
     const file = node ? fileOfNode(node) : null
     const canSource = !!file && !!node && node.kind !== 'missing' && node.kind !== 'compiled'
     items.push(
-      { kind: 'item', label: 'Open Source', enabled: canSource, hint: canSource ? undefined : 'No script defines this label.', run: () => selectLabel(tab.name) },
+      { kind: 'item', label: 'Open Source', enabled: canSource, hint: canSource ? undefined : 'No script defines this label.', run: () => selectLabel(tab.name, { open: true }) },
       { kind: 'item', label: 'Find References', run: () => showReferences(tab.name.startsWith('screen:') ? 'screen' : 'label', tab.name.startsWith('screen:') ? tab.name.slice(7) : tab.name) },
       { kind: 'sep' },
       { kind: 'item', label: 'Copy Name', run: () => copyText(tab.name.startsWith('screen:') ? tab.name.slice(7) : tab.name) },
@@ -289,7 +289,7 @@ export function tabItems(tab: EditorTab): MenuEntry[] {
   } else if (tab.kind === 'diff') {
     const script = scriptOfDiff(tab.path)
     items.push(
-      { kind: 'item', label: 'Open File', enabled: !!script, hint: script ? undefined : 'This file is not a script in the project.', run: () => script && goTo(script, 1, 1, { flow: true }) },
+      { kind: 'item', label: 'Open File', enabled: !!script, hint: script ? undefined : 'This file is not a script in the project.', run: () => script && goTo(script, 1, 1, { flow: true, open: true }) },
       { kind: 'item', label: 'Open File History', enabled: !!script, run: () => script && openFileHistory(script) },
       { kind: 'sep' },
       { kind: 'item', label: 'Copy Path', run: () => copyText(absolutePath(tab.path)) },
@@ -308,8 +308,8 @@ export function labelItems(id: string): MenuEntry[] {
   const canFlow = canSource && node?.kind !== 'screen'
   const warpOff = app.live.running && !app.live.canWarp
   const items: MenuEntry[] = [
-    { kind: 'item', label: 'Open source', enabled: canSource, run: () => selectLabel(id) },
-    { kind: 'item', label: 'Open flow', enabled: canFlow, run: () => openLabelGraph(id) },
+    { kind: 'item', label: 'Open source', enabled: canSource, run: () => selectLabel(id, { open: true }) },
+    { kind: 'item', label: 'Open flow', enabled: canFlow, run: () => openLabelGraph(id, { open: true }) },
   ]
   if (canSource && node && file && node.kind !== 'screen') {
     items.push(
@@ -331,7 +331,7 @@ export function labelItems(id: string): MenuEntry[] {
 
 export function scriptFileItems(path: string): MenuEntry[] {
   return [
-    { kind: 'item', label: 'Open', run: () => goTo(path, 1, 1, { flow: true }) },
+    { kind: 'item', label: 'Open', run: () => goTo(path, 1, 1, { flow: true, open: true }) },
     { kind: 'item', label: 'Open file history', run: () => openFileHistory(path) },
     { kind: 'item', label: 'Copy path', run: () => copyText(path) },
     { kind: 'item', label: 'Reveal in explorer', run: () => revealInExplorer(path) },
@@ -379,7 +379,7 @@ export function flowNodeItems(file: string | null, n: GNode, actions?: FlowActio
       label: 'Open in code',
       run: () => {
         showCode()
-        goTo(file, n.line, n.endLine)
+        goTo(file, n.line, n.endLine, { open: true })
       },
     })
     const warpOff = app.live.running && !app.live.canWarp
@@ -396,7 +396,7 @@ export function flowNodeItems(file: string | null, n: GNode, actions?: FlowActio
       kind: 'item',
       label: 'Open target',
       enabled: !!known && known.kind !== 'missing',
-      run: () => openLabelGraph(target),
+      run: () => openLabelGraph(target, { open: true }),
     })
   }
   items.push({ kind: 'item', label: 'Copy', run: () => copyText(n.title || n.target || n.kind) })
@@ -413,7 +413,7 @@ export function sceneLineItems(file: string, line: ScriptLine): MenuEntry[] {
       run: () => {
         showCode()
         app.cursor = { file, line: line.line }
-        goTo(file, line.line, line.endLine)
+        goTo(file, line.line, line.endLine, { open: true })
       },
     },
     { kind: 'item', label: 'Copy line', run: () => copyText(text) },
@@ -430,7 +430,7 @@ export function sceneLineItems(file: string, line: ScriptLine): MenuEntry[] {
 
 export function placeItems(path: string, line: number, text: string): MenuEntry[] {
   return [
-    { kind: 'item', label: 'Open', enabled: !!path, run: () => path && goTo(path, line) },
+    { kind: 'item', label: 'Open', enabled: !!path, run: () => path && goTo(path, line, line, { open: true }) },
     { kind: 'item', label: 'Copy', enabled: !!text.trim(), run: () => copyText(text) },
     { kind: 'item', label: 'Reveal in explorer', enabled: !!path, run: () => path && revealInExplorer(path) },
   ]

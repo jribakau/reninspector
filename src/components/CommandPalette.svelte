@@ -157,7 +157,7 @@
     const item = items[index]
     if (!item || !item.enabled) return
     const mode = app.palette
-    if (mode === 'files') goTo(item.id, 1, 1, { flow: true })
+    if (mode === 'files') goTo(item.id, 1, 1, { flow: true, open: true })
     else item.run()
     if (app.palette === mode) close()
   }

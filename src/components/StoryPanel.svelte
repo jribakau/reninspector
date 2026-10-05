@@ -60,7 +60,7 @@
             app.selectedLabel = n.id
             openContextMenu(e, labelItems(n.id))
           }}
-          title="Click: show source · Double-click: open flow tab"
+          title="Click: preview source · Double-click: preview flow"
         >
           <span class="sb-name">
             {n.kind === 'screen' ? n.id.slice(7) : n.id}

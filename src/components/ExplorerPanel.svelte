@@ -233,26 +233,26 @@
     return index >= 0 ? index : null
   })
 
-  function openInEditor(path: string, flow: boolean) {
-    goTo(path, 1, 1, { flow })
+  function openInEditor(path: string, flow: boolean, open = false) {
+    goTo(path, 1, 1, { flow, open })
     showCode()
   }
 
-  function openEntry(entry: DirEntry) {
+  function openEntry(entry: DirEntry, open = false) {
     const rel = inGame(entry.path)
     const ext = extOf(entry.name)
     if (rel && (ext === 'rpy' || ext === 'rpym')) {
-      openInEditor(rel, true)
+      openInEditor(rel, true, open)
       return
     }
     if (rel && ext === 'rpyc') {
       const rpy = rel.replace(/\.rpyc$/i, '.rpy')
       if (fileInfo(rpy)) {
-        openInEditor(rpy, true)
+        openInEditor(rpy, true, open)
         return
       }
     }
-    if (previewKind(entry.name)) openInEditor(entry.path, false)
+    if (previewKind(entry.name)) openInEditor(entry.path, false, open)
   }
 
   /** Why this entry cannot be renamed, moved or deleted, or null when it can. */
@@ -322,7 +322,7 @@
         }
         edit = null
         expandTo(path, cur.dir)
-        if (!cur.dir) openEntry({ path, name: baseName(path), dir: false })
+        if (!cur.dir) openEntry({ path, name: baseName(path), dir: false }, true)
       } else {
         const to = joinPath(parentOf(cur.path), name)
         const err = await renameEntry(cur.path, to, cur.dir)
@@ -409,7 +409,7 @@
     ]
     if (!entry.dir) {
       if (rel && (ext === 'rpy' || ext === 'rpym')) {
-        items.push({ kind: 'item', label: 'Open', run: () => openEntry(entry) })
+        items.push({ kind: 'item', label: 'Open', run: () => openEntry(entry, true) })
         items.push({ kind: 'item', label: 'Open file history', run: () => openFileHistory(rel) })
       } else if (rel && ext === 'rpyc') {
         const rpy = rel.replace(/\.rpyc$/i, '.rpy')
@@ -418,10 +418,10 @@
           label: 'Open script',
           enabled: !!fileInfo(rpy),
           hint: fileInfo(rpy) ? undefined : 'No decompiled script is available.',
-          run: () => openEntry(entry),
+          run: () => openEntry(entry, true),
         })
       } else if (previewKind(entry.name)) {
-        items.push({ kind: 'item', label: 'Open', run: () => openEntry(entry) })
+        items.push({ kind: 'item', label: 'Open', run: () => openEntry(entry, true) })
       }
       items.push({ kind: 'sep' })
     }
@@ -651,13 +651,17 @@
                 aria-level={item.depth + 1}
                 aria-selected={isActive}
                 tabindex="-1"
-                title={entry.path}
+                title={`${entry.path} — click to preview, double-click to keep`}
                 onpointerdown={(e) => beginDrag(e, entry)}
                 onclick={() => {
                   pointed = entry.path
                   openEntry(entry)
                 }}
-                onkeydown={(e) => { if (e.key === 'Enter') openEntry(entry) }}
+                ondblclick={() => {
+                  pointed = entry.path
+                  openEntry(entry, true)
+                }}
+                onkeydown={(e) => { if (e.key === 'Enter') openEntry(entry, true) }}
                 oncontextmenu={(e) => {
                   pointed = entry.path
                   openContextMenu(e, entryMenu(entry))

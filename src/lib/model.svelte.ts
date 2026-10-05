@@ -65,6 +65,8 @@ class AppModel {
   opening = $state<string | null>(null)
   error = $state('')
   notice = $state('')
+  /** A button beside the notice. Shown only while `text` still matches `notice`. */
+  noticeAction = $state<{ text: string; label: string; run: () => void } | null>(null)
   activity = $state<Activity>('explorer')
   sidebarOpen = $state(true)
   bottomTab = $state<BottomTab>('problems')
@@ -93,6 +95,10 @@ class AppModel {
   editorTabs = $state<EditorTab[]>([])
   /** Ids of pinned tabs. They sit at the left and survive the bulk close commands. */
   pinnedTabs = $state<string[]>([])
+  /** The one tab a peek reuses. Null when every open tab was opened on purpose. */
+  previewTab = $state<string | null>(null)
+  /** Set while the user is typing, so live follow waits until they navigate. */
+  followHold = $state(false)
   activeEditor = $state<string | null>(null)
   renpySection = $state<RenpySection>('characters')
   selectedLabel = $state<string | null>(null)
