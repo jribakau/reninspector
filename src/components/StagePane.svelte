@@ -1,7 +1,7 @@
 <script lang="ts">
   import { openContextMenu } from '../lib/context.svelte'
   import { app, goTo, revealInExplorer } from '../lib/store.svelte'
-  import { stageShowsLive, stageSummary, stageUi } from '../lib/stage.svelte'
+  import { isStageLiteral, resetStagePins, setStagePin, stageShowsLive, stageSummary, stageUi, stageVars, unlistedPins } from '../lib/stage.svelte'
   import { setSetting, settings } from '../lib/settings.svelte'
   import { ensureTrusted } from '../lib/trust.svelte'
   import type { StagePicture, StageSprite } from '../lib/types'
@@ -55,7 +55,54 @@
     failed = {}
   })
 
+  // The same relative path in another project is a different file.
+  $effect(() => {
+    void app.info?.root
+    natural = {}
+    shotAr = 0
+  })
+
   const estimate = $derived(stageUi.estimate)
+  const pinCount = $derived(Object.keys(stageVars.overrides).length)
+  const extraPins = $derived(unlistedPins(stageVars.overrides, estimate?.vars.map((v) => v.name) ?? []))
+  let condsOpen = $state(true)
+  let condErrors = $state<Record<string, string>>({})
+  /** Typed text that has not been saved yet, including a value that was rejected. */
+  let drafts = $state<Record<string, string>>({})
+
+  function fieldOf(name: string): string {
+    if (name in drafts) return drafts[name]
+    return stageVars.overrides[name] ?? ''
+  }
+
+  function commitPin(name: string, input: HTMLInputElement) {
+    const text = input.value.trim()
+    if (!text) {
+      condErrors = { ...condErrors, [name]: '' }
+      drafts = { ...drafts, [name]: '' }
+      input.value = ''
+      setStagePin(name, null)
+      return
+    }
+    if (!isStageLiteral(text)) {
+      const saved = stageVars.overrides[name] ?? ''
+      condErrors = { ...condErrors, [name]: 'Use a number, True, False, None, or a quoted string.' }
+      drafts = { ...drafts, [name]: saved }
+      input.value = saved
+      return
+    }
+    condErrors = { ...condErrors, [name]: '' }
+    const next = { ...drafts }
+    delete next[name]
+    drafts = next
+    setStagePin(name, text)
+  }
+
+  function clearPin(name: string) {
+    condErrors = { ...condErrors, [name]: '' }
+    drafts = { ...drafts, [name]: '' }
+    setStagePin(name, null)
+  }
   const live = $derived(stageShowsLive())
   const animated = $derived(!!estimate?.sprites.some((s) => s.picture.kind === 'frames'))
 
@@ -220,6 +267,12 @@
     {:else if estimate}
       <span class="mode">{stageUi.pending ? 'Updating' : 'Estimate'}</span>
       <span class="dim">{stageSummary(estimate)}</span>
+      {#if pinCount}
+        <span class="dim">{pinCount} pinned</span>
+        <button class="text" title="Clear the values pinned for this project's stage preview" onclick={resetStagePins}>
+          Reset all
+        </button>
+      {/if}
       {#if stageUi.shot && stageUi.preferEstimate}
         <button class="text" aria-pressed="true" onclick={() => (stageUi.preferEstimate = false)}>Show live</button>
       {/if}
@@ -394,6 +447,62 @@
             <li>{note}</li>
           {/each}
         </ul>
+      </details>
+    {/if}
+    {#if estimate.vars.length || extraPins.length}
+      <details class="conds" bind:open={condsOpen}>
+        <summary>Conditions</summary>
+        {#each estimate.vars as variable (variable.name)}
+          <div class="cond-row">
+            <span class="cond-name">{variable.name}</span>
+            <input
+              class="cond-value"
+              aria-label={`Preview value for ${variable.name}`}
+              placeholder={variable.origin === 'script' ? variable.value : 'unset'}
+              value={fieldOf(variable.name)}
+              title={variable.origin === 'pinned' ? 'Pinned for this project' : variable.origin === 'script' ? 'From the script' : 'Not set in the script'}
+              oninput={(e) => (drafts = { ...drafts, [variable.name]: e.currentTarget.value })}
+              onkeydown={(e) => {
+                if (e.key === 'Enter') commitPin(variable.name, e.currentTarget)
+              }}
+              onblur={(e) => commitPin(variable.name, e.currentTarget)}
+            />
+            {#if fieldOf(variable.name)}
+              <button class="text" title={`Clear ${variable.name}`} onclick={() => clearPin(variable.name)}>Clear</button>
+            {/if}
+            {#each variable.uses as use, i (`${use.file}:${use.line}:${i}`)}
+              <button
+                class="text use"
+                title={use.cond || 'Condition'}
+                onclick={() => goTo(use.file, use.line)}
+              >
+                {use.file.split('/').pop()}:{use.line}
+              </button>
+            {/each}
+            {#if variable.more}<span class="dim">+{variable.more} more</span>{/if}
+            {#if condErrors[variable.name]}<span class="cond-err">{condErrors[variable.name]}</span>{/if}
+          </div>
+        {/each}
+        {#each extraPins as name (name)}
+          <div class="cond-row">
+            <span class="cond-name">{name}</span>
+            <input
+              class="cond-value"
+              aria-label={`Preview value for ${name}`}
+              placeholder="unset"
+              value={fieldOf(name)}
+              title="Pinned for this project"
+              oninput={(e) => (drafts = { ...drafts, [name]: e.currentTarget.value })}
+              onkeydown={(e) => {
+                if (e.key === 'Enter') commitPin(name, e.currentTarget)
+              }}
+              onblur={(e) => commitPin(name, e.currentTarget)}
+            />
+            <button class="text" title={`Clear ${name}`} onclick={() => clearPin(name)}>Clear</button>
+            {#if condErrors[name]}<span class="cond-err">{condErrors[name]}</span>{/if}
+          </div>
+        {/each}
+        {#if estimate.varsMore}<span class="dim">+{estimate.varsMore} more</span>{/if}
       </details>
     {/if}
   {:else}
@@ -634,6 +743,43 @@
   }
   summary {
     cursor: pointer;
+  }
+  .conds {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .cond-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    min-height: 24px;
+  }
+  .cond-name {
+    font-family: var(--mono, ui-monospace, monospace);
+    color: var(--text);
+  }
+  .cond-value {
+    width: 8rem;
+    height: 22px;
+    padding: 0 6px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-sm);
+    background: var(--bg);
+    color: var(--text);
+    font: inherit;
+    font-size: var(--fs-md);
+  }
+  .cond-value:focus {
+    outline: 1px solid var(--accent, var(--text));
+  }
+  .use {
+    font-family: var(--mono, ui-monospace, monospace);
+  }
+  .cond-err {
+    color: var(--error);
+    font-size: var(--fs-sm);
   }
   ul {
     margin: 6px 0 0;

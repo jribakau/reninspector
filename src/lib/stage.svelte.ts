@@ -4,6 +4,87 @@ import { app } from './model.svelte'
 import { isTrusted } from './trust.svelte'
 import type { StageEstimate, StagePicture } from './types'
 
+const pinKey = (root: string) => `vnide.stagePins.${root}`
+
+/** A number, True, False, None, or a quoted string. Matches the preview's literal reader. */
+export function isStageLiteral(text: string): boolean {
+  const t = text.trim()
+  if (t === 'True' || t === 'False' || t === 'None') return true
+  if ((t.startsWith('"') && t.endsWith('"') && t.length >= 2) || (t.startsWith("'") && t.endsWith("'") && t.length >= 2)) {
+    return true
+  }
+  return /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/.test(t)
+}
+
+function readPins(root: string): Record<string, string> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(pinKey(root)) ?? '{}') as unknown
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
+    const out: Record<string, string> = {}
+    for (const [name, value] of Object.entries(raw)) {
+      if (typeof value === 'string' && isStageLiteral(value)) out[name] = value.trim()
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
+/** Values pinned for the stage preview, saved per project. */
+export const stageVars = $state({
+  root: '',
+  overrides: {} as Record<string, string>,
+})
+
+export function loadStageVars(root: string) {
+  stageVars.root = root
+  stageVars.overrides = readPins(root)
+}
+
+function persistPins() {
+  if (!stageVars.root) return
+  if (Object.keys(stageVars.overrides).length) {
+    localStorage.setItem(pinKey(stageVars.root), JSON.stringify(stageVars.overrides))
+  } else {
+    localStorage.removeItem(pinKey(stageVars.root))
+  }
+}
+
+function samePins(a: Record<string, string>, b: Record<string, string>): boolean {
+  const keys = Object.keys(a)
+  return keys.length === Object.keys(b).length && keys.every((k) => a[k] === b[k])
+}
+
+function refreshPinned() {
+  const cursor = app.cursor
+  if (cursor && app.stageOpen && !app.sceneExpanded) void refreshStage(cursor.file, cursor.line)
+}
+
+/** `raw` null clears the pin. An empty string clears it too. */
+export function setStagePin(name: string, raw: string | null) {
+  const next = { ...stageVars.overrides }
+  const text = raw?.trim() ?? ''
+  if (!text) delete next[name]
+  else next[name] = text
+  if (samePins(next, stageVars.overrides)) return
+  stageVars.overrides = next
+  persistPins()
+  refreshPinned()
+}
+
+/** Pinned names the current estimate did not list, so the strip can still clear them. */
+export function unlistedPins(overrides: Record<string, string>, listed: string[]): string[] {
+  const have = new Set(listed)
+  return Object.keys(overrides).filter((name) => !have.has(name)).sort()
+}
+
+export function resetStagePins() {
+  if (!Object.keys(stageVars.overrides).length) return
+  stageVars.overrides = {}
+  persistPins()
+  refreshPinned()
+}
+
 export const stageUi = $state({
   estimate: null as StageEstimate | null,
   error: '',
@@ -26,6 +107,8 @@ export const stageUi = $state({
 })
 
 const urls = new Map<string, string>()
+/** Project the cached blobs were read from. Paths are relative, so they collide across games. */
+let imageRoot = ''
 let generation = 0
 let shotSeq = 0
 let inflight = false
@@ -74,7 +157,36 @@ function publishImages() {
   stageUi.images = Object.fromEntries(urls)
 }
 
+function dropImages() {
+  for (const url of urls.values()) URL.revokeObjectURL(url)
+  urls.clear()
+  stageUi.images = {}
+  stageUi.failedReads = {}
+}
+
+/** Drop the previous game's stage. Call when a project opens, before the new estimate. */
+export function resetStage(root: string) {
+  imageRoot = root
+  generation += 1
+  wanted = null
+  dropImages()
+  clearLiveShot()
+  stageUi.estimate = null
+  stageUi.error = ''
+  stageUi.pending = null
+  stageUi.holdLive = false
+  stageUi.shotError = ''
+  stageUi.shotStale = false
+  stageUi.imageError = ''
+}
+
+function stageCurrent(seq: number, root: string): boolean {
+  return seq === generation && root === imageRoot
+}
+
 async function syncImages(estimate: StageEstimate, seq: number) {
+  const root = imageRoot
+  if (!stageCurrent(seq, root)) return
   const want = new Set(picturePaths(estimate))
   for (const path of [...urls.keys()]) {
     if (want.has(path)) continue
@@ -88,16 +200,16 @@ async function syncImages(estimate: StageEstimate, seq: number) {
     if (urls.has(path)) continue
     try {
       const buf = await readAsset(path)
-      if (seq !== generation) return
+      if (!stageCurrent(seq, root)) return
       const url = URL.createObjectURL(new Blob([buf]))
-      if (seq !== generation) {
+      if (!stageCurrent(seq, root)) {
         URL.revokeObjectURL(url)
         return
       }
       urls.set(path, url)
       publishImages()
     } catch (e) {
-      if (seq !== generation) return
+      if (!stageCurrent(seq, root)) return
       stageUi.failedReads = { ...stageUi.failedReads, [path]: errorText(e) }
     }
   }
@@ -116,16 +228,17 @@ async function pumpStage() {
       const want = wanted
       wanted = null
       const seq = ++generation
+      const root = imageRoot
       stageUi.pending = want
       try {
-        const estimate = await api.stageAt(want.file, want.line)
-        if (wanted || seq !== generation) continue
+        const estimate = await api.stageAt(want.file, want.line, stageVars.overrides)
+        if (wanted || !stageCurrent(seq, root)) continue
         stageUi.estimate = estimate
         stageUi.error = ''
         stageUi.pending = null
         void syncImages(estimate, seq)
       } catch (e) {
-        if (wanted || seq !== generation) continue
+        if (wanted || !stageCurrent(seq, root)) continue
         stageUi.error = errorText(e)
         stageUi.pending = null
       }

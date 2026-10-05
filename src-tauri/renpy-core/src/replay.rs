@@ -12,9 +12,13 @@ use serde::Serialize;
 
 use crate::ast::*;
 use crate::project::{Origin, Project};
+use crate::vars::{self, NoteKind, VarState, Verdict};
 
 const MAX_CALLS: usize = 8;
 const MAX_STATES: usize = 200_000;
+/// Heavier than any path of ordinary assumptions, so a ruled-out branch is
+/// taken only when the line sits inside it.
+const FALSE_ASSUMES: u32 = 100_000;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -332,6 +336,9 @@ pub struct Prepared {
     by_file: HashMap<String, Vec<usize>>,
     /// Dijkstra frontier from `label start`. Later lines continue it.
     search: Mutex<SearchState>,
+    /// Same search, with branch costs from variable values. The key is the
+    /// value fingerprint; a new pin starts the frontier over.
+    lean_search: Mutex<(Option<u64>, SearchState)>,
 }
 
 pub fn prepare(project: &Project) -> Prepared {
@@ -347,6 +354,7 @@ pub fn prepare(project: &Project) -> Prepared {
         graph,
         by_file,
         search: Mutex::new(SearchState::new()),
+        lean_search: Mutex::new((None, SearchState::new())),
     }
 }
 
@@ -388,12 +396,25 @@ struct Key {
     stack: [u32; MAX_CALLS],
 }
 
+/// Why an `if` branch was recorded on the path.
+#[derive(Clone, Copy)]
+enum AssumeKind {
+    /// No variable values were supplied. The old wording.
+    Plain,
+    /// The condition could not be decided, and this is the default branch.
+    Default,
+    /// The condition could not be decided, but the line is inside this branch.
+    Undecided,
+    /// The values rule the branch out, but the line is inside it.
+    Denied,
+}
+
 /// How the walk arrived. The menu caption and the assumption text are built
 /// only for the winning path, from the graph.
 #[derive(Clone, Copy)]
 enum Step {
     Menu { index: u32 },
-    Assume { branch: u16 },
+    Assume { branch: u16, kind: AssumeKind },
 }
 
 struct Walk {
@@ -456,6 +477,30 @@ impl Ord for Item {
     }
 }
 
+fn assumption_text(
+    file: &str,
+    branches: &[BranchEdge],
+    index: usize,
+    edge: &BranchEdge,
+    kind: AssumeKind,
+    vars: Option<&VarState>,
+    inside: bool,
+) -> String {
+    let Some(vars) = vars else {
+        return assume_text(file, edge);
+    };
+    let note = match kind {
+        AssumeKind::Plain => return assume_text(file, edge),
+        // The caret is already in this branch, so it was not chosen as a default.
+        AssumeKind::Default if inside => NoteKind::Undecided,
+        AssumeKind::Default => NoteKind::Default,
+        AssumeKind::Undecided => NoteKind::Undecided,
+        AssumeKind::Denied => NoteKind::Denied,
+    };
+    let earlier: Vec<String> = branches[..index].iter().map(|b| b.cond.clone()).collect();
+    vars::condition_note(file, edge.line, edge.how, &edge.cond, &earlier, note, vars)
+}
+
 fn assume_text(file: &str, edge: &BranchEdge) -> String {
     match edge.how {
         "else" => format!("{file}:{} assumes the else branch", edge.line),
@@ -512,10 +557,16 @@ fn seed(state: &mut SearchState, nodes: usize, start: u32) {
     };
 }
 
-fn search(state: &mut SearchState, graph: &Graph, start: u32, target: u32) -> Result<Found, bool> {
+fn search(
+    state: &mut SearchState,
+    graph: &Graph,
+    start: u32,
+    target: u32,
+    vars: Option<&VarState>,
+) -> Result<Found, bool> {
     seed(state, graph.nodes.len(), start);
     if let Some(idx) = state.settled.get(target as usize).and_then(|slot| *slot) {
-        return Ok(rebuild(graph, &state.walks, idx));
+        return Ok(rebuild(graph, &state.walks, idx, vars));
     }
     let limit = state.walks.len().saturating_add(MAX_STATES);
     while let Some(item) = state.heap.pop() {
@@ -541,7 +592,9 @@ fn search(state: &mut SearchState, graph: &Graph, start: u32, target: u32) -> Re
         }
         let index = item.index;
         let expanded = if state.walks.len() < limit {
-            expand(state, graph, node_id, depth, stack, item.cost, index, limit)
+            expand(
+                state, graph, node_id, depth, stack, item.cost, index, limit, vars,
+            )
         } else {
             false
         };
@@ -549,7 +602,7 @@ fn search(state: &mut SearchState, graph: &Graph, start: u32, target: u32) -> Re
             state.heap.push(item);
         }
         if node_id == target {
-            return Ok(rebuild(graph, &state.walks, index));
+            return Ok(rebuild(graph, &state.walks, index, vars));
         }
         if !expanded {
             break;
@@ -586,6 +639,7 @@ fn expand(
     cost: Cost,
     prev: u32,
     limit: usize,
+    vars: Option<&VarState>,
 ) -> bool {
     let tag = match &graph.nodes[node_id as usize].kind {
         NKind::Next { .. } => 0u8,
@@ -640,23 +694,71 @@ fn expand(
             true
         }
         2 => {
-            let n = match &graph.nodes[node_id as usize].kind {
-                NKind::If { branches } => branches.len(),
-                _ => 0,
+            let views: Vec<(String, &'static str, Option<u32>)> =
+                match &graph.nodes[node_id as usize].kind {
+                    NKind::If { branches } => branches
+                        .iter()
+                        .map(|b| (b.cond.clone(), b.how, b.next))
+                        .collect(),
+                    _ => Vec::new(),
+                };
+            let n = views.len();
+            // A `while` is a loop edge plus a skip edge. Pricing those like an
+            // `if` makes entering the loop cheaper than skipping it.
+            let loop_node = views
+                .iter()
+                .any(|(_, how, _)| *how == "loop" || *how == "skip");
+            let judged = if loop_node {
+                None
+            } else {
+                vars.map(|vars| {
+                let pairs: Vec<(&str, &str)> = views
+                    .iter()
+                    .map(|(cond, how, _)| (*how, cond.as_str()))
+                    .collect();
+                vars::judge(&pairs, vars)
+            })
             };
+            let prefer = judged.as_ref().and_then(|v| vars::preferred(v));
             let many = n > 1;
             for i in 0..n {
-                let next = match &graph.nodes[node_id as usize].kind {
-                    NKind::If { branches } => branches[i].next,
-                    _ => None,
-                };
-                let Some(next) = next else { continue };
-                let step = if many {
-                    Some(Step::Assume { branch: i as u16 })
+                let Some(next) = views[i].2 else { continue };
+                let (assumes, step) = if let Some(verdicts) = &judged {
+                    match verdicts.get(i).copied().unwrap_or(Verdict::Unknown) {
+                        Verdict::True => (0, None),
+                        Verdict::Unknown if Some(i) == prefer => (
+                            1,
+                            Some(Step::Assume {
+                                branch: i as u16,
+                                kind: AssumeKind::Default,
+                            }),
+                        ),
+                        Verdict::Unknown => (
+                            2,
+                            Some(Step::Assume {
+                                branch: i as u16,
+                                kind: AssumeKind::Undecided,
+                            }),
+                        ),
+                        Verdict::False => (
+                            FALSE_ASSUMES,
+                            Some(Step::Assume {
+                                branch: i as u16,
+                                kind: AssumeKind::Denied,
+                            }),
+                        ),
+                    }
+                } else if many {
+                    (
+                        1,
+                        Some(Step::Assume {
+                            branch: i as u16,
+                            kind: AssumeKind::Plain,
+                        }),
+                    )
                 } else {
-                    None
+                    (0, None)
                 };
-                let assumes = if many { 1 } else { 0 };
                 if !push_state(
                     state,
                     next,
@@ -786,7 +888,7 @@ fn push_state(
     true
 }
 
-fn rebuild(graph: &Graph, walks: &[Walk], mut idx: u32) -> Found {
+fn rebuild(graph: &Graph, walks: &[Walk], mut idx: u32, vars: Option<&VarState>) -> Found {
     let mut decisions = Vec::new();
     let mut assumptions = Vec::new();
     let mut path = Vec::new();
@@ -811,10 +913,24 @@ fn rebuild(graph: &Graph, walks: &[Walk], mut idx: u32) -> Found {
                         }
                     }
                 }
-                Step::Assume { branch } => {
+                Step::Assume { branch, kind } => {
                     if let NKind::If { branches } = &graph.nodes[src].kind {
                         if let Some(edge) = branches.get(branch as usize) {
-                            assumptions.push(assume_text(&graph.nodes[src].file, edge));
+                            let end = graph.nodes[src].end_line;
+                            let file = &graph.nodes[src].file;
+                            let inside = path.iter().all(|&id| {
+                                let n = &graph.nodes[id as usize];
+                                &n.file == file && n.line <= end
+                            });
+                            assumptions.push(assumption_text(
+                                file,
+                                branches,
+                                branch as usize,
+                                edge,
+                                kind,
+                                vars,
+                                inside,
+                            ));
                         }
                     }
                 }
@@ -931,7 +1047,7 @@ pub fn plan(project: &Project, file: &str, line: u32) -> Result<ReplayPlan, Stri
     let located = locate(&prepared, project, file, line)?;
     let found = {
         let mut state = prepared.search.lock().unwrap_or_else(|e| e.into_inner());
-        match search(&mut state, located.graph, located.start, located.target) {
+        match search(&mut state, located.graph, located.start, located.target, None) {
             Ok(found) => found,
             Err(saw_dynamic) => return Err(unreachable(&located.file, located.line, saw_dynamic)),
         }
@@ -959,13 +1075,14 @@ pub struct StoryPath {
     pub assumptions: Vec<String>,
 }
 
-/// Walks the reused search has stored. A query for a line already settled
-/// does not add any.
+/// Walks the value-aware search has stored. A query for a line already settled
+/// does not add any. The plain search used by `plan` is separate.
 pub(crate) fn stored_walks(prepared: &Prepared) -> usize {
     prepared
-        .search
+        .lean_search
         .lock()
         .unwrap_or_else(|e| e.into_inner())
+        .1
         .walks
         .len()
 }
@@ -983,24 +1100,64 @@ pub fn path_in(
     let located = locate(prepared, project, file, line)?;
     let found = {
         let mut state = prepared.search.lock().unwrap_or_else(|e| e.into_inner());
-        match search(&mut state, located.graph, located.start, located.target) {
+        match search(&mut state, located.graph, located.start, located.target, None) {
             Ok(found) => found,
             Err(saw_dynamic) => return Err(unreachable(&located.file, located.line, saw_dynamic)),
         }
     };
+    Ok(story_of(located.graph, found))
+}
+
+/// The cheapest path when `if` branches are priced from `vars`.
+///
+/// A true branch is free. An unknown branch costs one assumption, and the first
+/// of those is preferred. A branch the values rule out costs enough that it is
+/// used only when the line is inside it. `plan` and `path_in` ignore `vars`.
+pub fn path_with(
+    prepared: &Prepared,
+    project: &Project,
+    file: &str,
+    line: u32,
+    vars: &VarState,
+) -> Result<StoryPath, String> {
+    let located = locate(prepared, project, file, line)?;
+    let key = vars.fingerprint();
+    let found = {
+        let mut guard = prepared
+            .lean_search
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if guard.0 != Some(key) {
+            *guard = (Some(key), SearchState::new());
+        }
+        match search(
+            &mut guard.1,
+            located.graph,
+            located.start,
+            located.target,
+            Some(vars),
+        ) {
+            Ok(found) => found,
+            Err(saw_dynamic) => return Err(unreachable(&located.file, located.line, saw_dynamic)),
+        }
+    };
+    Ok(story_of(located.graph, found))
+}
+
+fn story_of(graph: &Graph, found: Found) -> StoryPath {
     let steps = found
         .path
         .iter()
         .map(|id| {
-            let node = &located.graph.nodes[*id as usize];
+            let node = &graph.nodes[*id as usize];
             (node.file.clone(), node.line)
         })
         .collect();
-    Ok(StoryPath {
+    StoryPath {
         steps,
         decisions: found.decisions,
         assumptions: found.assumptions,
-    })
+    }
 }
 
 #[cfg(test)]
@@ -1112,6 +1269,50 @@ label start:
         assert!(rich.decisions.is_empty());
         let end = plan(&project, "script.rpy", 6).unwrap();
         assert_eq!(end.assumptions.len(), 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn path_with_prices_branches_and_plan_stays_the_same() {
+        use crate::vars::{Value, VarState};
+        let (root, project) = scratch(&[(
+            "script.rpy",
+            "\
+label start:
+    if time >= 6 and time < 20:
+        scene liv_day
+    else:
+        scene liv_night
+    \"hi\"
+",
+        )]);
+        let prepared = prepare(&project);
+        let plain = path_in(&prepared, &project, "script.rpy", 6).unwrap();
+        assert!(plain.assumptions.iter().any(|a| a.contains("assumes")));
+        assert!(plain.assumptions.iter().all(|a| !a.contains("could not be decided")));
+
+        let open = path_with(&prepared, &project, "script.rpy", 6, &VarState::default()).unwrap();
+        assert!(open.steps.iter().any(|(_, line)| *line == 3), "{:?}", open.steps);
+        assert!(!open.steps.iter().any(|(_, line)| *line == 5), "{:?}", open.steps);
+        assert!(open.assumptions.iter().any(|a| a.contains("could not be decided")));
+        assert!(open.assumptions.iter().any(|a| a.contains("needs `time`")));
+
+        let mut night = VarState::default();
+        night.apply("time = 22\n");
+        // The reused search is keyed by pins only. A different unpinned value needs its own.
+        let priced = prepare(&project);
+        let late = path_with(&priced, &project, "script.rpy", 6, &night).unwrap();
+        assert!(late.steps.iter().any(|(_, line)| *line == 5), "{:?}", late.steps);
+        assert!(late.assumptions.is_empty(), "{:?}", late.assumptions);
+
+        night.pin("time", Value::Int(12));
+        let pinned = path_with(&priced, &project, "script.rpy", 6, &night).unwrap();
+        assert!(pinned.steps.iter().any(|(_, line)| *line == 3), "{:?}", pinned.steps);
+        assert!(pinned.assumptions.is_empty(), "{:?}", pinned.assumptions);
+
+        let inside = path_with(&priced, &project, "script.rpy", 5, &night).unwrap();
+        assert!(inside.steps.iter().any(|(_, line)| *line == 5));
+        assert!(inside.assumptions.iter().any(|a| a.contains("needs")));
         let _ = fs::remove_dir_all(root);
     }
 

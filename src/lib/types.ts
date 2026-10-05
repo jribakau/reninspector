@@ -656,6 +656,23 @@ export interface StageGui {
   choiceYpos: number
 }
 
+export interface StageVarUse {
+  file: string
+  line: number
+  cond: string
+}
+
+export interface StageVar {
+  name: string
+  /** Literal the preview used. Empty when `origin` is `unset`. */
+  value: string
+  /** `pinned`, `script` or `unset`. */
+  origin: string
+  uses: StageVarUse[]
+  /** Uses of this name that were not listed. */
+  more: number
+}
+
 export interface StageEstimate {
   width: number
   height: number
@@ -667,4 +684,7 @@ export interface StageEstimate {
   decisions: number
   assumptions: string[]
   notes: string[]
+  vars: StageVar[]
+  /** Variables beyond `vars`. */
+  varsMore: number
 }

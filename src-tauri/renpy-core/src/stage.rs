@@ -4,20 +4,22 @@
 //! replayed for `scene`, `show` and `hide` only. When that path does not
 //! exist, only the current label is replayed up to the line.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 
 use serde::Serialize;
 
-use crate::ast::{Kind, Stmt};
+use crate::ast::{Branch, BranchKind, Kind, Stmt};
 use crate::parser::{collapse_ws, parse_say_full, QuotedPath};
 use crate::project::{Project, SourceFile};
 use crate::replay::{self, StoryPath};
-use crate::vars::VarState;
+use crate::vars::{self, NoteKind, Value, VarState};
 
 const DEFAULT_W: u32 = 1920;
 const DEFAULT_H: u32 = 1080;
 const NOTE_CAP: usize = 12;
+const VAR_CAP: usize = 24;
+const USE_CAP: usize = 5;
 
 /// One file inside a composite, at a pixel offset from the box's top left.
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -134,6 +136,28 @@ pub struct StageGui {
     pub choice_ypos: f32,
 }
 
+/// One condition that mentions a variable the preview can pin.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct StageVarUse {
+    pub file: String,
+    pub line: u32,
+    pub cond: String,
+}
+
+/// A variable that chooses a picture. `origin` is `pinned`, `script` or `unset`.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct StageVar {
+    pub name: String,
+    /// The literal the preview used, or empty when `origin` is `unset`.
+    pub value: String,
+    pub origin: String,
+    pub uses: Vec<StageVarUse>,
+    /// Uses of this name that were not listed.
+    pub more: u32,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct StageEstimate {
@@ -148,6 +172,10 @@ pub struct StageEstimate {
     pub decisions: u32,
     pub assumptions: Vec<String>,
     pub notes: Vec<String>,
+    /// Variables in conditions that show or hide a picture, plus condition switches.
+    pub vars: Vec<StageVar>,
+    /// Variables beyond `vars`, nearest the caret first having been kept.
+    pub vars_more: u32,
 }
 
 #[derive(Clone)]
@@ -299,8 +327,15 @@ struct ShowSpec {
 }
 
 /// Stage contents at `line` of `file` (`file` is relative to `game/`).
-/// Stage contents at `line` of `file` (`file` is relative to `game/`).
-pub fn estimate(project: &Project, file: &str, line: u32) -> Result<StageEstimate, String> {
+///
+/// `pins` are session literals (`"12"`, `"True"`, `'"home"'`). A pin wins over
+/// `default`, `define` and `$` lines. A value that is not a literal is ignored.
+pub fn estimate(
+    project: &Project,
+    file: &str,
+    line: u32,
+    pins: &[(String, String)],
+) -> Result<StageEstimate, String> {
     let file = file.trim().replace('\\', "/");
     let file = file.strip_prefix("game/").unwrap_or(&file).to_string();
     if line == 0 || file.is_empty() {
@@ -310,10 +345,29 @@ pub fn estimate(project: &Project, file: &str, line: u32) -> Result<StageEstimat
         return Err(format!("`{file}` is not a script of this project."));
     }
     let index = project.stage_index();
-    let mut stage = Replay::new(&index);
+    let mut vars = index.vars.clone();
+    let mut pin_notes = Vec::new();
+    for (name, raw) in pins {
+        match vars::parse_literal(raw) {
+            Some(value) => vars.pin(name, value),
+            None => pin_notes.push(format!(
+                "Could not read the pinned value `{raw}` for `{name}`."
+            )),
+        }
+    }
+    let mut stage = Replay::new(&index, vars);
+    for note in &pin_notes {
+        stage.note(note);
+    }
     let line = stage.statement_at(&file, line);
-    let (via, decisions, assumptions) = match replay::path_in(&index.prepared, project, &file, line)
-    {
+    let basis = stage.basis.clone();
+    let (via, decisions, assumptions) = match replay::path_with(
+        &index.prepared,
+        project,
+        &file,
+        line,
+        &basis,
+    ) {
         Ok(path) => {
             stage.apply_path(&path);
             ("path", path.decisions.len() as u32, path.assumptions)
@@ -337,7 +391,9 @@ pub fn estimate(project: &Project, file: &str, line: u32) -> Result<StageEstimat
     }
     let (say, choices) = stage.talk_at(&file, line);
     stage.resolve_pictures();
+    stage.record_switches();
     stage.resolve_assets(project);
+    let (vars, vars_more) = stage.stage_vars();
     Ok(StageEstimate {
         width: index.width,
         height: index.height,
@@ -349,6 +405,8 @@ pub fn estimate(project: &Project, file: &str, line: u32) -> Result<StageEstimat
         via,
         decisions,
         assumptions,
+        vars,
+        vars_more,
     })
 }
 
@@ -379,9 +437,15 @@ struct StmtRec {
 
 /// Enough of a statement to replay it without borrowing the project.
 #[derive(Clone)]
+struct IfArm {
+    cond: String,
+    line: u32,
+}
+
 enum KindKey {
     Show { cmd: &'static str, text: String },
     Python { text: String },
+    If { arms: Vec<IfArm>, visual: bool },
     Other,
 }
 
@@ -714,22 +778,37 @@ impl StageIndex {
 }
 
 /// Sprites and variable values for one caret line. The index stays shared.
+struct VarUse {
+    name: String,
+    file: String,
+    line: u32,
+    cond: String,
+}
+
 struct Replay<'a> {
     index: &'a StageIndex,
     sprites: Vec<Sprite>,
     seq: u32,
     notes: Vec<String>,
+    /// Defaults, pins and `$` lines, for pictures that interpolate a name.
     vars: VarState,
+    /// Defaults and pins only. Branch choice ignores `$` lines.
+    basis: VarState,
+    uses: Vec<VarUse>,
+    seen: HashSet<(String, String, u32)>,
 }
 
 impl<'a> Replay<'a> {
-    fn new(index: &'a StageIndex) -> Self {
+    fn new(index: &'a StageIndex, vars: VarState) -> Self {
         Self {
             index,
             sprites: Vec::new(),
             seq: 0,
             notes: Vec::new(),
-            vars: index.vars.clone(),
+            basis: vars.clone(),
+            vars,
+            uses: Vec::new(),
+            seen: HashSet::new(),
         }
     }
 
@@ -741,6 +820,129 @@ impl<'a> Replay<'a> {
             return;
         }
         self.notes.push(text.to_string());
+    }
+
+    fn note_branch(&mut self, file: &str, branches: &[Branch], idx: usize, kind: NoteKind) {
+        let Some(branch) = branches.get(idx) else {
+            return;
+        };
+        let earlier: Vec<String> = branches[..idx].iter().map(|b| b.cond.clone()).collect();
+        let text = vars::condition_note(
+            file,
+            branch.line,
+            branch_how(branch.kind),
+            &branch.cond,
+            &earlier,
+            kind,
+            &self.basis,
+        );
+        self.note(&text);
+    }
+
+    fn record_names(&mut self, file: &str, line: u32, cond: &str) {
+        if cond.is_empty() {
+            return;
+        }
+        for name in VarState::names_in(cond) {
+            if !self
+                .seen
+                .insert((name.clone(), file.to_string(), line))
+            {
+                continue;
+            }
+            self.uses.push(VarUse {
+                name,
+                file: file.to_string(),
+                line,
+                cond: cond.to_string(),
+            });
+        }
+    }
+
+    /// Condition switches on the pictures currently shown.
+    fn record_switches(&mut self) {
+        let found: Vec<(String, u32, Vec<String>)> = self
+            .sprites
+            .iter()
+            .filter_map(|sprite| {
+                let tree = sprite.tree.as_ref()?;
+                let mut conds = Vec::new();
+                switch_conds(tree, &mut conds);
+                if conds.is_empty() {
+                    return None;
+                }
+                let file = sprite
+                    .define_file
+                    .clone()
+                    .unwrap_or_else(|| sprite.shown_file.clone());
+                let line = sprite.define_line.unwrap_or(sprite.shown_line);
+                Some((file, line, conds))
+            })
+            .collect();
+        for (file, line, conds) in found {
+            for cond in conds {
+                self.record_names(&file, line, &cond);
+            }
+        }
+    }
+
+    /// Variables nearest the caret first, capped so the strip stays small.
+    fn stage_vars(&self) -> (Vec<StageVar>, u32) {
+        let mut grouped: HashMap<String, Vec<StageVarUse>> = HashMap::new();
+        let mut order = Vec::new();
+        for use_ in &self.uses {
+            if !grouped.contains_key(&use_.name) {
+                order.push(use_.name.clone());
+            }
+            grouped.entry(use_.name.clone()).or_default().push(StageVarUse {
+                file: use_.file.clone(),
+                line: use_.line,
+                cond: use_.cond.clone(),
+            });
+        }
+        let mut ranked: Vec<(u32, usize, String)> = order
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                let nearest = grouped
+                    .get(name)
+                    .and_then(|uses| uses.iter().map(|u| u.line).max())
+                    .unwrap_or(0);
+                (nearest, i, name.clone())
+            })
+            .collect();
+        ranked.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        let vars_more = ranked.len().saturating_sub(VAR_CAP) as u32;
+        ranked.truncate(VAR_CAP);
+        let vars = ranked
+            .into_iter()
+            .map(|(_, _, name)| {
+                let pinned = self.basis.is_pinned(&name);
+                let known = self
+                    .basis
+                    .get(&name)
+                    .filter(|v| !matches!(v, Value::Unknown));
+                let origin = if pinned {
+                    "pinned"
+                } else if known.is_some() {
+                    "script"
+                } else {
+                    "unset"
+                };
+                let mut uses = grouped.remove(&name).unwrap_or_default();
+                uses.sort_by(|a, b| b.line.cmp(&a.line).then(a.file.cmp(&b.file)));
+                let more = uses.len().saturating_sub(USE_CAP) as u32;
+                uses.truncate(USE_CAP);
+                StageVar {
+                    value: known.map(Value::display).unwrap_or_default(),
+                    name,
+                    origin: origin.into(),
+                    uses,
+                    more,
+                }
+            })
+            .collect();
+        (vars, vars_more)
     }
 
     /// The say window and choices the game shows while it waits at `line`.
@@ -811,6 +1013,13 @@ impl<'a> Replay<'a> {
         };
         match &rec.kind {
             KindKey::Show { cmd, text } => self.apply_show(file, line, *cmd, text),
+            KindKey::If { arms, visual } => {
+                if *visual {
+                    for arm in arms {
+                        self.record_names(file, arm.line, &arm.cond);
+                    }
+                }
+            }
             KindKey::Python { text } => {
                 let span = self.index.span(file, line, rec.end);
                 let source = self.index.statement_source(file, line, rec.end);
@@ -1156,7 +1365,76 @@ fn kind_key(stmt: &Stmt) -> KindKey {
             }
         }
         Kind::Python { text, .. } => KindKey::Python { text: text.clone() },
+        Kind::If { branches } => KindKey::If {
+            arms: branches
+                .iter()
+                .map(|b| IfArm {
+                    cond: b.cond.clone(),
+                    line: b.line,
+                })
+                .collect(),
+            visual: branches.iter().any(|b| presents(&b.body)),
+        },
         _ => KindKey::Other,
+    }
+}
+
+fn note_kind(verdicts: &[vars::Verdict], idx: usize) -> Option<NoteKind> {
+    match verdicts.get(idx)? {
+        vars::Verdict::True => None,
+        vars::Verdict::False => Some(NoteKind::Denied),
+        vars::Verdict::Unknown => {
+            let prefer = vars::preferred(verdicts);
+            Some(if Some(idx) == prefer {
+                NoteKind::Default
+            } else {
+                NoteKind::Undecided
+            })
+        }
+    }
+}
+
+fn branch_how(kind: BranchKind) -> &'static str {
+    match kind {
+        BranchKind::If => "if",
+        BranchKind::Elif => "elif",
+        BranchKind::Else => "else",
+    }
+}
+
+/// True when the statements show, hide or change the background, including inside a branch.
+fn presents(stmts: &[Stmt]) -> bool {
+    stmts.iter().any(|stmt| match &stmt.kind {
+        Kind::Present { cmd, .. } if *cmd == "show" || *cmd == "scene" || *cmd == "hide" => true,
+        Kind::If { branches } => branches.iter().any(|b| presents(&b.body)),
+        Kind::While { body, .. } => presents(body),
+        Kind::Menu { choices, .. } => choices.iter().any(|c| presents(&c.body)),
+        Kind::Label { body, .. } => presents(body),
+        _ => false,
+    })
+}
+
+fn switch_conds(node: &Node, out: &mut Vec<String>) {
+    match node {
+        Node::Switch(cases) => {
+            for (when, child) in cases {
+                if !when.is_empty() {
+                    out.push(when.clone());
+                }
+                switch_conds(child, out);
+            }
+        }
+        Node::Composite { layers, .. } => {
+            for layer in layers {
+                switch_conds(&layer.node, out);
+            }
+        }
+        Node::Frames(list, _) => {
+            for (child, _) in list {
+                switch_conds(child, out);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -2461,16 +2739,42 @@ fn replay_label(stage: &mut Replay<'_>, file: &str, stmts: &[Stmt], line: u32) {
         }
         match &stmt.kind {
             Kind::If { branches } => {
-                if let Some(branch) = branches
+                if branches.iter().any(|b| presents(&b.body)) {
+                    for branch in branches {
+                        stage.record_names(file, branch.line, &branch.cond);
+                    }
+                }
+                let pairs: Vec<(&str, &str)> = branches
                     .iter()
-                    .find(|b| b.line <= line && line <= b.end_line)
+                    .map(|b| (branch_how(b.kind), b.cond.as_str()))
+                    .collect();
+                let verdicts = vars::judge(&pairs, &stage.basis);
+                if let Some(idx) = branches
+                    .iter()
+                    .position(|b| b.line <= line && line <= b.end_line)
                 {
-                    replay_label(stage, file, &branch.body, line);
+                    if let Some(kind) = note_kind(&verdicts, idx) {
+                        // The caret is in this branch, so it was not a default pick.
+                        let kind = if kind == NoteKind::Default {
+                            NoteKind::Undecided
+                        } else {
+                            kind
+                        };
+                        stage.note_branch(file, branches, idx, kind);
+                    }
+                    replay_label(stage, file, &branches[idx].body, line);
                 } else if stmt.end_line < line {
-                    stage.note(&format!(
-                        "{file}:{} is a condition before this line, so its branch was skipped.",
-                        stmt.line
-                    ));
+                    if let Some(idx) = vars::preferred(&verdicts) {
+                        if verdicts[idx] == vars::Verdict::Unknown {
+                            stage.note_branch(file, branches, idx, NoteKind::Default);
+                        }
+                        replay_label(stage, file, &branches[idx].body, u32::MAX);
+                    } else {
+                        stage.note(&format!(
+                            "{file}:{} is a condition before this line, so its branch was skipped.",
+                            stmt.line
+                        ));
+                    }
                 }
             }
             Kind::Menu { choices, .. } => {
@@ -2519,6 +2823,10 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Instant;
+
+    fn estimate(project: &Project, file: &str, line: u32) -> Result<StageEstimate, String> {
+        super::estimate(project, file, line, &[])
+    }
 
     fn scratch(files: &[(&str, &str)]) -> (PathBuf, Project) {
         static N: AtomicU64 = AtomicU64::new(1);
@@ -3346,6 +3654,7 @@ label start:
         let last = 20001u32;
         let far = estimate(&project, "script.rpy", last).unwrap();
         let walked = replay::stored_walks(&project.stage_index().prepared);
+        assert!(walked > 1, "the far line did not fill the search");
         let near = estimate(&project, "script.rpy", last - 30).unwrap();
         assert_eq!(
             replay::stored_walks(&project.stage_index().prepared),
@@ -3654,6 +3963,275 @@ label start:
                 path: "images/smile.png".into()
             }
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn background(est: &StageEstimate) -> Vec<&str> {
+        est.sprites.iter().map(|s| s.tag.as_str()).collect()
+    }
+
+    #[test]
+    fn time_of_day_picks_a_background_and_lists_the_variable() {
+        let script = "\
+image liv_day = \"day.png\"
+image liv_night = \"night.png\"
+label start:
+    if time >= 6 and time < 20:
+        scene liv_day
+    else:
+        scene liv_night
+    \"hi\"
+";
+        let (root, project) = scratch(&[("script.rpy", script)]);
+        let open = estimate(&project, "script.rpy", 8).unwrap();
+        assert_eq!(background(&open), vec!["liv_day"]);
+        assert_eq!(open.via, "path");
+        assert!(open.assumptions.iter().any(|a| a.contains("could not be decided")));
+        assert!(open.assumptions.iter().any(|a| a.contains("first branch was used")));
+        assert!(open.assumptions.iter().any(|a| a.contains("needs `time`")));
+        let inside = estimate(&project, "script.rpy", 5).unwrap();
+        assert_eq!(background(&inside), vec!["liv_day"]);
+        assert!(inside.assumptions.iter().all(|a| !a.contains("first branch was used")), "{:?}", inside.assumptions);
+        assert_eq!(open.vars.len(), 1);
+        assert_eq!(open.vars[0].name, "time");
+        assert_eq!(open.vars[0].origin, "unset");
+        let _ = fs::remove_dir_all(root);
+
+        let (root, project) = scratch(&[(
+            "script.rpy",
+            "\
+default time = 22
+image liv_day = \"day.png\"
+image liv_night = \"night.png\"
+label start:
+    if time >= 6 and time < 20:
+        scene liv_day
+    else:
+        scene liv_night
+    \"hi\"
+",
+        )]);
+        let night = estimate(&project, "script.rpy", 9).unwrap();
+        assert_eq!(background(&night), vec!["liv_night"]);
+        assert!(night.assumptions.iter().all(|a| !a.contains("could not be decided")));
+        assert_eq!(night.vars[0].origin, "script");
+        assert_eq!(night.vars[0].value, "22");
+        let _ = fs::remove_dir_all(root);
+
+        let (root, project) = scratch(&[(
+            "script.rpy",
+            "\
+default time = 22
+image liv_day = \"day.png\"
+image liv_night = \"night.png\"
+label start:
+    $ time = 22
+    if time >= 6 and time < 20:
+        scene liv_day
+    else:
+        scene liv_night
+    \"hi\"
+",
+        )]);
+        let pinned = super::estimate(
+            &project,
+            "script.rpy",
+            10,
+            &[("time".into(), "12".into())],
+        )
+        .unwrap();
+        assert_eq!(background(&pinned), vec!["liv_day"]);
+        assert_eq!(pinned.vars[0].origin, "pinned");
+        assert_eq!(pinned.vars[0].value, "12");
+        let ignored = estimate(&project, "script.rpy", 10).unwrap();
+        assert_eq!(background(&ignored), vec!["liv_night"]);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn an_unreachable_label_still_applies_the_chosen_scene() {
+        let (root, project) = scratch(&[(
+            "script.rpy",
+            "\
+image liv_day = \"day.png\"
+image liv_night = \"night.png\"
+label start:
+    return
+
+label room:
+    if time >= 6 and time < 20:
+        scene liv_day
+    else:
+        scene liv_night
+    \"hi\"
+",
+        )]);
+        let est = estimate(&project, "script.rpy", 11).unwrap();
+        assert_eq!(est.via, "label");
+        assert_eq!(background(&est), vec!["liv_day"]);
+        assert!(est.notes.iter().any(|n| n.contains("could not be decided")));
+        assert_eq!(est.vars[0].name, "time");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_caret_inside_a_ruled_out_branch_keeps_that_scene() {
+        let (root, project) = scratch(&[(
+            "script.rpy",
+            "\
+default time = 8
+image liv_day = \"day.png\"
+image liv_night = \"night.png\"
+label start:
+    if time >= 6 and time < 20:
+        scene liv_day
+    else:
+        scene liv_night
+        \"night\"
+",
+        )]);
+        let est = estimate(&project, "script.rpy", 9).unwrap();
+        assert_eq!(background(&est), vec!["liv_night"]);
+        let text = est.assumptions.join("\n") + &est.notes.join("\n");
+        assert!(text.contains("needs"), "{text}");
+        assert!(text.contains("time"), "{text}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_while_before_the_caret_is_skipped() {
+        let (root, project) = scratch(&[(
+            "script.rpy",
+            "\
+image liv_day = \"day.png\"
+label start:
+    while time < 10:
+        scene liv_day
+    \"after\"
+",
+        )]);
+        let est = estimate(&project, "script.rpy", 5).unwrap();
+        assert!(background(&est).is_empty(), "{:?}", background(&est));
+        assert!(
+            est.assumptions.iter().any(|a| a.contains("skipped")),
+            "{:?}",
+            est.assumptions
+        );
+        assert!(est.assumptions.iter().all(|a| !a.contains("first branch")));
+        let _ = fs::remove_dir_all(root);
+
+        let (root, project) = scratch(&[(
+            "script.rpy",
+            "\
+image liv_day = \"day.png\"
+label start:
+    return
+
+label room:
+    while time < 10:
+        scene liv_day
+    \"after\"
+",
+        )]);
+        let est = estimate(&project, "script.rpy", 8).unwrap();
+        assert_eq!(est.via, "label");
+        assert!(background(&est).is_empty(), "{:?}", background(&est));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_pinned_value_chooses_an_elif_when_the_label_is_unreachable() {
+        let (root, project) = scratch(&[(
+            "script.rpy",
+            "\
+image liv_day = \"day.png\"
+image liv_night = \"night.png\"
+image liv_dusk = \"dusk.png\"
+label start:
+    return
+
+label room:
+    if time >= 20:
+        scene liv_night
+    elif time >= 6:
+        scene liv_day
+    else:
+        scene liv_dusk
+    \"hi\"
+",
+        )]);
+        let day = super::estimate(&project, "script.rpy", 14, &[("time".into(), "12".into())]).unwrap();
+        assert_eq!(day.via, "label");
+        assert_eq!(background(&day), vec!["liv_day"]);
+        let night = super::estimate(&project, "script.rpy", 14, &[("time".into(), "22".into())]).unwrap();
+        assert_eq!(background(&night), vec!["liv_night"]);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_conditions_list_keeps_the_nearest_names() {
+        let mut body = String::from("label start:\n");
+        for i in 0..30 {
+            body.push_str(&format!("    if flag{i}:\n        scene bg{i}\n"));
+        }
+        body.push_str("    \"end\"\n");
+        let (root, project) = scratch(&[("script.rpy", &body)]);
+        let est = estimate(&project, "script.rpy", 62).unwrap();
+        assert_eq!(est.vars.len(), 24);
+        assert_eq!(est.vars_more, 6);
+        assert_eq!(est.vars[0].name, "flag29");
+        let _ = fs::remove_dir_all(root);
+
+        let mut body = String::from("label start:\n");
+        for _ in 0..6 {
+            body.push_str("    if time:\n        scene bg\n");
+        }
+        body.push_str("    \"end\"\n");
+        let (root, project) = scratch(&[("script.rpy", &body)]);
+        let est = estimate(&project, "script.rpy", 14).unwrap();
+        assert_eq!(est.vars.len(), 1);
+        assert_eq!(est.vars[0].name, "time");
+        assert_eq!(est.vars[0].uses.len(), 5);
+        assert_eq!(est.vars[0].more, 1);
+        assert_eq!(est.vars[0].uses[0].line, 12);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_dotted_switch_condition_is_not_a_variable() {
+        let (root, mut project) = scratch(&[(
+            "script.rpy",
+            "\
+label start:
+    show ian
+    \"here\"
+",
+        )]);
+        install(
+            &mut project,
+            crate::engine::EngineImage {
+                name: "ian".into(),
+                kind: "composite".into(),
+                w: Some(640.0),
+                h: Some(1080.0),
+                layers: vec![crate::engine::EngineLayer {
+                    x: 0.0,
+                    y: 0.0,
+                    node: switch_node(vec![
+                        ("persistent.x", "images/fit.webp"),
+                        ("True", "images/ian.webp"),
+                    ]),
+                }],
+                ..crate::engine::EngineImage::default()
+            },
+        );
+        let est = estimate(&project, "script.rpy", 3).unwrap();
+        assert!(
+            est.notes.iter().any(|n| n.contains("condition could not be read")),
+            "{:?}",
+            est.notes
+        );
+        assert!(est.vars.iter().all(|v| v.name != "x" && v.name != "persistent"));
         let _ = fs::remove_dir_all(root);
     }
 }

@@ -1743,10 +1743,12 @@ pub fn stage_at(
     state: State<'_, AppState>,
     file: String,
     line: u32,
+    vars: Option<HashMap<String, String>>,
 ) -> Result<renpy_core::stage::StageEstimate, String> {
     let guard = state.project.lock().map_err(|e| e.to_string())?;
     let project = guard.as_ref().ok_or_else(no_project)?;
-    renpy_core::stage::estimate(project, &file, line)
+    let pins: Vec<(String, String)> = vars.unwrap_or_default().into_iter().collect();
+    renpy_core::stage::estimate(project, &file, line, &pins)
 }
 
 #[tauri::command(async)]

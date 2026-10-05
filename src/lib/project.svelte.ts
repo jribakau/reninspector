@@ -11,7 +11,7 @@ import { pullCatalog, pullEditStatus, refresh } from './reload.svelte'
 import { installVersion, loadCatalog, noteProgress, refreshSdks, resolveEngine, sdk } from './sdk.svelte'
 import { startAutosave } from './autosave.svelte'
 import { resolved, setSetting, settings } from './settings.svelte'
-import { noteLiveShot } from './stage.svelte'
+import { loadStageVars, noteLiveShot, resetStage } from './stage.svelte'
 import { markTrusted } from './trust.svelte'
 
 const RECENT_KEY = 'vnide.recent'
@@ -120,6 +120,7 @@ export async function openProject(path: string) {
   app.notice = ''
   try {
     const info = await api.openProject(path)
+    resetStage(info.root)
     const [map, diag] = await Promise.all([api.projectMap(), api.diagnostics()])
     setInfo(info)
     setMap(map)
@@ -143,6 +144,7 @@ export async function openProject(path: string) {
     app.live = emptyLive()
     app.visitedLabels = []
     app.watchVars = loadWatch(info.root)
+    loadStageVars(info.root)
     app.dirtyFiles = []
     app.impact = null
     app.reloadFile = null

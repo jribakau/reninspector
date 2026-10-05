@@ -4,7 +4,7 @@
 //! seeds the state, and `$` lines on the path to the caret update it. Anything
 //! else — a call, a loop, an unpacking — makes that name unknown.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::{Kind, Stmt};
 
@@ -29,6 +29,19 @@ impl Value {
             Value::Bool(false) => Some("False".into()),
             Value::None => Some("None".into()),
             Value::Unknown => None,
+        }
+    }
+
+    /// Text for the conditions panel. Strings stay quoted so they read as literals.
+    pub fn display(&self) -> String {
+        match self {
+            Value::Str(s) => format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")),
+            Value::Int(n) => n.to_string(),
+            Value::Float(n) => format_float(*n),
+            Value::Bool(true) => "True".into(),
+            Value::Bool(false) => "False".into(),
+            Value::None => "None".into(),
+            Value::Unknown => String::new(),
         }
     }
 }
@@ -110,6 +123,8 @@ fn unquote(t: &str) -> Option<String> {
 #[derive(Debug, Clone, Default)]
 pub struct VarState {
     vars: HashMap<String, Value>,
+    /// Names a preview pin set. Assignments in the script do not replace these.
+    pinned: HashSet<String>,
 }
 
 impl VarState {
@@ -119,6 +134,9 @@ impl VarState {
             let Kind::Define { name, value, .. } = &stmt.kind else {
                 continue;
             };
+            if self.pinned.contains(name) {
+                continue;
+            }
             if let Some(v) = parse_literal(value) {
                 self.vars.insert(name.clone(), v);
             }
@@ -127,6 +145,45 @@ impl VarState {
 
     pub fn get(&self, name: &str) -> Option<&Value> {
         self.vars.get(name)
+    }
+
+    pub fn is_pinned(&self, name: &str) -> bool {
+        self.pinned.contains(name)
+    }
+
+    /// Keeps `value` for `name` even when a later `$` line assigns it.
+    pub fn pin(&mut self, name: &str, value: Value) {
+        let Some(name) = ident(name) else {
+            return;
+        };
+        self.pinned.insert(name.to_string());
+        self.vars.insert(name.to_string(), value);
+    }
+
+    /// Stable key for the pinned values. Defaults do not change within one index.
+    pub fn fingerprint(&self) -> u64 {
+        let mut names: Vec<&str> = self.pinned.iter().map(String::as_str).collect();
+        names.sort_unstable();
+        let mut hash = 0xcbf29ce484222325u64;
+        for name in names {
+            hash = fnv(hash, name.as_bytes());
+            hash = fnv_byte(hash, 0xff);
+            let Some(value) = self.vars.get(name) else {
+                continue;
+            };
+            let (tag, bits) = match value {
+                Value::Str(s) => (1u8, fnv(0xcbf29ce484222325, s.as_bytes())),
+                Value::Int(n) => (2, *n as u64),
+                Value::Float(n) => (3, n.to_bits()),
+                Value::Bool(true) => (4, 1),
+                Value::Bool(false) => (4, 0),
+                Value::None => (5, 0),
+                Value::Unknown => (6, 0),
+            };
+            hash = fnv_byte(hash, tag);
+            hash = fnv(hash, &bits.to_le_bytes());
+        }
+        hash
     }
 
     /// Applies one statement or a block. `$` and `python:` headers are ignored.
@@ -153,6 +210,9 @@ impl VarState {
                 self.mark_unknown_targets(left);
                 return;
             };
+            if self.pinned.contains(name) {
+                return;
+            }
             let Some(Value::Int(delta)) = parse_literal(right) else {
                 self.vars.insert(name.to_string(), Value::Unknown);
                 return;
@@ -192,6 +252,9 @@ impl VarState {
             if lefts.iter().all(|p| ident(p).is_some()) {
                 for name in lefts {
                     let name = ident(name).unwrap();
+                    if self.pinned.contains(name) {
+                        continue;
+                    }
                     self.vars.insert(name.to_string(), value.clone());
                 }
                 return;
@@ -205,6 +268,9 @@ impl VarState {
     fn mark_unknown_targets(&mut self, target: &str) {
         for piece in split_top(target, |c| c == ',') {
             if let Some(name) = ident(piece.trim()) {
+                if self.pinned.contains(name) {
+                    continue;
+                }
                 self.vars.insert(name.to_string(), Value::Unknown);
             }
         }
@@ -227,6 +293,14 @@ impl VarState {
 
     /// Names in `cond` that are missing or unknown. Keywords are skipped.
     pub fn unknown_names(&self, cond: &str) -> Vec<String> {
+        Self::names_in(cond)
+            .into_iter()
+            .filter(|name| matches!(self.vars.get(name), Some(Value::Unknown) | None))
+            .collect()
+    }
+
+    /// Bare names in a condition. Keywords, calls and attribute lookups are skipped.
+    pub fn names_in(cond: &str) -> Vec<String> {
         let mut out = Vec::new();
         let mut chars = cond.char_indices().peekable();
         let mut quote: Option<char> = None;
@@ -259,16 +333,193 @@ impl VarState {
             if is_keyword(name) {
                 continue;
             }
-            match self.vars.get(name) {
-                Some(Value::Unknown) | None => {
-                    if !out.iter().any(|n| n == name) {
-                        out.push(name.to_string());
-                    }
-                }
-                Some(_) => {}
+            let after = rest[end..].chars().next();
+            if matches!(after, Some('.' | '(')) {
+                continue;
+            }
+            if cond[..i].chars().next_back().is_some_and(|c| c == '.' || c.is_ascii_alphanumeric()) {
+                continue;
+            }
+            if !out.iter().any(|n| n == name) {
+                out.push(name.to_string());
             }
         }
         out
+    }
+}
+
+fn fnv(mut hash: u64, bytes: &[u8]) -> u64 {
+    for byte in bytes {
+        hash = fnv_byte(hash, *byte);
+    }
+    hash
+}
+
+fn fnv_byte(hash: u64, byte: u8) -> u64 {
+    (hash ^ byte as u64).wrapping_mul(0x100000001b3)
+}
+
+/// How one branch stands against the known values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    /// The condition is true, or this is the else after every earlier one was false.
+    True,
+    /// A name is missing, so the branch is not ruled out.
+    Unknown,
+    /// The condition is false, or an earlier branch was already taken.
+    False,
+}
+
+/// Why a branch the values did not choose still appears in a note.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoteKind {
+    /// Unknown, and it is the first branch that was not ruled out.
+    Default,
+    /// Unknown, but the line being previewed sits inside this branch.
+    Undecided,
+    /// Ruled out, but the line being previewed sits inside this branch.
+    Denied,
+}
+
+/// `how` is `if`, `elif`, `else`, `fall`, `loop` or `skip`, paired with its condition.
+/// An `else` is true only when every earlier condition is false.
+pub fn judge(branches: &[(&str, &str)], vars: &VarState) -> Vec<Verdict> {
+    let mut out = Vec::with_capacity(branches.len());
+    let mut earlier_false = true;
+    let mut taken = false;
+    for (how, cond) in branches {
+        if taken {
+            out.push(Verdict::False);
+            continue;
+        }
+        let verdict = match *how {
+            "else" | "fall" => {
+                if earlier_false {
+                    Verdict::True
+                } else {
+                    Verdict::Unknown
+                }
+            }
+            "skip" => match vars.eval(cond) {
+                Some(false) if earlier_false => Verdict::True,
+                Some(true) => Verdict::False,
+                _ => Verdict::Unknown,
+            },
+            _ => match vars.eval(cond) {
+                Some(true) => Verdict::True,
+                Some(false) => Verdict::False,
+                None => Verdict::Unknown,
+            },
+        };
+        match verdict {
+            Verdict::True => taken = true,
+            Verdict::Unknown => earlier_false = false,
+            Verdict::False => {}
+        }
+        out.push(verdict);
+    }
+    out
+}
+
+/// The first branch the preview plays when the caret is not inside one.
+pub fn preferred(verdicts: &[Verdict]) -> Option<usize> {
+    verdicts.iter().position(|v| *v != Verdict::False)
+}
+
+/// Note for a branch the values did not prove. `earlier` are the conditions before it.
+pub fn condition_note(
+    file: &str,
+    line: u32,
+    how: &str,
+    cond: &str,
+    earlier: &[String],
+    kind: NoteKind,
+    vars: &VarState,
+) -> String {
+    let subject = cond_subject(how, cond);
+    match kind {
+        NoteKind::Default => {
+            let needs = needs_clause(vars, cond, earlier);
+            format!(
+                "{file}:{line} {subject} could not be decided ({needs}); the first branch was used."
+            )
+        }
+        NoteKind::Undecided => {
+            let needs = needs_clause(vars, cond, earlier);
+            format!("{file}:{line} {subject} could not be decided ({needs}).")
+        }
+        NoteKind::Denied => {
+            let but = binding_clause(vars, cond, earlier);
+            format!("{file}:{line} needs {subject}{but}.")
+        }
+    }
+}
+
+fn cond_subject(how: &str, cond: &str) -> String {
+    if !cond.is_empty() {
+        return format!("`{cond}`");
+    }
+    match how {
+        "else" => "the else branch".into(),
+        "fall" => "falling through".into(),
+        "skip" => "skipping the loop".into(),
+        "loop" => "the loop".into(),
+        _ => "the branch".into(),
+    }
+}
+
+fn source_conds<'a>(cond: &'a str, earlier: &'a [String]) -> Vec<&'a str> {
+    if cond.is_empty() {
+        earlier.iter().map(String::as_str).collect()
+    } else {
+        vec![cond]
+    }
+}
+
+fn needs_clause(vars: &VarState, cond: &str, earlier: &[String]) -> String {
+    let mut names = Vec::new();
+    for src in source_conds(cond, earlier) {
+        for name in VarState::names_in(src) {
+            if matches!(vars.get(&name), Some(Value::Unknown) | None) && !names.iter().any(|n| n == &name)
+            {
+                names.push(name);
+            }
+        }
+    }
+    if names.is_empty() {
+        "it could not be read".into()
+    } else {
+        let listed = names
+            .iter()
+            .map(|n| format!("`{n}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("needs {listed}")
+    }
+}
+
+fn binding_clause(vars: &VarState, cond: &str, earlier: &[String]) -> String {
+    let mut parts = Vec::new();
+    let mut seen = Vec::new();
+    for src in source_conds(cond, earlier) {
+        for name in VarState::names_in(src) {
+            if seen.iter().any(|n| n == &name) {
+                continue;
+            }
+            seen.push(name.clone());
+            let Some(value) = vars.get(&name) else {
+                continue;
+            };
+            if matches!(value, Value::Unknown) {
+                continue;
+            }
+            parts.push(format!("`{name}` is {}", value.display()));
+        }
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(", but {}", parts.join(" and "))
     }
 }
 
@@ -747,5 +998,94 @@ mod tests {
         );
         assert_eq!(s.eval("'mi' in fian"), Some(true));
         assert_eq!(s.eval("fian is None"), Some(false));
+    }
+
+    #[test]
+    fn pin_blocks_assignment_and_names_skip_calls() {
+        let mut s = state("time = 22\n");
+        s.pin("time", Value::Int(12));
+        s.apply("time = 22\ntime += 1\nother = pick()\n");
+        assert_eq!(s.get("time"), Some(&Value::Int(12)));
+        assert!(s.is_pinned("time"));
+        assert_eq!(s.get("other"), Some(&Value::Unknown));
+        assert_eq!(Value::Str("a\"b".into()).display(), "\"a\\\"b\"");
+        assert_eq!(Value::Int(12).display(), "12");
+        assert_eq!(
+            VarState::names_in("persistent.x and renpy.seen() or time >= 6"),
+            vec!["time".to_string()]
+        );
+        assert_eq!(VarState::names_in("x > 1e3"), vec!["x".to_string()]);
+        assert!(VarState::names_in("0x1F").is_empty());
+        let mut plain = VarState::default();
+        plain.apply("time = 1\n");
+        let mut other = VarState::default();
+        other.apply("time = 2\n");
+        assert_eq!(plain.fingerprint(), other.fingerprint());
+        plain.pin("time", Value::Int(9));
+        assert_ne!(plain.fingerprint(), other.fingerprint());
+        assert_eq!(s.unknown_names("time >= 6 and place == 'home'"), vec!["place".to_string()]);
+    }
+
+    #[test]
+    fn elif_and_else_follow_the_values() {
+        let open = VarState::default();
+        assert_eq!(
+            judge(
+                &[("if", "time >= 6 and time < 20"), ("else", "")],
+                &open
+            ),
+            vec![Verdict::Unknown, Verdict::Unknown]
+        );
+        let mut night = state("time = 22\n");
+        assert_eq!(
+            judge(&[("if", "time >= 6 and time < 20"), ("else", "")], &night),
+            vec![Verdict::False, Verdict::True]
+        );
+        night.pin("time", Value::Int(12));
+        night.apply("time = 22\n");
+        assert_eq!(
+            judge(&[("if", "time >= 6 and time < 20"), ("else", "")], &night),
+            vec![Verdict::True, Verdict::False]
+        );
+
+        let mut mid = state("flag = False\n");
+        assert_eq!(
+            judge(
+                &[("if", "flag"), ("elif", "other"), ("else", "")],
+                &mid
+            ),
+            vec![Verdict::False, Verdict::Unknown, Verdict::Unknown]
+        );
+        mid.apply("other = True\n");
+        assert_eq!(
+            judge(
+                &[("if", "flag"), ("elif", "other"), ("else", "")],
+                &mid
+            ),
+            vec![Verdict::False, Verdict::True, Verdict::False]
+        );
+        let note = condition_note(
+            "script.rpy",
+            4,
+            "if",
+            "time >= 6 and time < 20",
+            &[],
+            NoteKind::Default,
+            &open,
+        );
+        assert!(note.contains("could not be decided"));
+        assert!(note.contains("needs `time`"));
+        assert!(note.contains("the first branch was used"));
+        let denied = condition_note(
+            "script.rpy",
+            7,
+            "else",
+            "",
+            &["time >= 6 and time < 20".into()],
+            NoteKind::Denied,
+            &night,
+        );
+        assert!(denied.contains("needs the else branch"));
+        assert!(denied.contains("`time` is 12"));
     }
 }

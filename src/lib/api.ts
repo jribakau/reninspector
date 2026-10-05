@@ -137,7 +137,8 @@ export const api = {
     invoke<string>('build_web', { sdk, dest, launch }),
   buildCancel: () => invoke<void>('build_cancel'),
   revealPath: (path: string) => invoke<void>('reveal_path', { path }),
-  stageAt: (file: string, line: number) => invoke<import('./types').StageEstimate>('stage_at', { file, line }),
+  stageAt: (file: string, line: number, vars?: Record<string, string>) =>
+    invoke<import('./types').StageEstimate>('stage_at', { file, line, vars: vars ?? {} }),
   liveShots: (on: boolean) => invoke<void>('live_shots', { on }),
   sceneEdit: (change: {
     op: string
