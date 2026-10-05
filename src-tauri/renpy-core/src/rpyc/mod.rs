@@ -5,15 +5,14 @@
 //! menu choices as the compiled tree. Anything we cannot represent stays
 //! visible and read-only, so a save cannot drop it.
 
+use crate::pickle::Value;
+
 mod ast;
 mod atl;
 mod container;
 mod decompile;
 mod sl;
-mod unpickle;
 mod verify;
-
-pub use unpickle::{loads_inert, Value};
 
 #[derive(Debug, Clone)]
 pub struct Decompiled {

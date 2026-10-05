@@ -1,7 +1,7 @@
 //! Print screen language 2 (`renpy.sl2.slast`) back to source text.
 
 use super::ast::{self, expr_text, field, int_field, text_field};
-use super::unpickle::Value;
+use crate::pickle::Value;
 
 /// `(parameters inside the parens, screen body without the header indent)`.
 pub fn render_screen(screen: &Value) -> Result<(String, String), String> {

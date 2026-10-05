@@ -3,7 +3,7 @@
 use flate2::read::ZlibDecoder;
 use std::io::Read;
 
-use super::unpickle::{self, Value};
+use crate::pickle::{self, Policy, Value};
 
 const HEADER: &[u8] = b"RENPY RPC2";
 const MAX_SLOT: usize = 64 * 1024 * 1024;
@@ -11,10 +11,10 @@ const MAX_SLOT: usize = 64 * 1024 * 1024;
 pub fn read_statements(bytes: &[u8]) -> Result<Vec<Value>, String> {
     let value = if bytes.starts_with(HEADER) {
         let slot = slot_bytes(bytes, 1).or_else(|_| slot_bytes(bytes, 2))?;
-        unpickle::loads(&slot).map_err(|e| e.0)?
+        pickle::load(&slot, &Policy::SCRIPT).map_err(|e| e.0)?
     } else {
         let plain = inflate(bytes)?;
-        unpickle::loads(&plain).map_err(|e| e.0)?
+        pickle::load(&plain, &Policy::SCRIPT).map_err(|e| e.0)?
     };
     match value {
         Value::Tuple(mut items) if items.len() >= 2 => match items.swap_remove(1) {

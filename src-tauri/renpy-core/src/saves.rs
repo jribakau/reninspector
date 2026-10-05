@@ -10,8 +10,8 @@ use flate2::read::ZlibDecoder;
 use serde::Serialize;
 use zip::ZipArchive;
 
+use crate::pickle::{load, Policy, Value};
 use crate::rpa::format_utc;
-use crate::rpyc::{loads_inert, Value};
 
 const META_MAX: u64 = 1_048_576;
 const IMAGE_MAX: u64 = 4 * 1024 * 1024;
@@ -118,7 +118,7 @@ pub fn inspect_save(path: &Path, deep: bool) -> Result<SaveDetail, String> {
     let screenshot = named(&mut zip, "screenshot.png").map(|b| base64(&b));
     let (tree, note) = if deep {
         match named(&mut zip, "log") {
-            Some(bytes) => match loads_inert(&bytes) {
+            Some(bytes) => match load(&bytes, &Policy::SAVE) {
                 Ok(value) => (Some(node_of("log", &value, 0)), None),
                 Err(e) => (None, Some(format!("The save log could not be read: {e}"))),
             },
@@ -155,7 +155,7 @@ fn inspect_persistent(path: &Path, deep: bool) -> Result<SaveDetail, String> {
         return Err("Persistent data is too large.".into());
     }
     let (tree, note) = if deep {
-        match loads_inert(&decoded) {
+        match load(&decoded, &Policy::SAVE) {
             Ok(value) => (Some(node_of("persistent", &value, 0)), None),
             Err(e) => (
                 None,

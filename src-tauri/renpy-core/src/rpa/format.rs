@@ -5,7 +5,7 @@
 
 use std::fmt;
 
-use super::pickle::{self, Value};
+use crate::pickle::{self, Policy, Value};
 
 /// Compressed index cap. A real index is a few megabytes; this bounds the read from disk.
 pub const MAX_COMPRESSED_INDEX_BYTES: usize = 64 * 1024 * 1024;
@@ -60,6 +60,12 @@ impl fmt::Display for RpaError {
 }
 
 impl std::error::Error for RpaError {}
+
+impl From<crate::pickle::PickleError> for RpaError {
+    fn from(e: crate::pickle::PickleError) -> Self {
+        Self::new(e.0)
+    }
+}
 
 impl From<std::io::Error> for RpaError {
     fn from(e: std::io::Error) -> Self {
@@ -319,7 +325,7 @@ pub fn decode_index(
     pickle_bytes: &[u8],
     key: Option<u64>,
 ) -> Result<Vec<(String, Entry)>, RpaError> {
-    let value = pickle::loads(pickle_bytes)?;
+    let value = pickle::load(pickle_bytes, &Policy::ARCHIVE_INDEX)?;
     let Value::Dict(pairs) = value else {
         return Err(RpaError::new("archive index is not a dict"));
     };
@@ -421,7 +427,7 @@ fn unxor(n: i128, key: Option<u64>) -> Result<u64, RpaError> {
 fn prefix_bytes(v: &Value) -> Result<Vec<u8>, RpaError> {
     match v {
         Value::Bytes(b) => Ok(b.clone()),
-        Value::Str(s) => pickle::latin1_bytes(s),
+        Value::Str(s) => pickle::latin1_bytes(s).map_err(RpaError::from),
         Value::None => Ok(Vec::new()),
         _ => Err(RpaError::new("archive prefix is not bytes")),
     }

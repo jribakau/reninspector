@@ -13,6 +13,7 @@ pub mod engine;
 pub mod flow;
 pub mod lexer;
 pub mod parser;
+pub(crate) mod pickle;
 pub mod project;
 pub mod prose;
 pub mod replay;

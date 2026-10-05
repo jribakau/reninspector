@@ -4,7 +4,7 @@
 //! instead of silently dropping that block.
 
 use super::ast::{self, expr_text, field, text_field};
-use super::unpickle::Value;
+use crate::pickle::Value;
 
 pub fn render(v: &Value) -> Result<String, String> {
     let mut out = String::new();

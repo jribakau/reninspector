@@ -1,6 +1,6 @@
 //! Turn unpickled `renpy.ast` objects into a small statement tree.
 
-use super::unpickle::Value;
+use crate::pickle::Value;
 
 #[derive(Debug, Clone)]
 pub struct Node {

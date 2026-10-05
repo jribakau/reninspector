@@ -1,7 +1,8 @@
 //! Ren'Py archive (`.rpa` / `.rpi`) reader and writer.
 //!
-//! The index is a Python pickle. [`pickle`] accepts only the opcodes an index
-//! needs, so nothing in an archive can run code. Writing always produces
+//! The index is a Python pickle, read by [`crate::pickle`] with
+//! [`Policy::ARCHIVE_INDEX`](crate::pickle::Policy::ARCHIVE_INDEX), so nothing
+//! in an archive can run code. Writing always produces
 //! RPA-3.0 with a protocol-2 index, which both Ren'Py 7 and Ren'Py 8 load.
 //! The game's own archives are never modified by this module; callers write a
 //! new file (a patch archive, an extract folder, or an archive the user asked
