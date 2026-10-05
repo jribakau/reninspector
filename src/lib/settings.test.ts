@@ -103,6 +103,10 @@ describe('setSetting', () => {
     expect(settings.indentWidth).toBe(2)
     expect(setSetting('autosave', 'blur')).toBe(true)
     expect(settings.autosave).toBe('blur')
+    expect(setSetting('keymap', 'vim')).toBe(true)
+    expect(settings.keymap).toBe('vim')
+    expect(setSetting('keymap', 'modal' as never)).toBe(false)
+    expect(settings.keymap).toBe('vim')
   })
 
   it('trims text', () => {

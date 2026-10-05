@@ -134,7 +134,6 @@ const PRESENT_WORDS: &[&str] = &[
 
 const OPAQUE_WORDS: &[&str] = &[
     "screen",
-    "style",
     "translate",
     "testcase",
     "layeredimage",
@@ -179,24 +178,37 @@ impl<'a> Parser<'a> {
 
     /// Swallow every following line deeper than `header_indent`.
     /// Returns the last physical line covered and any label references found.
-    fn consume_raw(&mut self, header_indent: u32, base_end: u32) -> (u32, Vec<PyRef>) {
+    fn consume_raw(&mut self, header_indent: u32, base_end: u32) -> (u32, Vec<PyRef>, Vec<PyName>) {
         let mut end = base_end;
         let mut refs = Vec::new();
+        let mut names = Vec::new();
+        // Only the block's own `def` / `class`; methods and nested helpers are not store names.
+        let mut base: Option<u32> = None;
         while let Some(n) = self.lines.get(self.pos) {
             if n.indent <= header_indent {
                 break;
             }
             end = end.max(n.end_line);
+            let top = *base.get_or_insert(n.indent);
             if n.text.contains('(') {
                 refs.extend(scan_refs(&n.text).into_iter().map(|mut r| {
                     r.line = n.line;
                     r
                 }));
             }
+            if n.indent <= top {
+                if let Some((kind, name)) = py_name(&n.text) {
+                    names.push(PyName {
+                        kind,
+                        name,
+                        line: n.line,
+                    });
+                }
+            }
             harvest_strings(&n.text, &mut self.data);
             self.pos += 1;
         }
-        (end, refs)
+        (end, refs, names)
     }
 
     /// Swallow a screen body. Returns the last physical line plus the labels
@@ -255,7 +267,7 @@ impl<'a> Parser<'a> {
                 if raw.is_empty() {
                     self.issue(l.line, "label without a name");
                     self.opaque += 1;
-                    let (e, _) = self.consume_raw(l.indent, end);
+                    let (e, _, _) = self.consume_raw(l.indent, end);
                     end = e;
                     Kind::Opaque {
                         kind: "label".into(),
@@ -306,7 +318,7 @@ impl<'a> Parser<'a> {
                     .filter(|a| a.starts_with(char::is_whitespace))
                 {
                     let name = ident_prefix(after.trim_start());
-                    let (e, _) = self.consume_raw(l.indent, end);
+                    let (e, _, _) = self.consume_raw(l.indent, end);
                     end = e;
                     if name.is_empty() {
                         Kind::Present {
@@ -376,7 +388,7 @@ impl<'a> Parser<'a> {
             "elif" | "else" => {
                 self.issue(l.line, "`elif`/`else` without a matching `if`.");
                 self.opaque += 1;
-                let (e, _) = self.consume_raw(l.indent, end);
+                let (e, _, _) = self.consume_raw(l.indent, end);
                 end = e;
                 Kind::Opaque { kind: word.into() }
             }
@@ -403,24 +415,34 @@ impl<'a> Parser<'a> {
                     } else {
                         Vec::new()
                     },
+                    names: py_name(t)
+                        .map(|(kind, name)| PyName {
+                            kind,
+                            name,
+                            line: l.line,
+                        })
+                        .into_iter()
+                        .collect(),
                 }
             }
             "python" => {
-                let (e, refs) = self.consume_raw(l.indent, end);
+                let (e, refs, names) = self.consume_raw(l.indent, end);
                 end = e;
                 Kind::Python {
                     block: true,
                     text: short(text),
                     refs,
+                    names,
                 }
             }
             "init" if find_word_pos(rest, "python").is_some() => {
-                let (e, refs) = self.consume_raw(l.indent, end);
+                let (e, refs, names) = self.consume_raw(l.indent, end);
                 end = e;
                 Kind::Python {
                     block: true,
                     text: short(text),
                     refs,
+                    names,
                 }
             }
             "define" | "default" => {
@@ -431,7 +453,7 @@ impl<'a> Parser<'a> {
                 };
                 let (name, value) = parse_define(rest);
                 harvest_strings(rest, &mut self.data);
-                let (e, _) = self.consume_raw(l.indent, end);
+                let (e, _, _) = self.consume_raw(l.indent, end);
                 end = e;
                 Kind::Define {
                     keyword,
@@ -441,7 +463,7 @@ impl<'a> Parser<'a> {
             }
             "transform" => {
                 let name = ident_prefix(rest.trim_start());
-                let (e, _) = self.consume_raw(l.indent, end);
+                let (e, _, _) = self.consume_raw(l.indent, end);
                 end = e;
                 if name.is_empty() {
                     self.opaque += 1;
@@ -452,10 +474,21 @@ impl<'a> Parser<'a> {
                     Kind::Transform { name }
                 }
             }
+            "style" => {
+                let name = ident_prefix(rest.trim_start());
+                let (e, _, _) = self.consume_raw(l.indent, end);
+                end = e;
+                if name.is_empty() {
+                    self.opaque += 1;
+                    Kind::Opaque { kind: "style".into() }
+                } else {
+                    Kind::Style { name }
+                }
+            }
             "image" => {
                 let head = rest.split('=').next().unwrap_or(rest).trim_end_matches(':');
                 let name = collapse_ws(head);
-                let (e, _) = self.consume_raw(l.indent, end);
+                let (e, _, _) = self.consume_raw(l.indent, end);
                 end = e;
                 Kind::Image { name }
             }
@@ -469,7 +502,7 @@ impl<'a> Parser<'a> {
                     .unwrap_or(false) =>
             {
                 let name = ident_prefix(rest["screen".len()..].trim_start());
-                let (e, _) = self.consume_raw(l.indent, end);
+                let (e, _, _) = self.consume_raw(l.indent, end);
                 end = e;
                 Kind::ScreenRef { how: "show", name }
             }
@@ -486,7 +519,7 @@ impl<'a> Parser<'a> {
                 } else {
                     None
                 };
-                let (e, _) = self.consume_raw(l.indent, end);
+                let (e, _, _) = self.consume_raw(l.indent, end);
                 end = e;
                 Kind::Present {
                     cmd,
@@ -496,7 +529,7 @@ impl<'a> Parser<'a> {
             }
             w if OPAQUE_WORDS.contains(&w) => {
                 self.opaque += 1;
-                let (e, _) = self.consume_raw(l.indent, end);
+                let (e, _, _) = self.consume_raw(l.indent, end);
                 end = e;
                 Kind::Opaque {
                     kind: w.to_string(),
@@ -507,7 +540,7 @@ impl<'a> Parser<'a> {
                     Kind::Say { who, text }
                 } else {
                     self.opaque += 1;
-                    let (e, _) = self.consume_raw(l.indent, end);
+                    let (e, _, _) = self.consume_raw(l.indent, end);
                     end = e;
                     let kind = if word.is_empty() { "?" } else { word };
                     Kind::Opaque {
@@ -857,6 +890,26 @@ fn image_name_of(rest: &str) -> Option<String> {
 }
 
 /// Leading identifier of `s` (letters, digits, `_`).
+/// `def name` / `class name` at the start of a Python line.
+fn py_name(line: &str) -> Option<(&'static str, String)> {
+    let t = line.trim();
+    let (kind, rest) = if let Some(rest) = t.strip_prefix("def ") {
+        ("function", rest)
+    } else if let Some(rest) = t.strip_prefix("async def ") {
+        ("function", rest)
+    } else if let Some(rest) = t.strip_prefix("class ") {
+        ("class", rest)
+    } else {
+        return None;
+    };
+    let name = ident_prefix(rest.trim_start());
+    if name.is_empty() {
+        None
+    } else {
+        Some((kind, name))
+    }
+}
+
 fn ident_prefix(s: &str) -> String {
     s.chars()
         .take_while(|c| c.is_alphanumeric() || *c == '_')

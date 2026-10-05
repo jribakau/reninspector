@@ -20,6 +20,22 @@ Help → **Copy diagnostic bundle** copies the app version, the system, and the 
 
 Help → **Check for updates** asks before it installs a newer release, saves your open files, and then closes the app while the installer runs. It only finds published releases, not drafts or pre-releases. Updates install the `.msi` version, so a copy run from the zip is not updated in place.
 
+## Editor shortcuts
+
+The script editor is a CodeMirror buffer. A few of the bindings that are easy to miss:
+
+| Keys | What it does |
+|---|---|
+| Alt+click | Add another caret |
+| Alt+drag | Select a column |
+| Ctrl+D | Add the next match of the selection |
+| Alt+Up / Alt+Down | Move the current line |
+| Ctrl+Shift+[ / ] | Fold or unfold the block at the caret (a label, menu, screen, or indented block) |
+| Ctrl+/ | Toggle a comment |
+| Shift+Alt+F | Format the script (tabs become spaces) |
+
+Folding markers in the gutter can be turned off in Settings. Vim and Emacs keymaps are a setting too.
+
 ## Develop
 
 You need [Node.js](https://nodejs.org/), [Rust](https://www.rust-lang.org/) 1.77 or newer, and the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your system. Windows 10 and 11 already include the WebView2 runtime the app uses.
@@ -41,5 +57,7 @@ npm run tauri:dev
 ## Licence
 
 GPL-3.0-or-later. See [LICENSE](LICENSE).
+
+Hover text for Ren'Py statements and functions is written for this project and links to the [Ren'Py documentation](https://www.renpy.org/doc/html/). Most of Ren'Py, including that documentation, is under the MIT licence. The documentation pages themselves are not included.
 
 The graph layout library, elkjs, is included under the Eclipse Public License 2.0 and is not covered by the GPL. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

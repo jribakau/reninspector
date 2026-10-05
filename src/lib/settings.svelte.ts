@@ -19,6 +19,11 @@ export interface Settings {
   bracketMatching: boolean
   closeBrackets: boolean
   autocomplete: boolean
+  keymap: 'default' | 'vim' | 'emacs'
+  colorSwatches: boolean
+  inlayHints: boolean
+  formatOnSave: boolean
+  preferredQuote: 'keep' | 'double' | 'single'
   foldGutter: boolean
   spell: boolean
   autosave: AutosaveMode
@@ -79,6 +84,11 @@ export const DEFAULTS: Settings = {
   bracketMatching: true,
   closeBrackets: true,
   autocomplete: true,
+  keymap: 'default',
+  colorSwatches: true,
+  inlayHints: true,
+  formatOnSave: false,
+  preferredQuote: 'keep',
   foldGutter: true,
   spell: true,
   autosave: 'off',
@@ -196,6 +206,51 @@ export const SETTINGS: SettingDef[] = [
     label: 'Autocomplete',
     description: 'Suggest labels, characters, images, and keywords while typing.',
     type: 'bool',
+  },
+  {
+    key: 'keymap',
+    category: 'editor',
+    label: 'Keymap',
+    description: 'Vim and Emacs replace the usual editing keys. In Vim, :w still saves. Ctrl+S and the menus keep working.',
+    type: 'enum',
+    options: [
+      { value: 'default', label: 'Default' },
+      { value: 'vim', label: 'Vim' },
+      { value: 'emacs', label: 'Emacs' },
+    ],
+  },
+  {
+    key: 'colorSwatches',
+    category: 'editor',
+    label: 'Colour swatches',
+    description: 'Show a colour chip after "#rrggbb" inside strings. Click the chip to change the colour.',
+    type: 'bool',
+  },
+  {
+    key: 'inlayHints',
+    category: 'editor',
+    label: 'Inlay hints',
+    description: 'Show a character\'s display name, where a jump or call goes, and the word count of a label.',
+    type: 'bool',
+  },
+  {
+    key: 'formatOnSave',
+    category: 'editor',
+    label: 'Format on save',
+    description: 'Before saving a script, turn tabs into spaces and remove trailing whitespace. Ren\'Py does not accept tab characters.',
+    type: 'bool',
+  },
+  {
+    key: 'preferredQuote',
+    category: 'editor',
+    label: 'Quote style',
+    description: 'When formatting, rewrite simple strings that have no escapes or interpolation. Strings that need the other quote are left alone.',
+    type: 'enum',
+    options: [
+      { value: 'keep', label: 'Leave quotes as written' },
+      { value: 'double', label: 'Double quotes' },
+      { value: 'single', label: 'Single quotes' },
+    ],
   },
   {
     key: 'spell',

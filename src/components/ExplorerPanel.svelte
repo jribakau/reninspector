@@ -8,13 +8,13 @@
   import { git } from '../lib/git.svelte'
   import { createEntry, deleteEntry, gameFolder, inGame, moveEntries, renameEntry, revealEntry, toTreePath } from '../lib/fileops.svelte'
   import { openFileHistory } from '../lib/nav.svelte'
-  import { app, fileInfo, goTo, nodesInFile, selectLabel, showCode } from '../lib/store.svelte'
+  import { app, fileInfo, goTo, outlineOf, selectLabel, showCode, type OutlineEntry } from '../lib/store.svelte'
   import { baseName, isScriptName, isUnder, joinPath, movedPath, parentOf } from '../lib/treepaths'
   import { ROW } from '../lib/view'
   import { extOf, fileLook } from '../lib/filetypes'
   import Icon from './Icon.svelte'
   import Splitter from './Splitter.svelte'
-  import type { DirEntry, MapNode } from '../lib/types'
+  import type { DirEntry } from '../lib/types'
   import VirtualList from './VirtualList.svelte'
 
   interface Row {
@@ -152,7 +152,7 @@
     return out
   })
 
-  const outline = $derived(app.loc ? nodesInFile(app.loc.file) : [])
+  const outline = $derived(app.loc ? outlineOf(app.loc.file) : [])
 
   $effect(() => {
     const id = app.selectedLabel
@@ -541,8 +541,14 @@
 
   onDestroy(stopDrag)
 
-  function labelOf(n: MapNode): string {
-    return n.kind === 'screen' ? n.id.slice(7) : n.id
+  function openOutline(n: OutlineEntry) {
+    if (n.kind === 'transform' || n.kind === 'style') {
+      const file = app.loc?.file
+      if (file) goTo(file, n.line, n.endLine)
+      app.selectedLabel = n.id
+      return
+    }
+    selectLabel(n.id)
   }
 </script>
 
@@ -706,21 +712,21 @@
             class="sb-item"
             data-id={n.id}
             class:sel={app.selectedLabel === n.id}
-            onclick={() => selectLabel(n.id)}
+            onclick={() => openOutline(n)}
             oncontextmenu={(e) => {
               app.selectedLabel = n.id
+              if (n.kind === 'transform' || n.kind === 'style') return
               openContextMenu(e, labelItems(n.id))
             }}
           >
             <span class="sb-name">
-              {labelOf(n)}
-              {#if n.kind === 'menu'}<em class="sb-tag tag-menu">menu</em>{/if}
-              {#if n.kind === 'screen'}<em class="sb-tag screen">screen</em>{/if}
+              {n.name}
+              {#if n.kind !== 'label'}<em class="sb-tag" class:screen={n.kind === 'screen'} class:tag-menu={n.kind === 'menu'}>{n.kind}</em>{/if}
             </span>
             <span class="sb-meta">line {n.line}</span>
           </button>
         {:else}
-          <div class="sb-empty">Open a script to list its labels.</div>
+          <div class="sb-empty">Open a script to list its labels, screens, transforms, and styles.</div>
         {/each}
       </div>
     {/if}

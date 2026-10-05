@@ -31,8 +31,8 @@
     fileInfo,
     fileOfNode,
     followFlowLabel,
+    enclosingAt,
     goTo,
-    labelAt,
     nodeByName,
     nodesInFile,
     noteStale,
@@ -292,10 +292,21 @@
     return has ? 'Move the caret into a label to see its flow.' : 'This script has no label to draw.'
   })
 
-  const caretLabel = $derived.by(() => {
-    if (!app.loc || !app.cursor || app.cursor.file !== app.loc.file) return null
-    return labelAt(app.loc.file, app.cursor.line)
+  const crumbs = $derived.by(() => {
+    if (!app.loc || !app.cursor || app.cursor.file !== app.loc.file) return []
+    return enclosingAt(app.loc.file, app.cursor.line)
   })
+
+  function openCrumb(id: string) {
+    const crumb = crumbs.find((c) => c.id === id)
+    if (!crumb || !app.loc) return
+    if (crumb.kind === 'transform' || crumb.kind === 'style') {
+      goTo(app.loc.file, crumb.line, crumb.endLine)
+      app.selectedLabel = crumb.id
+      return
+    }
+    selectLabel(crumb.id)
+  }
 
   const openDiags = $derived.by(() => {
     void app.diag
@@ -524,9 +535,9 @@
             {#if app.loc}
               <Breadcrumbs
                 path={app.loc.file}
-                label={caretLabel ? (caretLabel.kind === 'screen' ? caretLabel.id.slice(7) : caretLabel.id) : null}
+                symbols={crumbs}
                 onsegment={revealInExplorer}
-                onlabel={() => caretLabel && selectLabel(caretLabel.id)}
+                onsymbol={openCrumb}
               />
             {/if}
             <CodeView

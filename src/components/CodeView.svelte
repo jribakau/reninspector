@@ -1,10 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { autocompletion, closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete'
-  import { defaultKeymap, history, historyKeymap, indentLess, indentMore, redo, selectAll, toggleComment, undo } from '@codemirror/commands'
-  import { bracketMatching, codeFolding, foldGutter, foldService, indentService, indentUnit } from '@codemirror/language'
+import { copyLineDown, copyLineUp, defaultKeymap, history, historyKeymap, indentLess, indentMore, moveLineDown, moveLineUp, redo, selectAll, toggleComment, undo } from '@codemirror/commands'
+import { bracketMatching, codeFolding, foldCode, foldGutter, foldKeymap, foldService, indentService, indentUnit, unfoldCode } from '@codemirror/language'
   import { Chunk } from '@codemirror/merge'
-  import { highlightSelectionMatches, openSearchPanel, search, searchKeymap } from '@codemirror/search'
+  import { highlightSelectionMatches, openSearchPanel, search, searchKeymap, selectNextOccurrence } from '@codemirror/search'
   import { Compartment, EditorSelection, EditorState, RangeSetBuilder, StateEffect, StateField, Text } from '@codemirror/state'
   import {
     crosshairCursor,
@@ -23,7 +23,9 @@
   } from '@codemirror/view'
   import { api, readAsset, readFileText, readPreview, errorText } from '../lib/api'
   import { askText } from '../lib/dialog.svelte'
-  import { editorTheme } from '../lib/editor/theme'
+  import { keymapExtension, keymapNow, setKeymapSave } from '../lib/editor/keymaps'
+import { colorSwatches, isImagePath, quotedStringAt } from '../lib/editor/swatch'
+import { editorTheme } from '../lib/editor/theme'
   import { appearance } from '../lib/project.svelte'
   import { settings } from '../lib/settings.svelte'
   import { renpyHighlight, renpyLanguage } from '../lib/renpyLang'
@@ -31,7 +33,12 @@
   import { renpyComplete } from '../lib/editor/complete'
   import { onDictionaryChange, setSpelling, spellSupport } from '../lib/editor/spell'
   import { git } from '../lib/git.svelte'
-  import { app, fileInfo, lookupSymbol, nodeByName, openDiff, registerBufferSave, registerEditor, registerSave, type Loc } from '../lib/store.svelte'
+  import { docNow, loadDocs, type DocEntry } from '../lib/docs/reference'
+import { formatEdits } from '../lib/editor/format'
+import { signatureHelp } from '../lib/editor/signature'
+import { inlayHints } from '../lib/editor/inlay'
+import { inPython } from '../lib/editor/python'
+import { app, fileInfo, fileOfNode, lookupSymbol, nodeByName, openDiff, registerBufferSave, registerEditor, registerSave, symbolsOf, type Loc } from '../lib/store.svelte'
   import type { Diagnostic, Severity, Symbol } from '../lib/types'
 
   interface Props {
@@ -140,7 +147,16 @@
     if (prev === 'transform') return 'transform'
     if (prev === 'define' || prev === 'default') return 'variable'
     if ((prev === 'at' || prev.endsWith(',')) && /\bat(?:\s|$)/.test(before)) return 'transform'
+    if (prev === 'def' || prev === 'class') return prev === 'class' ? 'class' : 'function'
     if (/^\s*$/.test(before) && /["']/.test(after)) return 'character'
+    return null
+  }
+
+  function preferHere(state: EditorState, lineNo: number, line: string, wordStart: number, word: string): string | null {
+    const base = preferredKind(line, wordStart, word)
+    if (base) return base
+    const after = line.slice(wordStart + word.length)
+    if (inPython(state.doc, lineNo) && after.trimStart().startsWith('(')) return 'function'
     return null
   }
 
@@ -155,6 +171,9 @@
         // The name table still answers when the project command fails.
       }
     }
+    if (prefer === 'function' || prefer === 'class') {
+      return symbolsOf(prefer).find((s) => s.name === word)
+    }
     return lookupSymbol(word)
   }
 
@@ -162,11 +181,16 @@
     const found = wordAt(view.state, view.state.selection.main.head)
     if (!found) return false
     const line = view.state.doc.lineAt(found.from)
-    const prefer = preferredKind(line.text, found.from - line.from, found.text)
+    const prefer = preferHere(view.state, line.number, line.text, found.from - line.from, found.text)
     void symbolHere(line.number, found.text, prefer).then((sym) => {
       if (!sym) return
       if (how === 'goto') {
         if (sym.path) ongoto(sym.path, sym.line)
+        return
+      }
+      // Uses of these kinds are not indexed, so references and rename would only see the definition.
+      if (['function', 'class', 'style'].includes(sym.kind)) {
+        app.notice = `Find references and rename are not available for ${sym.kind}s yet.`
         return
       }
       if (how === 'refs') {
@@ -364,6 +388,9 @@
   const closeComp = new Compartment()
   const completeComp = new Compartment()
   const indentComp = new Compartment()
+  const keymapComp = new Compartment()
+  const swatchComp = new Compartment()
+  const inlayComp = new Compartment()
 
   function closeExt() {
     return settings.closeBrackets ? [closeBrackets(), keymap.of(closeBracketsKeymap)] : []
@@ -373,6 +400,26 @@
   }
   function indentExt() {
     return indentUnit.of(' '.repeat(settings.indentWidth))
+  }
+  function swatchExt() {
+    return settings.colorSwatches ? colorSwatches() : []
+  }
+  function inlayExt() {
+    if (!settings.inlayHints) return []
+    return inlayHints(
+      (name) => {
+        const sym = lookupSymbol(name)
+        if (!sym || sym.kind !== 'character') return undefined
+        const who = sym.detail.split(' · ')[0]?.trim()
+        return who && who !== name ? who : undefined
+      },
+      (name) => {
+        const node = nodeByName(name)
+        if (!node || node.kind === 'missing' || node.kind === 'compiled') return undefined
+        const path = fileOfNode(node)
+        return path ? { path, line: node.line } : undefined
+      },
+    )
   }
 
   /** Ren'Py rejects tab characters, so Tab inserts spaces. A selection indents instead. */
@@ -558,6 +605,7 @@
     return EditorState.create({
       doc,
       extensions: [
+        keymapComp.of(keymapNow(settings.keymap)),
         changeGutter,
         gutterComp.of(settings.lineNumbers ? lineNumbers() : []),
         drawSelection(),
@@ -576,6 +624,7 @@
         history(),
         indentComp.of(indentExt()),
         indentService.of(renpyIndent),
+        signatureHelp(),
         keymap.of([
           { key: 'Tab', run: spacesTab },
           { key: 'Shift-Tab', run: indentLess },
@@ -585,7 +634,12 @@
           { key: 'F2', run: (v) => ctx.rename(v) },
           { key: 'Mod-g', run: (v) => { jumpToLine(v); return true } },
           { key: 'Mod-h', run: (v) => { openReplace(v); return true } },
-          ...searchKeymap.filter((binding) => binding.key !== 'Mod-g' && binding.key !== 'Mod-G'),
+          { key: 'Mod-d', run: selectNextOccurrence, preventDefault: true },
+          { key: 'Alt-ArrowUp', run: moveLineUp, shift: copyLineUp },
+          { key: 'Alt-ArrowDown', run: moveLineDown, shift: copyLineDown },
+          { key: 'Shift-Alt-f', run: (v) => { formatView(v, null); return true } },
+          ...foldKeymap,
+          ...searchKeymap.filter((binding) => binding.key !== 'Mod-g' && binding.key !== 'Mod-G' && binding.key !== 'Mod-d'),
           ...historyKeymap,
           ...defaultKeymap,
         ]),
@@ -595,40 +649,76 @@
         codeFolding(),
         foldComp.of(settings.foldGutter ? foldGutter() : []),
         foldService.of(renpyFold),
+        swatchComp.of(swatchExt()),
+        inlayComp.of(inlayExt()),
         gitBars,
         gitTip,
         hoverTooltip(async (view, pos) => {
+          await loadDocs()
           const found = wordAt(view.state, pos)
-          if (!found) return null
-          const line = view.state.doc.lineAt(found.from)
-          const prefer = preferredKind(line.text, found.from - line.from, found.text)
-          const sym = await symbolHere(line.number, found.text, prefer)
-          if (!sym) return null
-          const node = sym.kind === 'label' || sym.kind === 'screen' ? nodeByName(sym.kind === 'screen' ? `screen:${sym.name}` : sym.name) : undefined
+          const line = view.state.doc.lineAt(pos)
+          if (found) {
+            const prefer = preferHere(view.state, line.number, line.text, found.from - line.from, found.text)
+            const sym = await symbolHere(line.number, found.text, prefer)
+            if (sym) {
+              const node = sym.kind === 'label' || sym.kind === 'screen' ? nodeByName(sym.kind === 'screen' ? `screen:${sym.name}` : sym.name) : undefined
+              return {
+                pos: found.from,
+                end: found.to,
+                above: true,
+                create() {
+                  const dom = document.createElement('div')
+                  dom.className = 'sym-tip'
+                  const title = document.createElement('div')
+                  title.className = 'sym-title'
+                  title.textContent = `${sym.kind} ${sym.name}`
+                  dom.append(title)
+                  const meta = document.createElement('div')
+                  const where = sym.path ? `${sym.path}:${sym.line}` : 'built in'
+                  const extra = [sym.detail, where, node ? `${node.inDegree} in` : ''].filter(Boolean).join(' · ')
+                  meta.textContent = extra
+                  dom.append(meta)
+                  if (sym.kind === 'image' && /\.(png|jpe?g|webp|gif)$/i.test(sym.detail)) {
+                    const img = document.createElement('img')
+                    img.alt = ''
+                    dom.append(img)
+                    void readAsset(sym.detail).then((buf) => {
+                      img.src = URL.createObjectURL(new Blob([buf]))
+                    }).catch(() => {})
+                  }
+                  return { dom }
+                },
+              }
+            }
+            // Docs are for code, not dialogue: skip words inside a string, and only let
+            // statement names match when they open the line.
+            const before = line.text.slice(0, found.from - line.from)
+            const inString = ((before.replace(/\\./g, '').match(/["']/g) ?? []).length & 1) === 1
+            const doc = inString ? undefined : docNow(found.text)
+            if (doc && (doc.kind !== 'statement' || /^\s*(\$\s*)?$/.test(before))) {
+              return docTip(doc, found.from, found.to)
+            }
+          }
+          const quoted = quotedStringAt(line.text, pos - line.from)
+          const path = quoted?.text.trim() ?? ''
+          if (!quoted || !isImagePath(path)) return null
           return {
-            pos: found.from,
-            end: found.to,
+            pos: line.from + quoted.from,
+            end: line.from + quoted.to,
             above: true,
             create() {
               const dom = document.createElement('div')
               dom.className = 'sym-tip'
               const title = document.createElement('div')
               title.className = 'sym-title'
-              title.textContent = `${sym.kind} ${sym.name}`
+              title.textContent = path
               dom.append(title)
-              const meta = document.createElement('div')
-              const where = sym.path ? `${sym.path}:${sym.line}` : 'built in'
-              const extra = [sym.detail, where, node ? `${node.inDegree} in` : ''].filter(Boolean).join(' · ')
-              meta.textContent = extra
-              dom.append(meta)
-              if (sym.kind === 'image' && /\.(png|jpe?g|webp|gif)$/i.test(sym.detail)) {
-                const img = document.createElement('img')
-                img.alt = ''
-                dom.append(img)
-                void readAsset(sym.detail).then((buf) => {
-                  img.src = URL.createObjectURL(new Blob([buf]))
-                }).catch(() => {})
-              }
+              const img = document.createElement('img')
+              img.alt = ''
+              dom.append(img)
+              void readAsset(path).then((buf) => {
+                img.src = URL.createObjectURL(new Blob([buf]))
+              }).catch(() => {})
               return { dom }
             },
           }
@@ -641,7 +731,7 @@
             const found = wordAt(view.state, pos)
             if (!found) return false
             const line = view.state.doc.lineAt(found.from)
-            const prefer = preferredKind(line.text, found.from - line.from, found.text)
+            const prefer = preferHere(view.state, line.number, line.text, found.from - line.from, found.text)
             void symbolHere(line.number, found.text, prefer).then((sym) => {
               if (sym?.path) ongoto(sym.path, sym.line)
             })
@@ -693,6 +783,13 @@
       refs: () => { if (view) ctx.refs(view) },
       rename: () => { if (view) ctx.rename(view) },
       toggleComment: () => { if (view) toggleComment(view) },
+      selectNext: () => { if (view) selectNextOccurrence(view) },
+      moveLineUp: () => { if (view) moveLineUp(view) },
+      moveLineDown: () => { if (view) moveLineDown(view) },
+      fold: () => { if (view) foldCode(view) },
+      unfold: () => { if (view) unfoldCode(view) },
+      format: () => { if (view) formatView(view, null) },
+      formatSelection: () => { if (view) formatView(view, view.state.selection.main) },
     })
     return () => {
       onDictionaryChange(null)
@@ -781,6 +878,44 @@
     })
   }
 
+  function docTip(doc: DocEntry, from: number, to: number) {
+    return {
+      pos: from,
+      end: to,
+      above: true,
+      create() {
+        const dom = document.createElement('div')
+        dom.className = 'sym-tip'
+        const title = document.createElement('div')
+        title.className = 'sym-title'
+        title.textContent = doc.signature
+        dom.append(title)
+        const summary = document.createElement('div')
+        summary.textContent = doc.summary
+        dom.append(summary)
+        const link = document.createElement('a')
+        link.href = doc.url
+        link.textContent = 'Documentation'
+        link.target = '_blank'
+        link.rel = 'noreferrer'
+        dom.append(link)
+        return { dom }
+      },
+    }
+  }
+
+  function formatView(target: EditorView, range: { from: number; to: number } | null) {
+    if (target.state.readOnly) return
+    const doc = target.state.doc
+    const end = range && range.to > range.from ? range.to - 1 : range?.to
+    const lines = range && end != null
+      ? { fromLine: doc.lineAt(range.from).number, toLine: doc.lineAt(end).number }
+      : undefined
+    const edits = formatEdits(doc.toString(), { indent: settings.indentWidth, quotes: settings.preferredQuote }, lines)
+    if (!edits.length) return
+    target.dispatch({ changes: edits, userEvent: 'format' })
+  }
+
   async function save() {
     if (!loadedFile) return
     await savePath(loadedFile)
@@ -788,8 +923,20 @@
 
   async function savePath(path: string): Promise<boolean> {
     if (!editing || !fileInfo(path)) return false
-    const state = loadedFile === path && view ? view.state : buffers.get(path)
+    let state = loadedFile === path && view ? view.state : buffers.get(path)
     if (!state) return false
+    if (settings.formatOnSave && /\.rpym?$/i.test(path) && !state.readOnly) {
+      const edits = formatEdits(state.doc.toString(), { indent: settings.indentWidth, quotes: settings.preferredQuote })
+      if (edits.length) {
+        if (view && loadedFile === path && view.state === state) {
+          view.dispatch({ changes: edits, userEvent: 'format' })
+          state = view.state
+        } else {
+          state = state.update({ changes: edits, userEvent: 'format' }).state
+          buffers.set(path, state)
+        }
+      }
+    }
     const doc = state.doc
     const prev = saved.get(path)
     if (prev && doc.eq(prev)) {
@@ -977,6 +1124,34 @@
     view?.dispatch({ effects: indentComp.reconfigure(indentExt()) })
   })
 
+  $effect(() => {
+    void settings.colorSwatches
+    view?.dispatch({ effects: swatchComp.reconfigure(swatchExt()) })
+  })
+
+  $effect(() => {
+    void settings.inlayHints
+    void app.catalog
+    void app.map
+    view?.dispatch({ effects: inlayComp.reconfigure(inlayExt()) })
+  })
+
+  $effect(() => {
+    const mode = settings.keymap
+    void editorReady
+    void loadedFile
+    setKeymapSave(() => ctx.save())
+    if (!view) return
+    let alive = true
+    void keymapExtension(mode).then((ext) => {
+      if (!alive || !view || settings.keymap !== mode) return
+      view.dispatch({ effects: keymapComp.reconfigure(ext) })
+    })
+    return () => {
+      alive = false
+    }
+  })
+
   function applyDiagnostics() {
     if (!view || !loadedFile) return
     const map = new Map<number, { severity: Severity; message: string }>()
@@ -1039,6 +1214,7 @@
       <span class="dim">
         {lineCount.toLocaleString()} lines
         {#if dirty}· unsaved{:else if editing && fileInfo(loadedFile)}· editing{/if}
+        {#if settings.keymap !== 'default'}· {settings.keymap === 'vim' ? 'Vim' : 'Emacs'}{/if}
         {#if modified}· differs from backup{/if}
       </span>
       {#if !(editing && fileInfo(loadedFile))}<span class="ro">Read-only</span>{/if}
@@ -1146,6 +1322,50 @@
   :global(.live-spacer) {
     visibility: hidden;
     font-size: 9px;
+  }
+  :global(.cm-inlay) {
+    margin-left: 0.65em;
+    color: var(--dim);
+    font-style: italic;
+    font-size: 0.92em;
+    pointer-events: none;
+  }
+  :global(.cm-swatch) {
+    display: inline-block;
+    width: 0.85em;
+    height: 0.85em;
+    margin-left: 3px;
+    border: 1px solid var(--line);
+    border-radius: 2px;
+    vertical-align: -0.12em;
+    cursor: pointer;
+  }
+  :global(.sym-tip) {
+    padding: 6px 8px;
+    max-width: 260px;
+  }
+  :global(.sym-tip a) {
+    display: inline-block;
+    margin-top: 4px;
+    color: var(--accent);
+  }
+  :global(.sig-tip) {
+    padding: 6px 8px;
+    max-width: 360px;
+  }
+  :global(.sig-active) {
+    color: var(--accent);
+    font-weight: 700;
+  }
+  :global(.sig-note) {
+    margin-top: 4px;
+    color: var(--dim);
+  }
+  :global(.sym-tip img) {
+    display: block;
+    max-width: 240px;
+    max-height: 140px;
+    margin-top: 6px;
   }
   :global(.cm-spell) {
     text-decoration: underline wavy var(--error);

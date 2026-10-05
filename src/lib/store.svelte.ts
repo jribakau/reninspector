@@ -2,7 +2,8 @@ export type { Activity, BottomTab, EditorTab, LiveView, Loc, PaletteMode, RenpyS
 export { editorTabId } from './model.svelte'
 export { app } from './model.svelte'
 
-export { diagnosticsFor, fileInfo, fileOfNode, labelAt, lookupSymbol, nodeByName, nodesInFile, symbolsOf } from './indexes.svelte'
+export { diagnosticsFor, enclosingAt, fileInfo, fileOfNode, labelAt, lookupSymbol, nodeByName, nodesInFile, outlineOf, symbolsOf } from './indexes.svelte'
+export type { OutlineEntry } from './indexes.svelte'
 
 export {
   activateEditor,

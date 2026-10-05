@@ -130,6 +130,7 @@ fn skip_reason(stmt: &Stmt) -> Option<&'static str> {
         Kind::Define { .. } => Some("a define"),
         Kind::Image { .. } => Some("an image"),
         Kind::Transform { .. } => Some("a transform"),
+        Kind::Style { .. } => Some("a style"),
         Kind::Screen { .. } => Some("a screen"),
         Kind::Python { text, .. } if text.starts_with("init") => Some("an init python block"),
         Kind::Opaque { kind } => match kind.as_str() {

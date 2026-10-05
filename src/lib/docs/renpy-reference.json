@@ -1,0 +1,695 @@
+{
+  "license": "Summaries were written for Ren'Inspector. They link to the Ren'Py documentation, which ships with Ren'Py under the MIT licence (https://www.renpy.org/doc/html/license.html). The documentation pages themselves are not included.",
+  "entries": [
+    {
+      "name": "label",
+      "kind": "statement",
+      "signature": "label name:",
+      "summary": "Names a place the script can jump or call.",
+      "params": [
+        {
+          "name": "name",
+          "doc": "The label name. It must be unique in the game."
+        }
+      ],
+      "url": "https://www.renpy.org/doc/html/label.html"
+    },
+    {
+      "name": "menu",
+      "kind": "statement",
+      "signature": "menu:",
+      "summary": "Asks the player to pick one of several choices.",
+      "params": [],
+      "url": "https://www.renpy.org/doc/html/menus.html"
+    },
+    {
+      "name": "jump",
+      "kind": "statement",
+      "signature": "jump label",
+      "summary": "Transfers control to a label and does not come back.",
+      "params": [
+        {
+          "name": "label",
+          "doc": "The label to continue from."
+        }
+      ],
+      "url": "https://www.renpy.org/doc/html/label.html#jump-statement"
+    },
+    {
+      "name": "call",
+      "kind": "statement",
+      "signature": "call label",
+      "summary": "Runs a label and returns to the next line when that label returns.",
+      "params": [
+        {
+          "name": "label",
+          "doc": "The label to run."
+        }
+      ],
+      "url": "https://www.renpy.org/doc/html/label.html#call-statement"
+    },
+    {
+      "name": "return",
+      "kind": "statement",
+      "signature": "return",
+      "summary": "Ends the current label and goes back to the caller, or to the main menu.",
+      "params": [],
+      "url": "https://www.renpy.org/doc/html/label.html#return-statement"
+    },
+    {
+      "name": "if",
+      "kind": "statement",
+      "signature": "if condition:",
+      "summary": "Runs the following block only when the condition is true. elif and else are further branches.",
+      "params": [],
+      "url": "https://www.renpy.org/doc/html/conditional.html"
+    },
+    {
+      "name": "show",
+      "kind": "statement",
+      "signature": "show image",
+      "summary": "Displays an image on a layer, on top of what is already there.",
+      "params": [
+        {
+          "name": "image",
+          "doc": "An image name, or a tag plus attributes."
+        }
+      ],
+      "url": "https://www.renpy.org/doc/html/displaying_images.html"
+    },
+    {
+      "name": "scene",
+      "kind": "statement",
+      "signature": "scene image",
+      "summary": "Clears a layer and then shows an image on it.",
+      "params": [
+        {
+          "name": "image",
+          "doc": "The image to show after the layer is cleared."
+        }
+      ],
+      "url": "https://www.renpy.org/doc/html/displaying_images.html"
+    },
+    {
+      "name": "hide",
+      "kind": "statement",
+      "signature": "hide image",
+      "summary": "Removes an image from the screen.",
+      "params": [],
+      "url": "https://www.renpy.org/doc/html/displaying_images.html"
+    },
+    {
+      "name": "with",
+      "kind": "statement",
+      "signature": "with transition",
+      "summary": "Shows the screen changes so far using a transition.",
+      "params": [],
+      "url": "https://www.renpy.org/doc/html/transitions.html"
+    },
+    {
+      "name": "define",
+      "kind": "statement",
+      "signature": "define name = value",
+      "summary": "Assigns a value once, when the game starts. Not saved, and not changed later.",
+      "params": [],
+      "url": "https://www.renpy.org/doc/html/python.html#define-statement"
+    },
+    {
+      "name": "default",
+      "kind": "statement",
+      "signature": "default name = value",
+      "summary": "Assigns a value the first time a new game starts. The value is saved.",
+      "params": [],
+      "url": "https://www.renpy.org/doc/html/python.html#default-statement"
+    },
+    {
+      "name": "image",
+      "kind": "statement",
+      "signature": "image name = displayable",
+      "summary": "Gives a name to an image the script can show.",
+      "params": [],
+      "url": "https://www.renpy.org/doc/html/displaying_images.html#image-statement"
+    },
+    {
+      "name": "play",
+      "kind": "statement",
+      "signature": "play channel file",
+      "summary": "Plays an audio file on a channel.",
+      "params": [],
+      "url": "https://www.renpy.org/doc/html/audio.html#play-statement"
+    },
+    {
+      "name": "stop",
+      "kind": "statement",
+      "signature": "stop channel",
+      "summary": "Stops the audio on a channel.",
+      "params": [],
+      "url": "https://www.renpy.org/doc/html/audio.html#stop-statement"
+    },
+    {
+      "name": "queue",
+      "kind": "statement",
+      "signature": "queue channel file",
+      "summary": "Plays a file after the current one on that channel finishes.",
+      "params": [],
+      "url": "https://www.renpy.org/doc/html/audio.html#queue-statement"
+    },
+    {
+      "name": "voice",
+      "kind": "statement",
+      "signature": "voice file",
+      "summary": "Plays a voice file for the next line of dialogue.",
+      "params": [],
+      "url": "https://www.renpy.org/doc/html/audio.html#voice"
+    },
+    {
+      "name": "pause",
+      "kind": "statement",
+      "signature": "pause",
+      "summary": "Waits for a click, or for a number of seconds when one is given.",
+      "params": [],
+      "url": "https://www.renpy.org/doc/html/displaying_images.html#pause-statement"
+    },
+    {
+      "name": "screen",
+      "kind": "statement",
+      "signature": "screen name():",
+      "summary": "Defines a screen of UI displayables and actions.",
+      "params": [],
+      "url": "https://www.renpy.org/doc/html/screens.html"
+    },
+    {
+      "name": "transform",
+      "kind": "statement",
+      "signature": "transform name:",
+      "summary": "Defines an ATL transform that can be used with at.",
+      "params": [],
+      "url": "https://www.renpy.org/doc/html/transforms.html"
+    },
+    {
+      "name": "style",
+      "kind": "statement",
+      "signature": "style name:",
+      "summary": "Defines or changes a style.",
+      "params": [],
+      "url": "https://www.renpy.org/doc/html/style.html"
+    },
+    {
+      "name": "python",
+      "kind": "statement",
+      "signature": "python:",
+      "summary": "Runs a block of Python. init python runs it at init time.",
+      "params": [],
+      "url": "https://www.renpy.org/doc/html/python.html"
+    },
+    {
+      "name": "init",
+      "kind": "statement",
+      "signature": "init:",
+      "summary": "Runs the block while the game is loading, before the game starts.",
+      "params": [],
+      "url": "https://www.renpy.org/doc/html/python.html#init-statement"
+    },
+    {
+      "name": "translate",
+      "kind": "statement",
+      "signature": "translate language:",
+      "summary": "Holds dialogue or strings rewritten for one language.",
+      "params": [],
+      "url": "https://www.renpy.org/doc/html/translation.html"
+    },
+    {
+      "name": "Character",
+      "kind": "function",
+      "signature": "Character(name, **properties)",
+      "summary": "Creates a character that can say dialogue.",
+      "params": [
+        {
+          "name": "name",
+          "doc": "The name shown, or None for the narrator."
+        },
+        {
+          "name": "color",
+          "doc": "Colour of the name."
+        },
+        {
+          "name": "who_color",
+          "doc": "Same role as color."
+        },
+        {
+          "name": "what_color",
+          "doc": "Colour of the dialogue."
+        },
+        {
+          "name": "image",
+          "doc": "Image tag to show while this character speaks."
+        }
+      ],
+      "url": "https://www.renpy.org/doc/html/dialogue.html#Character"
+    },
+    {
+      "name": "DynamicCharacter",
+      "kind": "function",
+      "signature": "DynamicCharacter(name_expr)",
+      "summary": "A character whose name is read from an expression each time they speak.",
+      "params": [
+        {
+          "name": "name_expr",
+          "doc": "A string giving the expression that produces the name."
+        }
+      ],
+      "url": "https://www.renpy.org/doc/html/dialogue.html#DynamicCharacter"
+    },
+    {
+      "name": "Dissolve",
+      "kind": "function",
+      "signature": "Dissolve(time)",
+      "summary": "A transition that fades from the old screen to the new one.",
+      "params": [
+        {
+          "name": "time",
+          "doc": "How long the fade takes, in seconds."
+        }
+      ],
+      "url": "https://www.renpy.org/doc/html/transitions.html#Dissolve"
+    },
+    {
+      "name": "Fade",
+      "kind": "function",
+      "signature": "Fade(out_time, hold_time, in_time)",
+      "summary": "Fades to a colour, holds, then fades in the new screen.",
+      "params": [
+        {
+          "name": "out_time",
+          "doc": "Seconds to fade out."
+        },
+        {
+          "name": "hold_time",
+          "doc": "Seconds to hold the colour."
+        },
+        {
+          "name": "in_time",
+          "doc": "Seconds to fade in."
+        }
+      ],
+      "url": "https://www.renpy.org/doc/html/transitions.html#Fade"
+    },
+    {
+      "name": "ImageDissolve",
+      "kind": "function",
+      "signature": "ImageDissolve(image, time)",
+      "summary": "Dissolves using the brightness of an image as the pattern.",
+      "params": [
+        {
+          "name": "image",
+          "doc": "The control image."
+        },
+        {
+          "name": "time",
+          "doc": "How long the dissolve takes."
+        }
+      ],
+      "url": "https://www.renpy.org/doc/html/transitions.html#ImageDissolve"
+    },
+    {
+      "name": "dissolve",
+      "kind": "transition",
+      "signature": "dissolve",
+      "summary": "A short fade. Defined by Ren'Py, so it can be used by name.",
+      "params": [],
+      "url": "https://www.renpy.org/doc/html/transitions.html"
+    },
+    {
+      "name": "fade",
+      "kind": "transition",
+      "signature": "fade",
+      "summary": "Fades through black.",
+      "params": [],
+      "url": "https://www.renpy.org/doc/html/transitions.html"
+    },
+    {
+      "name": "pixellate",
+      "kind": "transition",
+      "signature": "pixellate",
+      "summary": "Dissolves through a pixelated image.",
+      "params": [],
+      "url": "https://www.renpy.org/doc/html/transitions.html"
+    },
+    {
+      "name": "move",
+      "kind": "transition",
+      "signature": "move",
+      "summary": "Slides images that changed position.",
+      "params": [],
+      "url": "https://www.renpy.org/doc/html/transitions.html"
+    },
+    {
+      "name": "ease",
+      "kind": "transition",
+      "signature": "ease",
+      "summary": "Slides images, slowing at each end.",
+      "params": [],
+      "url": "https://www.renpy.org/doc/html/transitions.html"
+    },
+    {
+      "name": "renpy.jump",
+      "kind": "function",
+      "signature": "renpy.jump(label)",
+      "summary": "Jumps to a label from Python.",
+      "params": [
+        {
+          "name": "label",
+          "doc": "The label name."
+        }
+      ],
+      "url": "https://www.renpy.org/doc/html/statement_equivalents.html#renpy.jump"
+    },
+    {
+      "name": "renpy.call",
+      "kind": "function",
+      "signature": "renpy.call(label, *args, **kwargs)",
+      "summary": "Calls a label from Python and returns when it returns.",
+      "params": [
+        {
+          "name": "label",
+          "doc": "The label name."
+        }
+      ],
+      "url": "https://www.renpy.org/doc/html/statement_equivalents.html#renpy.call"
+    },
+    {
+      "name": "renpy.show",
+      "kind": "function",
+      "signature": "renpy.show(name, at_list=None)",
+      "summary": "Shows an image from Python.",
+      "params": [
+        {
+          "name": "name",
+          "doc": "The image name."
+        }
+      ],
+      "url": "https://www.renpy.org/doc/html/statement_equivalents.html#renpy.show"
+    },
+    {
+      "name": "renpy.hide",
+      "kind": "function",
+      "signature": "renpy.hide(name)",
+      "summary": "Hides an image from Python.",
+      "params": [
+        {
+          "name": "name",
+          "doc": "The image name or tag."
+        }
+      ],
+      "url": "https://www.renpy.org/doc/html/statement_equivalents.html#renpy.hide"
+    },
+    {
+      "name": "renpy.scene",
+      "kind": "function",
+      "signature": "renpy.scene(layer=\"master\")",
+      "summary": "Clears a layer from Python.",
+      "params": [
+        {
+          "name": "layer",
+          "doc": "The layer to clear."
+        }
+      ],
+      "url": "https://www.renpy.org/doc/html/statement_equivalents.html#renpy.scene"
+    },
+    {
+      "name": "renpy.pause",
+      "kind": "function",
+      "signature": "renpy.pause(delay=None)",
+      "summary": "Waits for a click, or for delay seconds.",
+      "params": [
+        {
+          "name": "delay",
+          "doc": "Seconds to wait. Omit it to wait for a click."
+        }
+      ],
+      "url": "https://www.renpy.org/doc/html/statement_equivalents.html#renpy.pause"
+    },
+    {
+      "name": "renpy.input",
+      "kind": "function",
+      "signature": "renpy.input(prompt, default=\"\", length=None)",
+      "summary": "Asks the player to type a line of text.",
+      "params": [
+        {
+          "name": "prompt",
+          "doc": "Text shown before the field."
+        },
+        {
+          "name": "default",
+          "doc": "Text already in the field."
+        },
+        {
+          "name": "length",
+          "doc": "Maximum number of characters."
+        }
+      ],
+      "url": "https://www.renpy.org/doc/html/input.html"
+    },
+    {
+      "name": "renpy.notify",
+      "kind": "function",
+      "signature": "renpy.notify(message)",
+      "summary": "Shows a short message over the game.",
+      "params": [
+        {
+          "name": "message",
+          "doc": "The text to show."
+        }
+      ],
+      "url": "https://www.renpy.org/doc/html/other.html#renpy.notify"
+    },
+    {
+      "name": "renpy.say",
+      "kind": "function",
+      "signature": "renpy.say(who, what)",
+      "summary": "Displays a line of dialogue from Python.",
+      "params": [
+        {
+          "name": "who",
+          "doc": "The character, or None."
+        },
+        {
+          "name": "what",
+          "doc": "The dialogue."
+        }
+      ],
+      "url": "https://www.renpy.org/doc/html/statement_equivalents.html#renpy.say"
+    },
+    {
+      "name": "renpy.music.play",
+      "kind": "function",
+      "signature": "renpy.music.play(filenames, channel=\"music\")",
+      "summary": "Plays audio on a channel from Python.",
+      "params": [
+        {
+          "name": "filenames",
+          "doc": "A file, or a list of files."
+        },
+        {
+          "name": "channel",
+          "doc": "The audio channel."
+        }
+      ],
+      "url": "https://www.renpy.org/doc/html/audio.html#renpy.music.play"
+    },
+    {
+      "name": "renpy.music.stop",
+      "kind": "function",
+      "signature": "renpy.music.stop(channel=\"music\", fadeout=None)",
+      "summary": "Stops audio on a channel.",
+      "params": [
+        {
+          "name": "channel",
+          "doc": "The audio channel."
+        },
+        {
+          "name": "fadeout",
+          "doc": "Seconds to fade out."
+        }
+      ],
+      "url": "https://www.renpy.org/doc/html/audio.html#renpy.music.stop"
+    },
+    {
+      "name": "renpy.show_screen",
+      "kind": "function",
+      "signature": "renpy.show_screen(name, *args, **kwargs)",
+      "summary": "Shows a screen from Python.",
+      "params": [
+        {
+          "name": "name",
+          "doc": "The screen name."
+        }
+      ],
+      "url": "https://www.renpy.org/doc/html/screens.html#renpy.show_screen"
+    },
+    {
+      "name": "renpy.call_screen",
+      "kind": "function",
+      "signature": "renpy.call_screen(name, *args, **kwargs)",
+      "summary": "Shows a screen and waits until it returns a value.",
+      "params": [
+        {
+          "name": "name",
+          "doc": "The screen name."
+        }
+      ],
+      "url": "https://www.renpy.org/doc/html/screens.html#renpy.call_screen"
+    },
+    {
+      "name": "renpy.hide_screen",
+      "kind": "function",
+      "signature": "renpy.hide_screen(name)",
+      "summary": "Hides a screen.",
+      "params": [
+        {
+          "name": "name",
+          "doc": "The screen name."
+        }
+      ],
+      "url": "https://www.renpy.org/doc/html/screens.html#renpy.hide_screen"
+    },
+    {
+      "name": "Show",
+      "kind": "action",
+      "signature": "Show(screen, transition=None, *args, **kwargs)",
+      "summary": "Shows a screen. Used as a screen action.",
+      "params": [
+        {
+          "name": "screen",
+          "doc": "The screen to show."
+        }
+      ],
+      "url": "https://www.renpy.org/doc/html/screen_actions.html#Show"
+    },
+    {
+      "name": "Hide",
+      "kind": "action",
+      "signature": "Hide(screen, transition=None)",
+      "summary": "Hides a screen.",
+      "params": [
+        {
+          "name": "screen",
+          "doc": "The screen to hide."
+        }
+      ],
+      "url": "https://www.renpy.org/doc/html/screen_actions.html#Hide"
+    },
+    {
+      "name": "Jump",
+      "kind": "action",
+      "signature": "Jump(label)",
+      "summary": "Jumps to a label. Used as a screen action.",
+      "params": [
+        {
+          "name": "label",
+          "doc": "The label to jump to."
+        }
+      ],
+      "url": "https://www.renpy.org/doc/html/screen_actions.html#Jump"
+    },
+    {
+      "name": "Call",
+      "kind": "action",
+      "signature": "Call(label)",
+      "summary": "Calls a label. Used as a screen action.",
+      "params": [
+        {
+          "name": "label",
+          "doc": "The label to call."
+        }
+      ],
+      "url": "https://www.renpy.org/doc/html/screen_actions.html#Call"
+    },
+    {
+      "name": "ShowMenu",
+      "kind": "action",
+      "signature": "ShowMenu(screen)",
+      "summary": "Shows a main-menu or game-menu screen.",
+      "params": [
+        {
+          "name": "screen",
+          "doc": "The menu screen."
+        }
+      ],
+      "url": "https://www.renpy.org/doc/html/screen_actions.html#ShowMenu"
+    },
+    {
+      "name": "SetVariable",
+      "kind": "action",
+      "signature": "SetVariable(name, value)",
+      "summary": "Sets a store variable.",
+      "params": [
+        {
+          "name": "name",
+          "doc": "The variable name."
+        },
+        {
+          "name": "value",
+          "doc": "The value to assign."
+        }
+      ],
+      "url": "https://www.renpy.org/doc/html/screen_actions.html#SetVariable"
+    },
+    {
+      "name": "SetScreenVariable",
+      "kind": "action",
+      "signature": "SetScreenVariable(name, value)",
+      "summary": "Sets a variable local to the current screen.",
+      "params": [
+        {
+          "name": "name",
+          "doc": "The screen variable."
+        },
+        {
+          "name": "value",
+          "doc": "The value to assign."
+        }
+      ],
+      "url": "https://www.renpy.org/doc/html/screen_actions.html#SetScreenVariable"
+    },
+    {
+      "name": "ToggleScreen",
+      "kind": "action",
+      "signature": "ToggleScreen(screen)",
+      "summary": "Shows a screen, or hides it if it is already shown.",
+      "params": [
+        {
+          "name": "screen",
+          "doc": "The screen to toggle."
+        }
+      ],
+      "url": "https://www.renpy.org/doc/html/screen_actions.html#ToggleScreen"
+    },
+    {
+      "name": "Function",
+      "kind": "action",
+      "signature": "Function(callable, *args, **kwargs)",
+      "summary": "Calls a Python function. Used as a screen action.",
+      "params": [
+        {
+          "name": "callable",
+          "doc": "The function to call."
+        }
+      ],
+      "url": "https://www.renpy.org/doc/html/screen_actions.html#Function"
+    },
+    {
+      "name": "Return",
+      "kind": "action",
+      "signature": "Return(value=None)",
+      "summary": "Ends renpy.call_screen and returns a value.",
+      "params": [
+        {
+          "name": "value",
+          "doc": "The value to return."
+        }
+      ],
+      "url": "https://www.renpy.org/doc/html/screen_actions.html#Return"
+    }
+  ]
+}

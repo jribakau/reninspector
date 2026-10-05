@@ -1,5 +1,7 @@
 import { snippetCompletion, type Completion, type CompletionContext, type CompletionResult } from '@codemirror/autocomplete'
 import { api } from '../api'
+import { docNow, docsStarting, loadDocs } from '../docs/reference'
+import { inPython } from './python'
 import { symbolsOf } from '../indexes.svelte'
 import { app } from '../model.svelte'
 
@@ -57,6 +59,26 @@ function keywords(): Completion[] {
   return KEYWORDS.map((k) => ({ label: k, detail: 'statement', type: 'keyword' }))
 }
 
+function withDocs(items: Completion[]): Completion[] {
+  return items.map((item) => {
+    const doc = docNow(item.label)
+    return doc ? { ...item, info: doc.summary } : item
+  })
+}
+
+function renpyApi(): Completion[] {
+  return docsStarting('renpy.').map((d) => ({ label: d.name, detail: 'function', type: 'function', info: d.summary }))
+}
+
+function pythonPool(): Completion[] {
+  return [
+    ...variables(),
+    ...renpyApi(),
+    ...symbolsOf('function').map((s) => ({ label: s.name, detail: s.path || 'function', type: 'function' })),
+    ...symbolsOf('class').map((s) => ({ label: s.name, detail: s.path || 'class', type: 'class' })),
+  ]
+}
+
 function pick(pool: Completion[], prefix: string): Completion[] {
   const pre = prefix.toLowerCase()
   if (!pre) return pool.slice(0, 40)
@@ -84,6 +106,7 @@ function quotedAudio(path: string, quoted: boolean): Completion {
 
 /** Ren'Py-aware completions: names from the project, plus snippets at the start of a statement. */
 export async function renpyComplete(context: CompletionContext): Promise<CompletionResult | null> {
+  await loadDocs()
   const line = context.state.doc.lineAt(context.pos)
   const before = line.text.slice(0, context.pos - line.from)
   const word = context.matchBefore(/[A-Za-z_][\w.]*/)
@@ -109,7 +132,11 @@ export async function renpyComplete(context: CompletionContext): Promise<Complet
     pool = TRANSITIONS.map((t) => ({ label: t, detail: 'transition', type: 'constant' }))
   } else if (/\bat\s+[\w.]*$/.test(before)) {
     pool = named('transform', 'transform', 'function')
-  } else if (/(?:^|\s)\$(?:\s*[\w.]*)?$/.test(before) || /\b(?:if|elif|while)\s+[\w.]*$/.test(before) || /\b(?:define|default)\b[^=\n]*=\s*[\w.]*$/.test(before)) {
+  } else if (word && /^renpy(\.|$)/.test(word.text)) {
+    pool = renpyApi()
+  } else if (inPython(context.state.doc, line.number) || /(?:^|\s)\$(?:\s*[\w.]*)?$/.test(before)) {
+    pool = pythonPool()
+  } else if (/\b(?:if|elif|while)\s+[\w.]*$/.test(before) || /\b(?:define|default)\b[^=\n]*=\s*[\w.]*$/.test(before)) {
     pool = variables()
   } else if (/\b(?:jump|call|menu)\s+[\w.]*$/.test(before)) {
     pool = named('label', 'label', 'label')
@@ -131,7 +158,7 @@ export async function renpyComplete(context: CompletionContext): Promise<Complet
     pool = keywords()
   }
 
-  const options = pick(pool, prefix)
+  const options = withDocs(pick(pool, prefix))
   if (!options.length) return null
   return { from, options, validFor }
 }

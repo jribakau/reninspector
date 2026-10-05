@@ -18,6 +18,7 @@ pub struct Symbol {
     pub name: String,
     pub path: String,
     pub line: u32,
+    pub end_line: u32,
     pub detail: String,
 }
 
@@ -194,6 +195,7 @@ pub fn build(files: &[SourceFile]) -> Catalog {
                     name: name.clone(),
                     path: f.rel.clone(),
                     line: s.line,
+                    end_line: s.end_line,
                     detail: String::new(),
                 });
                 push_site(&mut sites, "label", name, "decl", &f.rel, s.line);
@@ -204,6 +206,7 @@ pub fn build(files: &[SourceFile]) -> Catalog {
                     name: name.clone(),
                     path: f.rel.clone(),
                     line: s.line,
+                    end_line: s.end_line,
                     detail: String::new(),
                 });
                 push_site(&mut sites, "screen", name, "decl", &f.rel, s.line);
@@ -227,6 +230,7 @@ pub fn build(files: &[SourceFile]) -> Catalog {
                     name: name.clone(),
                     path: f.rel.clone(),
                     line: s.line,
+                    end_line: s.end_line,
                     detail,
                 });
                 push_site(&mut sites, "image", name, "decl", &f.rel, s.line);
@@ -237,9 +241,21 @@ pub fn build(files: &[SourceFile]) -> Catalog {
                     name: name.clone(),
                     path: f.rel.clone(),
                     line: s.line,
+                    end_line: s.end_line,
                     detail: String::new(),
                 });
                 push_site(&mut sites, "transform", name, "decl", &f.rel, s.line);
+            }
+            Kind::Style { name } => {
+                symbols.push(Symbol {
+                    kind: "style".into(),
+                    name: name.clone(),
+                    path: f.rel.clone(),
+                    line: s.line,
+                    end_line: s.end_line,
+                    detail: String::new(),
+                });
+                push_site(&mut sites, "style", name, "decl", &f.rel, s.line);
             }
             Kind::Define {
                 keyword,
@@ -254,6 +270,7 @@ pub fn build(files: &[SourceFile]) -> Catalog {
                         name: name.clone(),
                         path: f.rel.clone(),
                         line: s.line,
+                        end_line: s.end_line,
                         detail: match (who, color) {
                             (Some(w), Some(c)) => format!("{w} · {c}"),
                             (Some(w), None) => w,
@@ -384,7 +401,18 @@ pub fn build(files: &[SourceFile]) -> Catalog {
                     }
                 }
             }
-            Kind::Python { block, text, refs } => {
+            Kind::Python { block, text, refs, names } => {
+                for n in names {
+                    symbols.push(Symbol {
+                        kind: n.kind.into(),
+                        name: n.name.clone(),
+                        path: f.rel.clone(),
+                        line: n.line,
+                        end_line: n.line,
+                        detail: String::new(),
+                    });
+                    push_site(&mut sites, n.kind, &n.name, "decl", &f.rel, n.line);
+                }
                 for r in refs {
                     let Some(name) = r.name.as_deref() else {
                         continue;
@@ -986,6 +1014,7 @@ fn symbol_of(cat: &Catalog, kind: &str, name: &str) -> Option<Symbol> {
                 name: v.name.clone(),
                 path: v.path.clone(),
                 line: v.line,
+                end_line: v.line,
                 detail: v.value.clone(),
             });
         }
@@ -998,6 +1027,7 @@ fn symbol_of(cat: &Catalog, kind: &str, name: &str) -> Option<Symbol> {
             name: name.to_string(),
             path: o.path.clone(),
             line: o.line,
+            end_line: o.line,
             detail: String::new(),
         })
 }
@@ -1361,12 +1391,27 @@ screen phone():
     use extra
 label later:
     return
+style say_dialogue:
+    color \"#fff\"
+init python:
+    def greet(who):
+        return who
+    class Box:
+        def method(self):
+            pass
 ";
         let cat = build(&[file(src)]);
         assert!(cat
             .symbols
             .iter()
-            .any(|s| s.kind == "transform" && s.name == "left" && s.line == 1));
+            .any(|s| s.kind == "transform" && s.name == "left" && s.line == 1 && s.end_line == 2));
+        assert!(cat.symbols.iter().any(|s| {
+            s.kind == "style" && s.name == "say_dialogue" && s.line == 19 && s.end_line == 20
+        }));
+        assert!(cat.symbols.iter().any(|s| s.kind == "function" && s.name == "greet" && s.line == 22));
+        assert!(cat.symbols.iter().any(|s| s.kind == "class" && s.name == "Box" && s.line == 24));
+        // Methods belong to their class, not to the store.
+        assert!(!cat.symbols.iter().any(|s| s.name == "method"));
         assert_eq!(
             roles(&cat, "label", "later"),
             vec![("use", 11), ("use", 15), ("decl", 17)]

@@ -459,6 +459,9 @@ every build.
 | @lezer/highlight | 1.2.5 | MIT | https://code.haverbeke.berlin/lezer/highlight |
 | @lezer/lr | 1.4.10 | MIT | https://code.haverbeke.berlin/lezer/lr |
 | @marijn/find-cluster-break | 1.0.4 | MIT | https://code.haverbeke.berlin/marijn/find-cluster-break |
+| @replit/codemirror-emacs | 6.1.0 | MIT | https://github.com/replit/codemirror-emacs |
+| @replit/codemirror-vim | 6.4.0 | MIT | https://github.com/replit/codemirror-vim |
+| @replit/codemirror-vim-core | 0.1.0 | MIT | https://github.com/replit/codemirror-vim |
 | @tauri-apps/api | 2.12.1 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri |
 | @tauri-apps/plugin-dialog | 2.8.1 | MIT OR Apache-2.0 | https://github.com/tauri-apps/plugins-workspace |
 | @tauri-apps/plugin-updater | 2.13.1 | MIT OR Apache-2.0 | https://github.com/tauri-apps/plugins-workspace |

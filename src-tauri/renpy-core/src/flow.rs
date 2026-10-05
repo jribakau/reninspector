@@ -647,7 +647,7 @@ impl Builder<'_> {
                 }
             }
             Kind::Python { .. } => node.python += 1,
-            Kind::Opaque { .. } | Kind::Transform { .. } => node.opaque += 1,
+            Kind::Opaque { .. } | Kind::Transform { .. } | Kind::Style { .. } => node.opaque += 1,
             Kind::If { branches } => {
                 if branches.iter().all(|b| is_cosmetic(&b.body)) {
                     node.variants += 1;

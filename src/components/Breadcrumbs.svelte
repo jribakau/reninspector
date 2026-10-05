@@ -7,14 +7,20 @@
     ellipsis: boolean
   }
 
-  interface Props {
-    path: string
-    label?: string | null
-    onsegment: (path: string) => void
-    onlabel?: () => void
+  interface CrumbSymbol {
+    id: string
+    name: string
+    kind: string
   }
 
-  let { path, label = null, onsegment, onlabel }: Props = $props()
+  interface Props {
+    path: string
+    symbols?: CrumbSymbol[]
+    onsegment: (path: string) => void
+    onsymbol?: (id: string) => void
+  }
+
+  let { path, symbols = [], onsegment, onsymbol }: Props = $props()
 
   let expanded = $state(false)
 
@@ -42,19 +48,19 @@
     {#if seg.ellipsis}
       <button class="seg more" title="Show the full path" aria-label="Show the full path" onclick={() => (expanded = true)}>…</button>
     {:else}
-      <button class="seg" class:last={i === crumbs.length - 1 && !label} onclick={() => onsegment(seg.path)}>
+      <button class="seg" class:last={i === crumbs.length - 1 && symbols.length === 0} onclick={() => onsegment(seg.path)}>
         {#if i === crumbs.length - 1}<Icon name="file" size={12} />{/if}
         <span class="txt">{seg.part}</span>
       </button>
     {/if}
   {/each}
-  {#if label}
+  {#each symbols as sym (sym.id)}
     <span class="sep"><Icon name="chevron-right" size={11} /></span>
-    <button class="label" onclick={() => onlabel?.()}>
-      <Icon name="flow" size={12} />
-      <span class="txt">{label}</span>
+    <button class="label" title={sym.kind} onclick={() => onsymbol?.(sym.id)}>
+      <span class="txt">{sym.name}</span>
+      {#if sym.kind !== 'label'}<em class="kind">{sym.kind}</em>{/if}
     </button>
-  {/if}
+  {/each}
 </div>
 
 <style>
@@ -106,5 +112,10 @@
   .label {
     color: var(--text);
     flex: none;
+  }
+  .kind {
+    font-style: normal;
+    font-size: var(--fs-xs);
+    color: var(--dim);
   }
 </style>

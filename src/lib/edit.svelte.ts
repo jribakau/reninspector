@@ -25,6 +25,13 @@ export interface EditorCommands {
   refs: () => void
   rename: () => void
   toggleComment: () => void
+  selectNext: () => void
+  moveLineUp: () => void
+  moveLineDown: () => void
+  fold: () => void
+  unfold: () => void
+  format: () => void
+  formatSelection: () => void
 }
 
 let editorCommands = $state<EditorCommands | null>(null)

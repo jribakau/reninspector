@@ -420,6 +420,7 @@ export interface Symbol {
   name: string
   path: string
   line: number
+  endLine: number
   detail: string
 }
 

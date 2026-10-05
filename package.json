@@ -12,6 +12,7 @@
     "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json",
     "test": "vitest run",
     "notices": "node scripts/notices.mjs",
+    "reference": "node scripts/build-reference.mjs",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"
@@ -36,6 +37,8 @@
     "@codemirror/state": "^6.5.2",
     "@codemirror/view": "^6.36.0",
     "@lezer/highlight": "^1.2.1",
+    "@replit/codemirror-emacs": "^6.1.0",
+    "@replit/codemirror-vim": "^6.4.0",
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-dialog": "^2.0.0",
     "@tauri-apps/plugin-updater": "^2.13.1",

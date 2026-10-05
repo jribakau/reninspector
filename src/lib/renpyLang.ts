@@ -1,5 +1,6 @@
 import { HighlightStyle, StreamLanguage, syntaxHighlighting, type StringStream } from '@codemirror/language'
 import { tags as t } from '@lezer/highlight'
+import { pythonLine } from './editor/python'
 
 /** Statement keywords, highlighted when they start a line. */
 const STATEMENT = new Set([
@@ -23,6 +24,10 @@ interface State {
   quote: string | null
   first: boolean
   expect: 'def' | 'ref' | null
+  /** Indent of an open `python:` block. */
+  pyIndent: number | null
+  /** The rest of this line is Python, so statement keywords stay ordinary words. */
+  pyLine: boolean
 }
 
 function readString(stream: StringStream, state: State): string {
@@ -59,10 +64,13 @@ function readString(stream: StringStream, state: State): string {
 
 export const renpyLanguage = StreamLanguage.define<State>({
   name: 'renpy',
-  startState: () => ({ triple: null, quote: null, first: true, expect: null }),
+  startState: () => ({ triple: null, quote: null, first: true, expect: null, pyIndent: null, pyLine: false }),
   token(stream, state) {
     if (state.triple || state.quote) return readString(stream, state)
     if (stream.sol()) {
+      const py = pythonLine(stream.string, state.pyIndent)
+      state.pyIndent = py.indent
+      state.pyLine = py.inline
       state.first = true
       state.expect = null
     }
@@ -101,6 +109,10 @@ export const renpyLanguage = StreamLanguage.define<State>({
         const kind = state.expect
         state.expect = null
         return kind === 'def' ? 'def' : 'link'
+      }
+      if (state.pyLine && (w === 'def' || w === 'class')) {
+        state.expect = 'def'
+        return 'keyword'
       }
       if (wasFirst && STATEMENT.has(w)) {
         if (w === 'label' || w === 'menu') state.expect = 'def'

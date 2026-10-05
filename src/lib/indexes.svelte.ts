@@ -1,5 +1,8 @@
+import { enclosing, mergeOutline, type OutlineEntry } from './editor/outline'
 import { app } from './model.svelte'
 import type { CatalogView, DiagReport, Diagnostic, FileInfo, MapNode, ProjectInfo, ProjectMap, Symbol } from './types'
+
+export type { OutlineEntry }
 
 let nodeIndex = new Map<string, MapNode>()
 let fileByPath = new Map<string, FileInfo>()
@@ -104,6 +107,35 @@ export function setMap(map: ProjectMap) {
   }
   labelsByFile = byFile
   app.map = map
+}
+
+/** Labels, menus, screens, transforms, and styles in one script, in source order. */
+export function outlineOf(file: string): OutlineEntry[] {
+  const nodes = nodesInFile(file)
+    .filter((n) => n.kind === 'label' || n.kind === 'menu' || n.kind === 'screen')
+    .map((n) => ({
+      id: n.id,
+      kind: n.kind,
+      name: n.kind === 'screen' && n.id.startsWith('screen:') ? n.id.slice(7) : n.id,
+      line: n.line,
+      endLine: n.endLine,
+    }))
+  const symbols = (app.catalog?.symbols ?? [])
+    .filter((s) => s.path === file && (s.kind === 'transform' || s.kind === 'style'))
+    .map((s) => ({
+      // A name can be defined twice in a file, and the keyed lists need unique ids.
+      id: `${s.kind}:${s.name}@${s.line}`,
+      kind: s.kind,
+      name: s.name,
+      line: s.line,
+      endLine: s.endLine > 0 ? s.endLine : s.line,
+    }))
+  return mergeOutline([...nodes, ...symbols])
+}
+
+/** Outline entries whose range contains the line, outermost first. */
+export function enclosingAt(file: string, line: number): OutlineEntry[] {
+  return enclosing(outlineOf(file), line)
 }
 
 /** Labels, menus, and screens defined in one script, in source order. */

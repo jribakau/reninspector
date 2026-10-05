@@ -52,6 +52,8 @@ pub enum Kind {
         block: bool,
         text: String,
         refs: Vec<PyRef>,
+        /// `def` and `class` names in the block.
+        names: Vec<PyName>,
     },
     Define {
         keyword: &'static str,
@@ -63,6 +65,10 @@ pub enum Kind {
     },
     /// `transform name:` — the ATL body stays unparsed.
     Transform {
+        name: String,
+    },
+    /// `style name:` — the property block stays unparsed.
+    Style {
         name: String,
     },
     Pass,
@@ -124,6 +130,15 @@ pub enum RefKind {
 /// A name mentioned at one source line (`Jump("shop")` inside a screen, `use phone`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NameAt {
+    pub name: String,
+    pub line: u32,
+}
+
+/// A function or class defined in a `python` block.
+#[derive(Debug, Clone)]
+pub struct PyName {
+    /// `"function"` or `"class"`.
+    pub kind: &'static str,
     pub name: String,
     pub line: u32,
 }
