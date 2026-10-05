@@ -11,7 +11,7 @@
     type ClusterMode,
     type MapLayout,
   } from '../lib/layout'
-  import { DETAIL_EDGES, NODE_BUDGET, NODE_RECT_BUDGET, batchPaths, indexBoxes, intersects, spatialIndex, truncate, type SpatialIndex, type ViewRect } from '../lib/view'
+  import { DETAIL_EDGES, NODE_BUDGET, NODE_RECT_BUDGET, batchPaths, indexBoxes, intersects, queryItems, spatialIndex, truncate, type SpatialIndex, type ViewRect } from '../lib/view'
   import { labelItems, openContextMenu } from '../lib/context.svelte'
   import { askText } from '../lib/dialog.svelte'
   import { fileInfo, fileOfNode, nodeByName } from '../lib/indexes.svelte'
@@ -232,10 +232,7 @@
   })
 
   function pick<T>(items: T[], index: SpatialIndex, x0: number, y0: number, x1: number, y1: number): T[] {
-    const ids = index.query(x0, y0, x1, y1)
-    const out = new Array<T>(ids.length)
-    for (let i = 0; i < ids.length; i++) out[i] = items[ids[i]]
-    return out
+    return queryItems(items, index, x0, y0, x1, y1)
   }
 
   const edgesByNode = $derived.by(() => {
@@ -876,7 +873,7 @@
   }
   .link-menu {
     position: absolute;
-    z-index: 5;
+    z-index: var(--z-split);
   }
   .link-menu :global(.menu-item) {
     white-space: nowrap;
@@ -889,7 +886,7 @@
   }
   .sub {
     fill: var(--dim);
-    font-size: 10.5px;
+    font-size: var(--fs-xs);
     pointer-events: none;
   }
 </style>

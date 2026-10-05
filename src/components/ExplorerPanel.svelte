@@ -1,15 +1,18 @@
 <script lang="ts">
   import { onDestroy, untrack } from 'svelte'
   import { api, errorText } from '../lib/api'
-  import { copyText, labelItems, openContextMenu, type MenuEntry } from '../lib/context.svelte'
+  import { copyText, openContextMenu, type MenuEntry } from '../lib/context.svelte'
   import { previewKind } from '../lib/preview'
   import { storedSize } from '../lib/pane'
   import { layout } from '../lib/settings.svelte'
   import { git } from '../lib/git.svelte'
   import { createEntry, deleteEntry, gameFolder, inGame, moveEntries, renameEntry, revealEntry, toTreePath } from '../lib/fileops.svelte'
   import { openFileHistory } from '../lib/nav.svelte'
-  import { app, fileInfo, goTo, outlineOf, selectLabel, showCode, type OutlineEntry } from '../lib/store.svelte'
-  import { baseName, isScriptName, isUnder, joinPath, movedPath, parentOf } from '../lib/treepaths'
+  import { app, fileInfo, goTo, outlineOf, selectLabel, showCode } from '../lib/store.svelte'
+  import { flattenTree } from '../lib/explorer'
+  import { dropFolder } from '../lib/treedrag'
+  import { baseName, isScriptName, joinPath, movedPath, parentOf } from '../lib/treepaths'
+  import OutlineSection from './OutlineSection.svelte'
   import { ROW } from '../lib/view'
   import { extOf, fileLook } from '../lib/filetypes'
   import Icon from './Icon.svelte'
@@ -135,22 +138,7 @@
     for (const path of open) void loadDir(path)
   })
 
-  function flatten(path: string, depth: number, out: Row[]) {
-    const cur = edit
-    if (cur?.mode === 'new' && cur.parent === path) {
-      out.push({ entry: { path: NEW_KEY, name: '', dir: cur.dir }, depth, isNew: true })
-    }
-    for (const entry of children[path] ?? []) {
-      out.push({ entry, depth, renaming: cur?.mode === 'rename' && cur.path === entry.path })
-      if (entry.dir && expanded.has(entry.path)) flatten(entry.path, depth + 1, out)
-    }
-  }
-
-  const rows = $derived.by(() => {
-    const out: Row[] = []
-    flatten('', 0, out)
-    return out
-  })
+  const rows = $derived(flattenTree(children, expanded, edit, NEW_KEY))
 
   const outline = $derived(app.loc ? outlineOf(app.loc.file) : [])
 
@@ -481,9 +469,7 @@
     } else {
       return null
     }
-    if (parentOf(entry.path) === dest) return null
-    if (entry.dir && isUnder(dest, entry.path)) return null
-    return dest
+    return dropFolder(entry, dest)
   }
 
   function onDragMove(e: PointerEvent) {
@@ -541,15 +527,6 @@
 
   onDestroy(stopDrag)
 
-  function openOutline(n: OutlineEntry) {
-    if (n.kind === 'transform' || n.kind === 'style') {
-      const file = app.loc?.file
-      if (file) goTo(file, n.line, n.endLine)
-      app.selectedLabel = n.id
-      return
-    }
-    selectLabel(n.id)
-  }
 </script>
 
 <div class="sb-panel">
@@ -559,9 +536,9 @@
   {#if listErr}<div class="sb-foot err">{listErr}</div>{/if}
   {#if edit?.error}<div class="sb-foot err" role="alert">{edit.error}</div>{/if}
 
-  <button class="sec" aria-expanded={treeOpen} onclick={() => setTreeOpen(!treeOpen)}>
+  <button class="sb-section" aria-expanded={treeOpen} onclick={() => setTreeOpen(!treeOpen)}>
     <span class="twist" class:open={treeOpen}><Icon name="chevron-right" size={12} /></span>
-    <span class="sec-name">{projectName}</span>
+    <span class="sb-section-name">{projectName}</span>
   </button>
   {#if treeOpen}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -699,38 +676,13 @@
   {#if treeOpen && outlineOpen}
     <Splitter axis="y" grow={-1} value={outlineH} min={72} hardMax={420} fraction={0.45} reserve={120} reset={160} onchange={(n) => { outlineH = n; localStorage.setItem('vnide.h.outline', String(n)) }} />
   {/if}
-  <div class="outline" class:grow={!treeOpen && outlineOpen} style={treeOpen && outlineOpen ? `height:${outlineH}px` : undefined}>
-    <button class="sec" aria-expanded={outlineOpen} onclick={() => setOutlineOpen(!outlineOpen)}>
-      <span class="twist" class:open={outlineOpen}><Icon name="chevron-right" size={12} /></span>
-      <span class="sec-name">Outline{app.loc ? ` · ${app.loc.file.split('/').pop()}` : ''}</span>
-      {#if outline.length}<span class="badge">{outline.length}</span>{/if}
-    </button>
-    {#if outlineOpen}
-      <div class="sb-list" bind:this={outlineEl}>
-        {#each outline as n (n.id)}
-          <button
-            class="sb-item"
-            data-id={n.id}
-            class:sel={app.selectedLabel === n.id}
-            onclick={() => openOutline(n)}
-            oncontextmenu={(e) => {
-              app.selectedLabel = n.id
-              if (n.kind === 'transform' || n.kind === 'style') return
-              openContextMenu(e, labelItems(n.id))
-            }}
-          >
-            <span class="sb-name">
-              {n.name}
-              {#if n.kind !== 'label'}<em class="sb-tag" class:screen={n.kind === 'screen'} class:tag-menu={n.kind === 'menu'}>{n.kind}</em>{/if}
-            </span>
-            <span class="sb-meta">line {n.line}</span>
-          </button>
-        {:else}
-          <div class="sb-empty">Open a script to list its labels, screens, transforms, and styles.</div>
-        {/each}
-      </div>
-    {/if}
-  </div>
+  <OutlineSection
+    open={outlineOpen}
+    grow={!treeOpen && outlineOpen}
+    height={treeOpen && outlineOpen ? outlineH : undefined}
+    ontoggle={() => setOutlineOpen(!outlineOpen)}
+    bind:list={outlineEl}
+  />
 </div>
 
 {#if drag}
@@ -761,39 +713,6 @@
     padding: 0 6px 0 var(--sp-4);
     overflow: hidden;
   }
-  .err {
-    color: var(--error);
-  }
-  .sec {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    width: 100%;
-    height: 24px;
-    flex: none;
-    padding: 0 var(--sp-3) 0 6px;
-    border: none;
-    border-radius: 0;
-    border-top: 1px solid var(--line-soft);
-    background: transparent;
-    color: var(--dim);
-    font-size: var(--fs-sm);
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    text-align: left;
-  }
-  .sec:hover {
-    color: var(--text);
-    background: var(--hover);
-  }
-  .sec-name {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
   .tree {
     flex: 1 1 0;
     user-select: none;
@@ -802,15 +721,6 @@
     outline: 1px dashed var(--accent);
     outline-offset: -2px;
     background: color-mix(in srgb, var(--accent) 6%, transparent);
-  }
-  .outline {
-    flex: none;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-  }
-  .outline.grow {
-    flex: 1 1 0;
   }
   .node {
     position: relative;

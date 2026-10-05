@@ -96,7 +96,4 @@
     flex: 1;
     min-width: 0;
   }
-  .dim {
-    color: var(--dim);
-  }
 </style>

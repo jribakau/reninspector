@@ -168,7 +168,6 @@
     mask-image: linear-gradient(to right, transparent, black 8px, black calc(100% - 12px), transparent);
   }
   .warn {
-    color: var(--warning);
     font-size: var(--fs-sm);
     flex: none;
   }
@@ -177,7 +176,6 @@
     font-weight: 700;
   }
   .dim {
-    color: var(--dim);
     font-size: var(--fs-md);
   }
   .who,

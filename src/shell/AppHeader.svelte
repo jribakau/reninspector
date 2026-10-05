@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { onMount, tick, untrack } from 'svelte'
-  import { getCurrentWindow } from '@tauri-apps/api/window'
+  import { tick, untrack } from 'svelte'
   import Icon from '../components/Icon.svelte'
+  import WindowControls from './WindowControls.svelte'
   import { git, openBranchPicker } from '../lib/git.svelte'
   import {
     menuRequest,
@@ -23,7 +23,6 @@
   let index = $state(0)
   let recent = $state(false)
   let recentIndex = $state(0)
-  let maximized = $state(false)
 
   const sections = $derived(menuSections())
   const section = $derived(sections.find((s) => s.id === sectionId) ?? null)
@@ -207,31 +206,6 @@
     return () => window.removeEventListener('keydown', onKey, true)
   })
 
-  function applyMax(value: boolean) {
-    maximized = value
-    document.documentElement.classList.toggle('maximized', value)
-  }
-
-  function tauriWindow() {
-    if (!('__TAURI_INTERNALS__' in window)) return null
-    return getCurrentWindow()
-  }
-
-  async function minimize() {
-    await tauriWindow()?.minimize()
-  }
-
-  async function toggleMax() {
-    const win = tauriWindow()
-    if (!win) return
-    await win.toggleMaximize()
-    applyMax(await win.isMaximized())
-  }
-
-  async function closeWindow() {
-    await tauriWindow()?.close()
-  }
-
   function focusSection(id: string) {
     sectionId = id
     recent = false
@@ -290,21 +264,6 @@
     return () => window.removeEventListener('resize', placeFlyouts)
   })
 
-  onMount(() => {
-    const win = tauriWindow()
-    if (!win) return
-    void win.isMaximized().then(applyMax)
-    let unlisten: (() => void) | undefined
-    void win.onResized(() => {
-      void win.isMaximized().then(applyMax)
-    }).then((fn) => {
-      unlisten = fn
-    })
-    return () => {
-      unlisten?.()
-      document.documentElement.classList.remove('maximized')
-    }
-  })
 </script>
 
 {#snippet accessText(label: string, access: string)}
@@ -557,17 +516,7 @@
     <button type="button" class="icon" aria-label="Settings" title="Settings (Ctrl+,)" onclick={() => openSettings()}>
       <Icon name="settings" />
     </button>
-    <div class="wins">
-      <button type="button" class="win" aria-label="Minimize" onclick={() => void minimize()}>
-        <Icon name="minimize" />
-      </button>
-      <button type="button" class="win" aria-label={maximized ? 'Restore' : 'Maximize'} onclick={() => void toggleMax()}>
-        <Icon name={maximized ? 'restore' : 'maximize'} />
-      </button>
-      <button type="button" class="win close" aria-label="Close" onclick={() => void closeWindow()}>
-        <Icon name="window-close" />
-      </button>
-    </div>
+    <WindowControls />
   </div>
 </header>
 
@@ -612,17 +561,17 @@
     display: flex;
     align-items: center;
   }
-  .icon, .chip, .win, .run button {
+  .icon, .chip, .run button {
     border: none;
     background: transparent;
     color: var(--text);
     border-radius: var(--r-md);
   }
-  .icon, .chip, .win {
+  .icon, .chip {
     height: 26px;
     color: var(--dim);
   }
-  .icon, .win {
+  .icon {
     width: 28px;
     flex: none;
     padding: 0;
@@ -703,20 +652,6 @@
   .run-go:hover:not(:disabled) {
     background: color-mix(in srgb, var(--ok) 18%, transparent);
   }
-  .wins {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-2);
-    margin-left: var(--sp-2);
-  }
-  .win:hover:not(:disabled) {
-    background: var(--active);
-    border-color: transparent;
-  }
-  .win.close:hover:not(:disabled) {
-    background: var(--error);
-    color: var(--on-error);
-  }
   .back {
     position: fixed;
     inset: 0;
@@ -728,7 +663,7 @@
   }
   .pop {
     position: absolute;
-    z-index: 2;
+    z-index: var(--z-raised);
     top: calc(100% + 4px);
     left: 0;
     min-width: 240px;
@@ -739,7 +674,7 @@
   .nest {
     top: 0;
     left: calc(100% - 4px);
-    z-index: 3;
+    z-index: var(--z-float);
   }
   .run-pop {
     left: 50%;

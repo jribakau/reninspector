@@ -22,7 +22,7 @@
     right: 24px;
     width: fit-content;
     max-width: calc(100% - 34px);
-    z-index: 2;
+    z-index: var(--z-raised);
   }
   .hud :global(.info) {
     color: var(--dim);

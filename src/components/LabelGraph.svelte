@@ -16,6 +16,7 @@
   import { app, fileInfo, nodeByName, symbolsOf } from '../lib/store.svelte'
   import { toggleFlowDetail } from '../lib/nav.svelte'
   import type { BeatLine, GNode, LabelGraph } from '../lib/types'
+  import { nodeAt as hitNode, packEdges as packEdgePaths, rangeText as lineRange, wrapText } from '../lib/graph'
   import { EDGE_BUDGET, NODE_BUDGET, indexBoxes, intersects, spatialIndex, truncate, type ViewRect } from '../lib/view'
 
   interface Props {
@@ -247,21 +248,6 @@
     }
   }
 
-  function wrapText(text: string, chars: number): string[] {
-    const words = text.replace(/\s+/g, ' ').trim().split(' ').filter(Boolean)
-    const lines: string[] = []
-    let cur = ''
-    for (const word of words) {
-      const next = cur ? `${cur} ${word}` : word
-      if (cur && next.length > chars) {
-        lines.push(cur)
-        cur = word
-      } else cur = next
-    }
-    if (cur) lines.push(cur)
-    return lines.slice(0, 6)
-  }
-
   function condOf(n: GNode): string {
     return graph?.edges.find((e) => e.to === n.id && e.kind === 'choice')?.cond ?? ''
   }
@@ -403,12 +389,11 @@
   }
 
   function dropTarget(x: number, y: number, from: GNode): GNode | null {
-    for (const p of layout?.nodes ?? []) {
-      if (p.id === from.id || x < p.x || x > p.x + p.w || y < p.y || y > p.y + p.h) continue
-      const n = nodesById.get(p.id)
-      if (n && dropScene(n)) return n
-    }
-    return null
+    const hit = hitNode(layout?.nodes ?? [], x, y, from.id, (box) => {
+      const n = nodesById.get(box.id)
+      return !!n && !!dropScene(n)
+    })
+    return hit ? (nodesById.get(hit.id) ?? null) : null
   }
 
   function startDrag(n: GNode, e: PointerEvent) {
@@ -516,7 +501,7 @@
   }
 
   function rangeText(n: GNode): string {
-    return n.endLine > n.line ? `lines ${n.line}–${n.endLine}` : `line ${n.line}`
+    return lineRange(n.line, n.endLine)
   }
 
   interface Marker {
@@ -561,24 +546,8 @@
   function packEdges(ids: number[], selected: number | null): { batches: { kind: string; d: string }[]; hot: string } {
     const g = graph
     const l = layout
-    const batches: { kind: string; d: string }[] = []
-    if (!g || !l) return { batches, hot: '' }
-    const parts = new Map<string, string[]>()
-    let hot = ''
-    for (const i of ids) {
-      const e = l.edges[i]
-      const ge = g.edges[e.index]
-      if (!ge) continue
-      if (selected !== null && (ge.from === selected || ge.to === selected)) {
-        hot = hot ? `${hot} ${e.d}` : e.d
-        continue
-      }
-      const bucket = parts.get(ge.kind)
-      if (bucket) bucket.push(e.d)
-      else parts.set(ge.kind, [e.d])
-    }
-    for (const [kind, ds] of parts) batches.push({ kind, d: ds.join(' ') })
-    return { batches, hot }
+    if (!g || !l) return { batches: [], hot: '' }
+    return packEdgePaths(ids, selected, l.edges, g.edges)
   }
 
   function edgeClass(e: GLEdge): string {
@@ -925,7 +894,7 @@
     position: absolute;
     left: 10px;
     bottom: 10px;
-    z-index: 2;
+    z-index: var(--z-raised);
     display: flex;
     flex-wrap: wrap;
     gap: var(--sp-2) var(--sp-4);
@@ -960,7 +929,7 @@
   .sw.live { border-color: var(--ok); border-style: dashed; }
   .picker {
     position: absolute;
-    z-index: 5;
+    z-index: var(--z-split);
     width: 280px;
     box-sizing: border-box;
     display: flex;
@@ -998,7 +967,7 @@
     width: 100%;
     height: 100%;
     pointer-events: none;
-    z-index: 3;
+    z-index: var(--z-float);
   }
   .drag-layer path {
     fill: none;
@@ -1024,7 +993,7 @@
   }
   .plus text {
     fill: var(--text);
-    font-size: 14px;
+    font-size: var(--fs-xl);
     pointer-events: none;
   }
   .handle {
@@ -1148,7 +1117,7 @@
   }
   .chip text {
     fill: var(--text);
-    font-size: 11px;
+    font-size: var(--fs-sm);
   }
 
   .node {
@@ -1213,23 +1182,23 @@
   }
   .head {
     fill: var(--text);
-    font-size: 12px;
+    font-size: var(--fs-md);
     font-weight: 600;
     pointer-events: none;
   }
   .preview {
     fill: var(--dim);
-    font-size: 11.5px;
+    font-size: var(--fs-sm);
     pointer-events: none;
   }
   .badges {
     fill: var(--warning);
-    font-size: 10.5px;
+    font-size: var(--fs-xs);
     pointer-events: none;
   }
   .pill {
     fill: var(--text);
-    font-size: 12px;
+    font-size: var(--fs-md);
     pointer-events: none;
   }
 </style>

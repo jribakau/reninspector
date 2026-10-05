@@ -60,8 +60,7 @@
 
 <style>
   p { margin: 0; }
-  .dim { color: var(--dim); font-size: var(--fs-md); }
-  .warn { color: var(--warning); font-size: var(--fs-md); }
+  .dim, .warn { font-size: var(--fs-md); }
   .bad { color: var(--error); font-size: var(--fs-md); }
   label { display: grid; gap: 4px; font-size: var(--fs-md); color: var(--dim); }
   .check { display: flex; gap: 8px; align-items: center; color: var(--text); }

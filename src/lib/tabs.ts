@@ -3,11 +3,12 @@
  * and which tabs a bulk close drops. Tabs are plain ids here, so none of this
  * needs the app state.
  */
+import type { IconName } from './icons'
+import type { EditorTab } from './model.svelte'
+import { previewKind } from './preview'
 
 /** How a peek can land without closing a tab the user asked to keep. */
 export type PreviewRoom = 'have' | 'replace' | 'append' | 'full'
-
-import type { EditorTab } from './model.svelte'
 
 /** What a tab shows as its name. */
 export function tabTitle(t: EditorTab): string {
@@ -212,4 +213,55 @@ export function bulkTargets(
         return true
     }
   })
+}
+
+export function tabIcon(t: EditorTab): IconName {
+  if (t.kind === 'map') return 'map'
+  if (t.kind === 'graph') return 'flow'
+  if (t.kind === 'diff' || t.kind === 'rebase') return 'diff'
+  const kind = previewKind(t.path)
+  if (kind === 'image') return 'image'
+  if (kind === 'audio') return 'audio'
+  if (kind === 'video') return 'video'
+  return 'file'
+}
+
+export function tabIsLive(t: EditorTab, live: { running: boolean; label: string; file: string }): boolean {
+  if (!live.running) return false
+  if (t.kind === 'graph') return live.label === t.name
+  if (t.kind === 'file') return live.file === t.path
+  return false
+}
+
+export interface OriginFile {
+  origin: string
+  archive: string | null
+  decompiled: boolean
+  path: string
+  editable: boolean
+  reasons: string[]
+}
+
+/** Why a file is read-only or not the bytes on disk, shown beside the editor. */
+export function originHint(file: OriginFile | undefined): string {
+  if (!file) return ''
+  if (file.origin === 'archived') {
+    return `inside ${file.archive}; saving writes a loose copy the game uses instead`
+  }
+  if (file.origin === 'override') {
+    return `overrides ${file.archive}; package edits to fold it into a patch`
+  }
+  if (file.decompiled) {
+    const compiled = file.path.replace(/\.rpym$/, '.rpymc').replace(/\.rpy$/, '.rpyc')
+    if (!file.editable) {
+      const why = file.reasons.length ? ` (${file.reasons.slice(0, 4).join('; ')})` : ''
+      return `Decompiled from ${compiled}, but not completely${why}. Read-only, so a save cannot drop code.`
+    }
+    return `Decompiled from ${compiled}. Comments and formatting are not recoverable.`
+  }
+  return ''
+}
+
+export function fileEditable(file: { editable: boolean } | undefined): boolean {
+  return file?.editable !== false
 }

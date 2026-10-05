@@ -33,23 +33,19 @@
     void tick().then(() => {
       const first =
         sheet?.querySelector<HTMLElement>('.body input, .body select, .body textarea, .body button') ??
-        sheet?.querySelector<HTMLElement>('.foot button.primary')
+        sheet?.querySelector<HTMLElement>('.dialog-foot button.primary')
       first?.focus()
       if (first instanceof HTMLInputElement && first.type === 'text') first.select()
     })
     return pop
   })
 
-  function backdrop(e: MouseEvent) {
-    if (e.target === e.currentTarget && !busy) onclose()
-  }
 </script>
 
-<!-- svelte-ignore a11y_click_events_have_key_events -->
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="modal" onclick={backdrop}>
+<div class="modal">
+  <button type="button" class="backdrop" aria-label="Close dialog" disabled={busy} onclick={onclose}></button>
   <div class="sheet {sizeClass}" bind:this={sheet} role="dialog" aria-modal="true" aria-labelledby={titleId}>
-    <header class="head">
+    <header class="dialog-head">
       <h3 id={titleId}>{title}</h3>
       <button type="button" class="icon sm ghost" aria-label="Close" disabled={busy} onclick={onclose}>
         <Icon name="close" size={14} />
@@ -59,7 +55,7 @@
       {@render children()}
     </div>
     {#if footer}
-      <footer class="foot">
+      <footer class="dialog-foot">
         {@render footer()}
       </footer>
     {/if}
@@ -70,14 +66,27 @@
   .modal {
     position: fixed;
     inset: 0;
-    background: var(--scrim);
     display: grid;
     place-items: center;
     z-index: var(--z-modal);
-    padding: 24px;
+    padding: var(--sp-6);
     animation: fade-in var(--dur) var(--ease);
   }
+  .backdrop {
+    position: absolute;
+    inset: 0;
+    border: none;
+    border-radius: 0;
+    padding: 0;
+    background: var(--scrim);
+  }
+  .backdrop:hover:not(:disabled) {
+    border-color: transparent;
+    background: var(--scrim);
+  }
   .sheet {
+    position: relative;
+    z-index: var(--z-base);
     width: min(480px, 100%);
     max-height: min(86vh, 760px);
     display: flex;
@@ -104,14 +113,6 @@
     display: flex;
     flex-direction: column;
   }
-  .head {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-3);
-    padding: 8px 8px 8px 16px;
-    border-bottom: 1px solid var(--line-soft);
-    flex: none;
-  }
   h3 {
     flex: 1;
     min-width: 0;
@@ -123,21 +124,11 @@
     white-space: nowrap;
   }
   .body {
-    padding: 14px 16px;
+    padding: var(--sp-4) var(--sp-5);
     overflow: auto;
     min-height: 0;
     display: grid;
-    gap: 10px;
-    align-content: start;
-  }
-  .foot {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
     gap: var(--sp-3);
-    padding: 10px 16px;
-    border-top: 1px solid var(--line-soft);
-    background: color-mix(in srgb, var(--bg) 40%, var(--panel));
-    flex: none;
+    align-content: start;
   }
 </style>

@@ -532,7 +532,7 @@
 <style>
   .fe {
     position: absolute;
-    z-index: 4;
+    z-index: var(--z-pop);
     width: 320px;
     box-sizing: border-box;
     display: flex;
@@ -592,7 +592,6 @@
   }
   .err {
     margin: 0;
-    color: var(--error);
     font-size: var(--fs-md);
   }
   .row,

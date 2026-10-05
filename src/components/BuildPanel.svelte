@@ -61,7 +61,6 @@
     user-select: text;
   }
   .line { white-space: pre-wrap; overflow-wrap: anywhere; }
-  .err { color: var(--error); }
   .bar {
     height: 4px;
     background: var(--panel-2);

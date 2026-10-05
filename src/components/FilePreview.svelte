@@ -139,7 +139,6 @@
     width: min(480px, 100%);
   }
   .err {
-    color: var(--error);
     font-size: var(--fs-lg);
   }
 </style>

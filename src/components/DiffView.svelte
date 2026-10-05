@@ -181,11 +181,11 @@
 </script>
 
 <div class="diff">
-  <div class="head pane-head">
+  <div class="pane-head code">
     <Icon name="diff" size={14} />
     <span class="dim path" title={path}>{path}</span>
     <span class="dim cap">{caption(rev)}</span>
-    <span class="tools">
+    <span class="pane-tools">
       {#if loading}<span class="dim">loading…</span>{/if}
       <button class="mini icon" onclick={() => jump(false)} title="Previous change" aria-label="Previous change"><Icon name="arrow-up" size={13} /></button>
       <button class="mini icon" onclick={() => jump(true)} title="Next change" aria-label="Next change"><Icon name="arrow-down" size={13} /></button>
@@ -196,7 +196,7 @@
       <button class="mini" onclick={openFile}>Open file</button>
     </span>
   </div>
-  {#if errorMsg}<div class="err">{errorMsg}</div>{/if}
+  {#if errorMsg}<div class="banner-err">{errorMsg}</div>{/if}
   <div class="host" bind:this={host}></div>
   {#if identical && !loading && !errorMsg}
     <div class="same empty-state">
@@ -218,11 +218,6 @@
   .diff {
     position: relative;
   }
-  .head {
-    min-width: 0;
-    background: var(--bg-code);
-    border-bottom-color: var(--line-soft);
-  }
   .same {
     position: absolute;
     inset: 30px 0 0;
@@ -236,18 +231,10 @@
     flex: 0 100 auto;
   }
   .dim {
-    color: var(--dim);
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-  .tools {
-    margin-left: auto;
-    display: flex;
-    gap: 6px;
-    align-items: center;
-    flex: none;
   }
   .host {
     flex: 1;
@@ -257,10 +244,5 @@
   .host :global(.cm-editor),
   .host :global(.cm-mergeView) {
     height: 100%;
-  }
-  .err {
-    color: var(--error);
-    padding: 8px 12px;
-    font-size: var(--fs-md);
   }
 </style>

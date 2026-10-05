@@ -2,6 +2,7 @@
   import { git } from '../lib/git.svelte'
   import type { IconName } from '../lib/icons'
   import { app, openBottom, showActivity, toggleBottom, type Activity } from '../lib/store.svelte'
+  import { tooltip } from '../lib/tooltip'
   import Icon from './Icon.svelte'
 
   const gitChanges = $derived(git.status?.changes.length ?? 0)
@@ -33,7 +34,7 @@
       {@const active = app.sidebarOpen && app.activity === item.id}
       <button
         class:on={active}
-        title={item.label}
+        use:tooltip={item.label}
         aria-label={item.label}
         aria-current={active ? 'page' : undefined}
         onclick={() => showActivity(item.id)}
@@ -55,7 +56,7 @@
     <div class="group end">
       <button
         class:on={app.bottomOpen}
-        title={problems ? `Panel: ${errors} errors, ${problems - errors} warnings` : 'Panel (Ctrl+J)'}
+        use:tooltip={problems ? `Panel: ${errors} errors, ${problems - errors} warnings` : 'Panel (Ctrl+J)'}
         aria-label="Toggle bottom panel"
         aria-pressed={app.bottomOpen}
         onclick={toggleBottom}
@@ -64,7 +65,7 @@
       </button>
       <button
         class:on={app.bottomOpen && app.bottomTab === 'problems'}
-        title="Problems"
+        use:tooltip={'Problems'}
         aria-label={problems ? `Problems, ${problems}` : 'Problems'}
         onclick={showProblems}
       >

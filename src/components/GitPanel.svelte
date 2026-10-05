@@ -621,7 +621,7 @@
     position: absolute;
     top: 26px;
     right: 0;
-    z-index: 4;
+    z-index: var(--z-pop);
     min-width: 180px;
   }
   .commit-pop { top: 30px; }
@@ -688,7 +688,7 @@
     align-items: center;
     position: sticky;
     top: 0;
-    z-index: 1;
+    z-index: var(--z-base);
     background: var(--panel);
     border-bottom: 1px solid var(--line);
   }

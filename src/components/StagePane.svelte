@@ -266,7 +266,7 @@
       <button class="text" aria-pressed={stageUi.preferEstimate} onclick={() => (stageUi.preferEstimate = true)}>Show estimate</button>
     {:else if estimate}
       <span class="mode">{stageUi.pending ? 'Updating' : 'Estimate'}</span>
-      <span class="dim">{stageSummary(estimate)}</span>
+      <span class="dim sum" title={stageSummary(estimate)}>{stageSummary(estimate)}</span>
       {#if pinCount}
         <span class="dim">{pinCount} pinned</span>
         <button class="text" title="Clear the values pinned for this project's stage preview" onclick={resetStagePins}>
@@ -522,8 +522,18 @@
   }
   .head {
     height: 28px;
-    padding: 0 8px;
-    gap: 8px;
+    padding: 0 var(--sp-3);
+    gap: var(--sp-3);
+  }
+  .head > * {
+    flex: none;
+    white-space: nowrap;
+  }
+  .head > .sum {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .mode {
     font-size: var(--fs-sm);
@@ -536,7 +546,6 @@
     color: var(--ok);
   }
   .dim {
-    color: var(--dim);
     font-size: var(--fs-md);
   }
   .status {
@@ -640,11 +649,19 @@
   .frame.dim {
     opacity: 0.72;
   }
-  .tail {
+  .head > .tail {
     margin-left: auto;
     display: flex;
     gap: 8px;
     min-width: 0;
+    flex: 0 1 auto;
+    overflow: hidden;
+  }
+  .tail > * {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .bad {
     color: var(--error);
@@ -657,7 +674,7 @@
     position: absolute;
     left: 0;
     width: 100%;
-    z-index: 10000;
+    z-index: var(--z-stage);
     pointer-events: none;
   }
   .window.plain {
@@ -685,7 +702,7 @@
     position: absolute;
     left: 0;
     width: 100%;
-    z-index: 10001;
+    z-index: var(--z-stage-front);
     display: flex;
     flex-direction: column;
     align-items: center;

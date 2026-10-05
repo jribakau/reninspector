@@ -3,23 +3,17 @@
   import { acceptCompletion, autocompletion, closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete'
 import { copyLineDown, copyLineUp, defaultKeymap, history, historyKeymap, indentLess, indentMore, moveLineDown, moveLineUp, redo, selectAll, toggleComment, undo } from '@codemirror/commands'
 import { bracketMatching, codeFolding, foldCode, foldGutter, foldKeymap, foldService, indentService, indentUnit, unfoldCode } from '@codemirror/language'
-  import { Chunk } from '@codemirror/merge'
   import { highlightSelectionMatches, openSearchPanel, search, searchKeymap, selectNextOccurrence } from '@codemirror/search'
-  import { Compartment, EditorSelection, EditorState, RangeSetBuilder, StateEffect, StateField, Text } from '@codemirror/state'
+  import { Compartment, EditorSelection, EditorState, Text } from '@codemirror/state'
   import {
     crosshairCursor,
-    Decoration,
     drawSelection,
     EditorView,
-    GutterMarker,
-    gutter,
     highlightActiveLine,
     hoverTooltip,
     keymap,
     lineNumbers,
-    showTooltip,
     rectangularSelection,
-    type DecorationSet,
   } from '@codemirror/view'
   import { api, readAsset, readFileText, readPreview, errorText } from '../lib/api'
   import { askText } from '../lib/dialog.svelte'
@@ -29,18 +23,22 @@ import { editorTheme } from '../lib/editor/theme'
   import { appearance } from '../lib/project.svelte'
   import { settings } from '../lib/settings.svelte'
   import { renpyHighlight, renpyLanguage } from '../lib/renpyLang'
-  import { revertEdit } from '../lib/editor/chunks'
+  import { diagnosticMarks, markerExtensions, setDiags, setLive, setRange } from '../lib/editor/diagGutter'
+  import { renpyFold, renpyIndent } from '../lib/editor/fold'
+  import { gitChangeExtensions, setIndex } from '../lib/editor/gitGutter'
+  import { docText, docTip } from '../lib/editor/hoverDocs'
   import { renpyComplete } from '../lib/editor/complete'
+  import { followWord, preferHere, symbolHere, wordAt, type WordActions } from '../lib/editor/wordNav'
   import { onDictionaryChange, setSpelling, spellSupport } from '../lib/editor/spell'
   import { git } from '../lib/git.svelte'
-  import { docNow, loadDocs, type DocEntry } from '../lib/docs/reference'
+  import { docNow, loadDocs } from '../lib/docs/reference'
 import { formatEdits } from '../lib/editor/format'
 import { signatureHelp } from '../lib/editor/signature'
 import { inlayHints } from '../lib/editor/inlay'
 import { inPython } from '../lib/editor/python'
 import { py, pyDefinition, pyDiags, pyHover, pythonDiagnostics, setPyFile, syncDocument } from '../lib/pylsp.svelte'
 import { app, fileInfo, fileOfNode, lookupSymbol, nodeByName, openDiff, registerBufferSave, registerEditor, registerSave, symbolsOf, type Loc } from '../lib/store.svelte'
-  import type { Diagnostic, Severity, Symbol } from '../lib/types'
+  import type { Diagnostic } from '../lib/types'
 
   interface Props {
     loc: Loc | null
@@ -111,277 +109,34 @@ import { app, fileInfo, fileOfNode, lookupSymbol, nodeByName, openDiff, register
   const DIRTY_FAST_LIMIT = 200_000
 
   // Live bindings for the keymap, which is created once per buffer.
+  const gitExt = gitChangeExtensions(() => loadedFile, openDiff)
+
+  function wordActions(): WordActions {
+    return {
+      lookup: {
+        path: loadedFile,
+        resolveSymbol: (path, line, word, prefer) => api.resolveSymbol(path, line, word, prefer),
+        symbolsOf,
+        lookupSymbol,
+      },
+      inPythonLine: inPython,
+      pythonDefinition: pyDefinition,
+      notice: (text) => {
+        app.notice = text
+      },
+      goto: ongoto,
+      refs: onrefs,
+      rename: onrename,
+    }
+  }
+
   const ctx = {
     save: () => {
       void save()
     },
-    goto: (view: EditorView) => followWord(view, 'goto'),
-    refs: (view: EditorView) => followWord(view, 'refs'),
-    rename: (view: EditorView) => followWord(view, 'rename'),
-  }
-
-  function wordAt(state: EditorState, pos: number): { from: number; to: number; text: string } | null {
-    const line = state.doc.lineAt(pos)
-    const text = line.text
-    let at = pos - line.from
-    if (at > 0 && at === text.length) at -= 1
-    if (at < 0 || at >= text.length || !/[\w.]/.test(text[at])) return null
-    let from = at
-    let to = at + 1
-    while (from > 0 && /[\w.]/.test(text[from - 1])) from -= 1
-    while (to < text.length && /[\w.]/.test(text[to])) to += 1
-    const word = text.slice(from, to)
-    if (!word) return null
-    return { from: line.from + from, to: line.from + to, text: word }
-  }
-
-  function preferredKind(line: string, wordStart: number, word: string): string | null {
-    const hash = line.indexOf('#')
-    const code = hash >= 0 ? line.slice(0, hash) : line
-    if (wordStart >= code.length) return null
-    const before = code.slice(0, wordStart)
-    const after = code.slice(wordStart + word.length)
-    const prev = before.trim().split(/\s+/).pop() ?? ''
-    if (prev === 'jump' || prev === 'call' || prev === 'menu' || prev === 'label') return 'label'
-    if (prev === 'screen') return 'screen'
-    if (prev === 'show' || prev === 'scene' || prev === 'hide' || prev === 'image') return 'image'
-    if (prev === 'transform') return 'transform'
-    if (prev === 'define' || prev === 'default') return 'variable'
-    if ((prev === 'at' || prev.endsWith(',')) && /\bat(?:\s|$)/.test(before)) return 'transform'
-    if (prev === 'def' || prev === 'class') return prev === 'class' ? 'class' : 'function'
-    if (/^\s*$/.test(before) && /["']/.test(after)) return 'character'
-    return null
-  }
-
-  function preferHere(state: EditorState, lineNo: number, line: string, wordStart: number, word: string): string | null {
-    const base = preferredKind(line, wordStart, word)
-    if (base) return base
-    const after = line.slice(wordStart + word.length)
-    if (inPython(state.doc, lineNo) && after.trimStart().startsWith('(')) return 'function'
-    return null
-  }
-
-  async function symbolHere(lineNo: number, word: string, prefer: string | null): Promise<Symbol | undefined> {
-    const path = loadedFile
-    if (path) {
-      try {
-        const found = await api.resolveSymbol(path, lineNo, word, prefer)
-        if (found.symbol) return found.symbol
-        if (found.hit) return undefined
-      } catch {
-        // The name table still answers when the project command fails.
-      }
-    }
-    if (prefer === 'function' || prefer === 'class') {
-      return symbolsOf(prefer).find((s) => s.name === word)
-    }
-    return lookupSymbol(word)
-  }
-
-  function followWord(view: EditorView, how: 'goto' | 'refs' | 'rename'): boolean {
-    const found = wordAt(view.state, view.state.selection.main.head)
-    if (!found) return false
-    const line = view.state.doc.lineAt(found.from)
-    const prefer = preferHere(view.state, line.number, line.text, found.from - line.from, found.text)
-    void symbolHere(line.number, found.text, prefer).then(async (sym) => {
-      if (!sym) {
-        if (how !== 'goto' || !inPython(view.state.doc, line.number)) return
-        const hit = await pyDefinition(line.number - 1, found.from - line.from)
-        if (hit === 'external') app.notice = 'That definition is outside this project, so it was not opened.'
-        else if (hit) ongoto(hit.path, hit.line)
-        return
-      }
-      if (how === 'goto') {
-        if (sym.path) ongoto(sym.path, sym.line)
-        return
-      }
-      // `style_prefix` derives names like `name_text`, which a rename cannot follow.
-      if (sym.kind === 'style' && how === 'rename') {
-        app.notice = 'Styles can be found but not renamed, because a style prefix derives other names.'
-        return
-      }
-      if (how === 'refs') {
-        onrefs(sym.kind, sym.name)
-        return
-      }
-      onrename(sym.kind, sym.name)
-    })
-    return true
-  }
-
-  type GitKind = 'added' | 'modified' | 'deleted'
-  interface GitMark {
-    kind: GitKind
-    chunk: number
-  }
-  interface GitBars {
-    index: Text | null
-    chunks: readonly Chunk[]
-    marks: Map<number, GitMark>
-  }
-
-  const setIndex = StateEffect.define<Text | null>()
-  const emptyBars: GitBars = { index: null, chunks: [], marks: new Map() }
-
-  function buildMarks(doc: Text, chunks: readonly Chunk[]): Map<number, GitMark> {
-    const marks = new Map<number, GitMark>()
-    chunks.forEach((chunk, index) => {
-      if (chunk.fromB === chunk.toB) {
-        const pos = chunk.fromB === 0 ? 0 : Math.max(0, Math.min(doc.length, chunk.fromB) - 1)
-        const line = doc.lineAt(Math.min(pos, doc.length)).number
-        if (!marks.has(line)) marks.set(line, { kind: 'deleted', chunk: index })
-        return
-      }
-      const start = doc.lineAt(Math.min(chunk.fromB, doc.length)).number
-      const end = doc.lineAt(Math.min(doc.length, chunk.endB)).number
-      const kind: GitKind = chunk.fromA === chunk.toA ? 'added' : 'modified'
-      for (let n = start; n <= end; n++) {
-        const prev = marks.get(n)
-        if (!prev || prev.kind !== 'modified') marks.set(n, { kind, chunk: index })
-      }
-    })
-    return marks
-  }
-
-  const gitBars = StateField.define<GitBars>({
-    create: () => emptyBars,
-    update(value, tr) {
-      let index = value.index
-      let next = false
-      for (const e of tr.effects) {
-        if (!e.is(setIndex)) continue
-        index = e.value
-        next = true
-      }
-      if (!index) return emptyBars
-      if (!next && !tr.docChanged) return value
-      const chunks = next
-        ? Chunk.build(index, tr.state.doc, { scanLimit: 500 })
-        : Chunk.updateB(value.chunks, index, tr.state.doc, tr.changes, { scanLimit: 500 })
-      return { index, chunks, marks: buildMarks(tr.state.doc, chunks) }
-    },
-  })
-
-  class ChangeMarker extends GutterMarker {
-    kind: GitKind
-    constructor(kind: GitKind) {
-      super()
-      this.kind = kind
-    }
-    eq(other: ChangeMarker) {
-      return other instanceof ChangeMarker && other.kind === this.kind
-    }
-    toDOM() {
-      const el = document.createElement('span')
-      el.className = `git-bar ${this.kind}`
-      if (this.kind === 'deleted') el.textContent = '▾'
-      return el
-    }
-  }
-
-  const changeGutter = gutter({
-    class: 'cm-change-gutter',
-    lineMarker(view, line) {
-      const n = view.state.doc.lineAt(line.from).number
-      const mark = view.state.field(gitBars).marks.get(n)
-      return mark ? new ChangeMarker(mark.kind) : null
-    },
-    lineMarkerChange: (update) => update.startState.field(gitBars) !== update.state.field(gitBars),
-    domEventHandlers: {
-      mousedown(view, line, event) {
-        const n = view.state.doc.lineAt(line.from).number
-        if (!view.state.field(gitBars).marks.has(n)) return false
-        event.preventDefault()
-        view.dispatch({ effects: setGitTip.of(n) })
-        return true
-      },
-    },
-  })
-
-  const setGitTip = StateEffect.define<number | null>()
-  const gitTip = StateField.define<number | null>({
-    create: () => null,
-    update(value, tr) {
-      for (const e of tr.effects) if (e.is(setGitTip)) return e.value
-      if (tr.docChanged) return null
-      return value
-    },
-    provide: (field) =>
-      showTooltip.compute([field, gitBars], (state) => {
-        const lineNo = state.field(field)
-        if (!lineNo || lineNo < 1 || lineNo > state.doc.lines) return null
-        if (!state.field(gitBars).marks.has(lineNo)) return null
-        return {
-          pos: state.doc.line(lineNo).from,
-          above: false,
-          create(view) {
-            const dom = document.createElement('div')
-            dom.className = 'git-tip'
-            const bars = view.state.field(gitBars)
-            const mark = bars.marks.get(lineNo)
-            const chunk = mark ? bars.chunks[mark.chunk] : undefined
-            const old = chunk && bars.index ? bars.index.sliceString(chunk.fromA, chunk.endA) : ''
-            if (old) {
-              const pre = document.createElement('pre')
-              pre.textContent = old.length > 2000 ? `${old.slice(0, 2000)}…` : old
-              dom.append(pre)
-            } else {
-              const note = document.createElement('div')
-              note.textContent = 'These lines were added.'
-              dom.append(note)
-            }
-            const row = document.createElement('div')
-            row.className = 'row'
-            const revert = tipButton('Revert change', () => {
-              const current = view.state.field(gitBars)
-              const hit = current.marks.get(lineNo)
-              const piece = hit ? current.chunks[hit.chunk] : undefined
-              if (!piece || !current.index) return
-              view.dispatch({
-                changes: revertEdit(current.index, view.state.doc, piece),
-                effects: setGitTip.of(null),
-              })
-            })
-            const open = tipButton('Open changes', () => {
-              if (loadedFile) openDiff(`game/${loadedFile}`, 'INDEX')
-              view.dispatch({ effects: setGitTip.of(null) })
-            })
-            const close = tipButton('Close', () => view.dispatch({ effects: setGitTip.of(null) }))
-            row.append(revert, open, close)
-            dom.append(row)
-            return { dom }
-          },
-        }
-      }),
-  })
-
-  function tipButton(label: string, run: () => void): HTMLButtonElement {
-    const button = document.createElement('button')
-    button.type = 'button'
-    button.textContent = label
-    button.addEventListener('mousedown', (event) => event.preventDefault())
-    button.addEventListener('click', run)
-    return button
-  }
-
-  function renpyFold(state: EditorState, lineStart: number) {
-    const line = state.doc.lineAt(lineStart)
-    const header = line.text.trim()
-    if (!header.endsWith(':') || header.startsWith('#')) return null
-    const indent = line.text.match(/^ */)?.[0].length ?? 0
-    let end = line.to
-    for (let n = line.number + 1; n <= state.doc.lines; n++) {
-      const next = state.doc.line(n)
-      const text = next.text.trim()
-      // A comment's indent does not end a Ren'Py block. Include it only when
-      // a later statement is still inside the block.
-      if (!text || text.startsWith('#')) continue
-      const ind = next.text.match(/^ */)?.[0].length ?? 0
-      if (ind <= indent) break
-      end = next.to
-    }
-    if (end <= line.to) return null
-    return { from: line.to, to: end }
+    goto: (view: EditorView) => followWord(view, 'goto', wordActions()),
+    refs: (view: EditorView) => followWord(view, 'refs', wordActions()),
+    rename: (view: EditorView) => followWord(view, 'rename', wordActions()),
   }
 
   const readOnlyComp = new Compartment()
@@ -447,133 +202,6 @@ import { app, fileInfo, fileOfNode, lookupSymbol, nodeByName, openDiff, register
     return true
   }
 
-  // ---- highlighted range -------------------------------------------------
-  const setRange = StateEffect.define<{ from: number; to: number } | null>()
-  const MAX_RANGE_LINES = 4000
-
-  const rangeField = StateField.define<DecorationSet>({
-    create: () => Decoration.none,
-    update(value, tr) {
-      let next = value.map(tr.changes)
-      for (const e of tr.effects) {
-        if (!e.is(setRange)) continue
-        if (!e.value) {
-          next = Decoration.none
-          continue
-        }
-        const doc = tr.state.doc
-        const b = new RangeSetBuilder<Decoration>()
-        const from = Math.max(1, Math.min(doc.lines, e.value.from))
-        const to = Math.min(doc.lines, e.value.to, from + MAX_RANGE_LINES)
-        for (let n = from; n <= to; n++) {
-          b.add(
-            doc.line(n).from,
-            doc.line(n).from,
-            Decoration.line({ class: n === from ? 'cm-range-start' : 'cm-range' }),
-          )
-        }
-        next = b.finish()
-      }
-      return next
-    },
-    provide: (f) => EditorView.decorations.from(f),
-  })
-
-  // ---- diagnostic gutter -------------------------------------------------
-  const setDiags = StateEffect.define<Map<number, { severity: Severity; message: string }>>()
-  const diagField = StateField.define<Map<number, { severity: Severity; message: string }>>({
-    create: () => new Map(),
-    update(value, tr) {
-      for (const e of tr.effects) if (e.is(setDiags)) return e.value
-      return value
-    },
-  })
-
-  class DiagMarker extends GutterMarker {
-    severity: Severity
-    message: string
-    constructor(severity: Severity, message: string) {
-      super()
-      this.severity = severity
-      this.message = message
-    }
-    eq(other: DiagMarker) {
-      return other.severity === this.severity && other.message === this.message
-    }
-    toDOM() {
-      const el = document.createElement('span')
-      el.className = `diag-dot ${this.severity}`
-      el.title = this.message
-      return el
-    }
-  }
-
-  const setLive = StateEffect.define<number | null>()
-  const liveMark = Decoration.line({ class: 'cm-live-line' })
-
-  class LiveMarker extends GutterMarker {
-    eq(other: LiveMarker) {
-      return other instanceof LiveMarker
-    }
-    toDOM() {
-      const el = document.createElement('span')
-      el.className = 'live-mark'
-      el.title = 'The game is on this line'
-      el.textContent = '▶'
-      return el
-    }
-  }
-
-  const liveField = StateField.define<number | null>({
-    create: () => null,
-    update(value, tr) {
-      for (const e of tr.effects) if (e.is(setLive)) return e.value
-      return value
-    },
-  })
-
-  const liveDecoField = StateField.define<DecorationSet>({
-    create: () => Decoration.none,
-    update(_value, tr) {
-      let line = tr.startState.field(liveField, false)
-      for (const e of tr.effects) if (e.is(setLive)) line = e.value
-      if (!line || line < 1 || line > tr.state.doc.lines) return Decoration.none
-      const at = tr.state.doc.line(line)
-      return Decoration.set([liveMark.range(at.from)])
-    },
-    provide: (f) => EditorView.decorations.from(f),
-  })
-
-  class LiveSpacer extends GutterMarker {
-    toDOM() {
-      const el = document.createElement('span')
-      el.className = 'live-spacer'
-      el.textContent = '▶'
-      return el
-    }
-  }
-
-  const liveGutter = gutter({
-    class: 'cm-live-gutter',
-    lineMarker(v, line) {
-      const n = v.state.doc.lineAt(line.from).number
-      return v.state.field(liveField) === n ? new LiveMarker() : null
-    },
-    lineMarkerChange: (u) => u.transactions.some((tr) => tr.effects.some((e) => e.is(setLive)) || tr.docChanged),
-    initialSpacer: () => new LiveSpacer(),
-  })
-
-  const diagGutter = gutter({
-    class: 'cm-diag-gutter',
-    lineMarker(v, line) {
-      const n = v.state.doc.lineAt(line.from).number
-      const d = v.state.field(diagField).get(n)
-      return d ? new DiagMarker(d.severity, d.message) : null
-    },
-    lineMarkerChange: (u) => u.transactions.some((tr) => tr.effects.some((e) => e.is(setDiags))),
-    initialSpacer: () => new DiagMarker('info', ''),
-  })
-
   function openReplace(target: EditorView) {
     openSearchPanel(target)
     requestAnimationFrame(() => {
@@ -594,15 +222,6 @@ import { app, fileInfo, fileOfNode, lookupSymbol, nodeByName, openDiff, register
     })
   }
 
-  function renpyIndent(context: { state: EditorState }, pos: number): number {
-    const doc = context.state.doc
-    const line = doc.lineAt(pos)
-    if (line.number <= 1) return 0
-    const prev = doc.line(line.number - 1).text
-    const base = prev.match(/^ */)?.[0].length ?? 0
-    return prev.trimEnd().endsWith(':') ? base + settings.indentWidth : base
-  }
-
   function highlighted(file: string): boolean {
     const ext = file.split('.').pop()?.toLowerCase() ?? ''
     return ext === 'rpy' || ext === 'rpym' || ext === 'py'
@@ -613,7 +232,7 @@ import { app, fileInfo, fileOfNode, lookupSymbol, nodeByName, openDiff, register
       doc,
       extensions: [
         keymapComp.of(keymapNow(settings.keymap)),
-        changeGutter,
+        ...gitExt,
         gutterComp.of(settings.lineNumbers ? lineNumbers() : []),
         drawSelection(),
         EditorState.allowMultipleSelections.of(true),
@@ -621,16 +240,11 @@ import { app, fileInfo, fileOfNode, lookupSymbol, nodeByName, openDiff, register
         crosshairCursor(),
         highlightSelectionMatches(),
         closeComp.of(closeExt()),
-        liveGutter,
-        liveField,
-        liveDecoField,
-        diagGutter,
-        diagField,
-        rangeField,
+        ...markerExtensions,
         activeLineComp.of(settings.activeLine ? highlightActiveLine() : []),
         history(),
         indentComp.of(indentExt()),
-        indentService.of(renpyIndent),
+        indentService.of(renpyIndent(() => settings.indentWidth)),
         signatureHelp(),
         keymap.of([
           // Accept the open suggestion first. Otherwise Tab inserts spaces.
@@ -660,15 +274,13 @@ import { app, fileInfo, fileOfNode, lookupSymbol, nodeByName, openDiff, register
         foldService.of(renpyFold),
         swatchComp.of(swatchExt()),
         inlayComp.of(inlayExt()),
-        gitBars,
-        gitTip,
         hoverTooltip(async (view, pos) => {
           await loadDocs()
           const found = wordAt(view.state, pos)
           const line = view.state.doc.lineAt(pos)
           if (found) {
             const prefer = preferHere(view.state, line.number, line.text, found.from - line.from, found.text)
-            const sym = await symbolHere(line.number, found.text, prefer)
+            const sym = await symbolHere(line.number, found.text, prefer, wordActions().lookup)
             if (sym) {
               const node = sym.kind === 'label' || sym.kind === 'screen' ? nodeByName(sym.kind === 'screen' ? `screen:${sym.name}` : sym.name) : undefined
               return {
@@ -745,7 +357,7 @@ import { app, fileInfo, fileOfNode, lookupSymbol, nodeByName, openDiff, register
             if (!found) return false
             const line = view.state.doc.lineAt(found.from)
             const prefer = preferHere(view.state, line.number, line.text, found.from - line.from, found.text)
-            void symbolHere(line.number, found.text, prefer).then((sym) => {
+            void symbolHere(line.number, found.text, prefer, wordActions().lookup).then((sym) => {
               if (sym?.path) ongoto(sym.path, sym.line)
             })
             return true
@@ -892,48 +504,6 @@ import { app, fileInfo, fileOfNode, lookupSymbol, nodeByName, openDiff, register
     })
   }
 
-  function docText(text: string, from: number, to: number) {
-    return {
-      pos: from,
-      end: to,
-      above: true,
-      create() {
-        const dom = document.createElement('div')
-        dom.className = 'sym-tip'
-        const body = document.createElement('div')
-        body.textContent = text
-        dom.append(body)
-        return { dom }
-      },
-    }
-  }
-
-  function docTip(doc: DocEntry, from: number, to: number) {
-    return {
-      pos: from,
-      end: to,
-      above: true,
-      create() {
-        const dom = document.createElement('div')
-        dom.className = 'sym-tip'
-        const title = document.createElement('div')
-        title.className = 'sym-title'
-        title.textContent = doc.signature
-        dom.append(title)
-        const summary = document.createElement('div')
-        summary.textContent = doc.summary
-        dom.append(summary)
-        const link = document.createElement('a')
-        link.href = doc.url
-        link.textContent = 'Documentation'
-        link.target = '_blank'
-        link.rel = 'noreferrer'
-        dom.append(link)
-        return { dom }
-      },
-    }
-  }
-
   function formatView(target: EditorView, range: { from: number; to: number } | null) {
     if (target.state.readOnly) return
     const doc = target.state.doc
@@ -1040,6 +610,8 @@ import { app, fileInfo, fileOfNode, lookupSymbol, nodeByName, openDiff, register
     }, 400)
   }
 
+  /** Load, reveal, and refresh the open buffer. */
+  function watchBuffer() {
   $effect(() => {
     const l = loc
     if (!view) return
@@ -1103,6 +675,10 @@ import { app, fileInfo, fileOfNode, lookupSymbol, nodeByName, openDiff, register
     }
   })
 
+  }
+
+  /** Theme, keymap, and the editor options that can change without reloading. */
+  function watchAppearance() {
   $effect(() => {
     const dark = !appearance.light
     view?.dispatch({ effects: themeComp.reconfigure(editorTheme(dark)) })
@@ -1181,34 +757,24 @@ import { app, fileInfo, fileOfNode, lookupSymbol, nodeByName, openDiff, register
       alive = false
     }
   })
+  }
 
   function applyDiagnostics() {
     if (!view || !loadedFile) return
-    const map = new Map<number, { severity: Severity; message: string }>()
-    const rank = { error: 0, warning: 1, info: 2 } as const
-    for (const d of diagnostics) {
-      if (d.line < 1 || d.severity === 'info') continue
-      const prev = map.get(d.line)
-      if (!prev || rank[d.severity] < rank[prev.severity]) {
-        map.set(d.line, { severity: d.severity, message: d.message })
-      }
-    }
-    for (const [line, message] of syntax) {
-      map.set(line, { severity: 'error', message })
-    }
-    if (loadedFile) {
-      for (const d of pythonDiagnostics(loadedFile)) {
-        if (d.severity === 'info') continue
-        if (settings.pythonDiagnostics === 'syntax' && d.code !== 'invalid-syntax') continue
-        if (!inPython(view.state.doc, d.line)) continue
-        const severity: Severity = d.severity === 'warning' ? 'warning' : 'error'
-        const prev = map.get(d.line)
-        if (!prev || severity === 'error') map.set(d.line, { severity, message: d.message })
-      }
-    }
+    const file = loadedFile
+    const doc = view.state.doc
+    const map = diagnosticMarks(
+      diagnostics,
+      syntax,
+      pythonDiagnostics(file),
+      settings.pythonDiagnostics,
+      (line) => inPython(doc, line),
+    )
     view.dispatch({ effects: setDiags.of(map) })
   }
 
+  /** Diagnostics, the git gutter, and the line the game is on. */
+  function watchAnalysis() {
   $effect(() => {
     setPyFile(loadedFile ?? '')
     void py.status
@@ -1255,10 +821,15 @@ import { app, fileInfo, fileOfNode, lookupSymbol, nodeByName, openDiff, register
     if (!view || !loadedFile) return
     view.dispatch({ effects: setLive.of(line && line > 0 ? line : null) })
   })
+  }
+
+  watchBuffer()
+  watchAppearance()
+  watchAnalysis()
 </script>
 
-<div class="code">
-  <div class="head pane-head">
+<div class="view">
+  <div class="pane-head code">
     {#if loadedFile}
       <span class="dim">
         {lineCount.toLocaleString()} lines
@@ -1278,7 +849,7 @@ import { app, fileInfo, fileOfNode, lookupSymbol, nodeByName, openDiff, register
     {/if}
     {#if loading}<span class="dim">loading…</span>{/if}
   </div>
-  {#if errorMsg}<div class="err">{errorMsg}</div>{/if}
+  {#if errorMsg}<div class="banner-err">{errorMsg}</div>{/if}
   <div class="host" class:off={!loadedFile} bind:this={host}></div>
   {#if !loadedFile && !loading}
     <div class="empty">Open a script from the explorer, or press Ctrl+P.</div>
@@ -1286,7 +857,7 @@ import { app, fileInfo, fileOfNode, lookupSymbol, nodeByName, openDiff, register
 </div>
 
 <style>
-  .code {
+  .view {
     position: relative;
     display: flex;
     flex-direction: column;
@@ -1294,13 +865,7 @@ import { app, fileInfo, fileOfNode, lookupSymbol, nodeByName, openDiff, register
     min-height: 0;
     background: var(--bg-code);
   }
-  .head {
-    min-width: 0;
-    background: var(--bg-code);
-    border-bottom-color: var(--line-soft);
-  }
   .dim {
-    color: var(--dim);
     flex: none;
   }
   .ro {
@@ -1329,14 +894,13 @@ import { app, fileInfo, fileOfNode, lookupSymbol, nodeByName, openDiff, register
   .host {
     flex: 1;
     min-height: 0;
+    overflow: hidden;
+  }
+  .host :global(.cm-editor) {
+    height: 100%;
   }
   .host.off {
     visibility: hidden;
-  }
-  .err {
-    color: var(--error);
-    padding: 8px 12px;
-    font-size: var(--fs-md);
   }
   .empty {
     position: absolute;
@@ -1365,12 +929,12 @@ import { app, fileInfo, fileOfNode, lookupSymbol, nodeByName, openDiff, register
   }
   :global(.live-mark) {
     color: var(--ok);
-    font-size: 9px;
+    font-size: var(--fs-2xs);
     line-height: 1.55;
   }
   :global(.live-spacer) {
     visibility: hidden;
-    font-size: 9px;
+    font-size: var(--fs-2xs);
   }
   :global(.cm-inlay) {
     margin-left: 0.65em;

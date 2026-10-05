@@ -73,7 +73,4 @@
   .bad {
     color: var(--error);
   }
-  .dim {
-    color: var(--dim);
-  }
 </style>

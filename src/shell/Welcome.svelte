@@ -159,7 +159,6 @@
     white-space: nowrap;
   }
   .dim {
-    color: var(--dim);
     font-size: var(--fs-md);
     margin: 0;
   }

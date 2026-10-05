@@ -87,8 +87,7 @@
     outline: none;
   }
   .err {
-    padding: 8px var(--sp-4);
-    color: var(--error);
+    padding: var(--sp-3) var(--sp-4);
     font-size: var(--fs-md);
     border-bottom: 1px solid var(--line);
   }

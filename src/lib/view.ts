@@ -160,3 +160,11 @@ export function spatialIndex(boxes: readonly Box[], cell = 512): SpatialIndex {
     },
   }
 }
+
+/** Items whose index boxes overlap the rectangle. */
+export function queryItems<T>(items: readonly T[], index: SpatialIndex, x0: number, y0: number, x1: number, y1: number): T[] {
+  const ids = index.query(x0, y0, x1, y1)
+  const out = new Array<T>(ids.length)
+  for (let i = 0; i < ids.length; i++) out[i] = items[ids[i]]
+  return out
+}

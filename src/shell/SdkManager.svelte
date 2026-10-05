@@ -47,7 +47,7 @@
 
       {#if app.info}
         <section>
-          <h4>This project</h4>
+          <h4 class="section-label">This project</h4>
           <label>
             <span>Run and check with</span>
             <select
@@ -82,7 +82,7 @@
       {/if}
 
       <section>
-        <h4>Installed</h4>
+        <h4 class="section-label">Installed</h4>
         {#if !sdk.items.length}
           <p class="dim">No SDKs yet. Install one, or add a folder you already have.</p>
         {/if}
@@ -114,8 +114,8 @@
       </section>
 
       <section>
-        <h4>Install</h4>
-        <div class="row">
+        <h4 class="section-label">Install</h4>
+        <div class="field-row">
           <select bind:value={version} disabled={sdk.installing || !sdk.catalog.length}>
             {#each sdk.catalog as entry (entry)}
               <option value={entry}>{entry}</option>
@@ -152,22 +152,20 @@
 {/if}
 
 <style>
-  h4, p { margin: 0; }
-  h4 { font-size: var(--fs-md); color: var(--dim); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
-  section { display: grid; gap: 8px; }
-  .dim { color: var(--dim); font-size: var(--fs-md); }
-  .warn { color: var(--warning); font-size: var(--fs-md); }
-  label { display: grid; gap: 4px; font-size: var(--fs-md); color: var(--dim); }
+  h4.section-label, p { margin: 0; }
+  section { display: grid; gap: var(--sp-3); }
+  .dim, .warn { font-size: var(--fs-md); }
+  label { display: grid; gap: var(--sp-2); font-size: var(--fs-md); color: var(--dim); }
   select { width: 100%; }
-  ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+  ul { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--sp-3); }
   li {
     display: flex;
-    gap: 8px;
+    gap: var(--sp-3);
     justify-content: space-between;
     align-items: center;
     border: 1px solid var(--line);
     border-radius: var(--r-md);
-    padding: 8px;
+    padding: var(--sp-3);
   }
   .path {
     color: var(--dim);
@@ -182,12 +180,11 @@
     border: 1px solid var(--line);
     border-radius: var(--r-pill);
     padding: 1px 6px;
-    margin-left: 4px;
+    margin-left: var(--sp-2);
     color: var(--dim);
   }
-  .actions { display: flex; gap: 6px; flex: none; }
-  .row { display: flex; gap: 8px; align-items: center; }
-  .row select { flex: 1; }
+  .actions { display: flex; gap: var(--sp-2); flex: none; }
+  .field-row select { flex: 1; }
   .folder {
     overflow: hidden;
     text-overflow: ellipsis;

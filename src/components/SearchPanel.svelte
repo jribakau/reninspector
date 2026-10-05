@@ -225,7 +225,11 @@
   {#if !refTitle}
   <div class="sb-list virtual">
     {#if searching}
-      <div class="sb-empty">Searching…</div>
+      <div class="sb-empty" role="status">
+        Searching…
+        <div class="skeleton"></div>
+        <div class="skeleton"></div>
+      </div>
     {:else if query.trim().length === 1 && !useRegex}
       <div class="sb-empty">Type at least two characters.</div>
     {:else if query.trim().length >= 2 && shown.length === 0 && !err}

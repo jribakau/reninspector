@@ -108,7 +108,7 @@
 </script>
 
 <div class="diff">
-  <div class="head pane-head">
+  <div class="pane-head code">
     <Icon name="diff" size={14} />
     <span class="dim path" title={path}>{path}</span>
     <span class="dim cap">
@@ -118,7 +118,7 @@
         upstream against the merged result{result ? ` · ${result.conflicts} conflict${result.conflicts === 1 ? '' : 's'}` : ''}
       {/if}
     </span>
-    <span class="tools">
+    <span class="pane-tools">
       {#if loading}<span class="dim">loading…</span>{/if}
       {#if result && !result.baseMissing}
         <button class="mini" onclick={() => jump(-1)}>Previous conflict</button>
@@ -127,7 +127,7 @@
       <button class="mini" onclick={accept} disabled={saving || loading || !result}>Accept</button>
     </span>
   </div>
-  {#if errorMsg}<div class="err">{errorMsg}</div>{/if}
+  {#if errorMsg}<div class="banner-err">{errorMsg}</div>{/if}
   <div class="host" bind:this={host}></div>
 </div>
 
@@ -139,26 +139,13 @@
     min-height: 0;
     background: var(--bg-code);
   }
-  .head {
-    min-width: 0;
-    background: var(--bg-code);
-    border-bottom-color: var(--line-soft);
-  }
   .path,
   .cap,
   .dim {
-    color: var(--dim);
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-  .tools {
-    margin-left: auto;
-    display: flex;
-    gap: 6px;
-    align-items: center;
-    flex: none;
   }
   .host {
     flex: 1;
@@ -168,10 +155,5 @@
   .host :global(.cm-editor),
   .host :global(.cm-mergeView) {
     height: 100%;
-  }
-  .err {
-    color: var(--error);
-    padding: 8px 12px;
-    font-size: var(--fs-md);
   }
 </style>
