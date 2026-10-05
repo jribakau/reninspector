@@ -959,6 +959,17 @@ pub struct StoryPath {
     pub assumptions: Vec<String>,
 }
 
+/// Walks the reused search has stored. A query for a line already settled
+/// does not add any.
+pub(crate) fn stored_walks(prepared: &Prepared) -> usize {
+    prepared
+        .search
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .walks
+        .len()
+}
+
 pub fn path_to(project: &Project, file: &str, line: u32) -> Result<StoryPath, String> {
     path_in(&prepare(project), project, file, line)
 }

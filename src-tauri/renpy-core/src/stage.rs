@@ -3344,16 +3344,13 @@ label start:
         }
         let (root, project) = scratch(&[("script.rpy", &body)]);
         let last = 20001u32;
-        let cold_at = Instant::now();
         let far = estimate(&project, "script.rpy", last).unwrap();
-        let cold = cold_at.elapsed();
-        let warm_at = Instant::now();
+        let walked = replay::stored_walks(&project.stage_index().prepared);
         let near = estimate(&project, "script.rpy", last - 30).unwrap();
-        let warm = warm_at.elapsed();
-        eprintln!(
-            "resumed path cold {}ms warm {}ms",
-            cold.as_millis(),
-            warm.as_millis()
+        assert_eq!(
+            replay::stored_walks(&project.stage_index().prepared),
+            walked,
+            "the nearer line was already settled, so the search ran again"
         );
         assert_eq!(
             far.say.as_ref().map(|s| s.what.as_str()),
@@ -3362,17 +3359,6 @@ label start:
         assert_eq!(
             near.say.as_ref().map(|s| s.what.as_str()),
             Some("line 19969")
-        );
-        assert!(
-            warm < cold,
-            "warm {}ms was not under cold {}ms",
-            warm.as_millis(),
-            cold.as_millis()
-        );
-        assert!(
-            warm.as_millis() < 20,
-            "resumed path took {}ms",
-            warm.as_millis()
         );
         let _ = fs::remove_dir_all(root);
     }
