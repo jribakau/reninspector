@@ -107,13 +107,13 @@ export async function bootstrap() {
 }
 
 export async function chooseAndOpenProject() {
-  if (!confirmDiscard()) return
+  if (!(await confirmDiscard())) return
   const path = await pickProjectFolder()
   if (path) await openProject(path)
 }
 
 export async function openProject(path: string) {
-  if (app.info && !confirmDiscard()) return
+  if (app.info && !(await confirmDiscard())) return
   app.opening = path
   app.busy = 'Parsing project…'
   app.error = ''

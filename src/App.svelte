@@ -158,8 +158,8 @@ import { app, bootstrap, closeActiveTab, confirmDiscard, cycleTabs, jumpGameHere
     void bootstrap()
     let unlisten: (() => void) | undefined
     void getCurrentWindow()
-      .onCloseRequested((e) => {
-        if (!confirmDiscard()) e.preventDefault()
+      .onCloseRequested(async (e) => {
+        if (!(await confirmDiscard())) e.preventDefault()
       })
       .then((fn) => {
         unlisten = fn

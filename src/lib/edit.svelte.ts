@@ -1,3 +1,4 @@
+import { confirm as confirmDialog } from '@tauri-apps/plugin-dialog'
 import { api, errorText, readFileText } from './api'
 import { ask, askText } from './dialog.svelte'
 import { app } from './model.svelte'
@@ -50,11 +51,14 @@ export function requestSave() {
 }
 
 /** False when the user keeps unsaved buffers instead of discarding them. */
-export function confirmDiscard(): boolean {
+export async function confirmDiscard(): Promise<boolean> {
   if (!app.dirtyFiles.length) return true
-  return confirm(
-    `You have unsaved changes in ${app.dirtyFiles.join(', ')}. Discard them?`,
-  )
+  // The dialog plugin, not window.confirm. A browser confirm inside the
+  // window's close handler never returns, so the window stays open.
+  return confirmDialog(`You have unsaved changes in ${app.dirtyFiles.join(', ')}. Discard them?`, {
+    title: "Ren'Inspector",
+    kind: 'warning',
+  })
 }
 
 export function setDirty(file: string, dirty: boolean) {
