@@ -19,6 +19,9 @@ pub struct PatchEntry {
     /// CRC32 of that original entry at the time of the bake. `None` for a new file.
     pub base_crc32: Option<u32>,
     pub baked_at: String,
+    /// Written by the IDE (mod toggles), not a file the user edited.
+    #[serde(default)]
+    pub generated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -102,10 +105,11 @@ pub fn utc_now() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    format_unix(secs)
+    format_utc(secs)
 }
 
-fn format_unix(secs: u64) -> String {
+/// UTC time as `YYYY-MM-DDTHH:MM:SSZ`.
+pub fn format_utc(secs: u64) -> String {
     let days = secs / 86_400;
     let tod = secs % 86_400;
     let (y, m, d) = civil_from_days(days as i64);
@@ -149,6 +153,13 @@ mod tests {
 
     #[test]
     fn unix_epoch_formats() {
-        assert_eq!(format_unix(0), "1970-01-01T00:00:00Z");
+        assert_eq!(format_utc(0), "1970-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn manifest_without_generated_still_parses() {
+        let raw = br#"{"version":1,"bakedAt":"1970-01-01T00:00:00Z","entries":{"a.rpy":{"source":null,"baseCrc32":null,"bakedAt":"1970-01-01T00:00:00Z"}}}"#;
+        let manifest = PatchManifest::parse(raw).unwrap();
+        assert!(!manifest.entries["a.rpy"].generated);
     }
 }

@@ -135,12 +135,32 @@ impl UnpickleError {
 struct Budget {
     objects: usize,
     bytes: usize,
+    max_objects: usize,
+    max_bytes: usize,
 }
 
 impl Budget {
+    fn standard() -> Self {
+        Self {
+            objects: 0,
+            bytes: 0,
+            max_objects: MAX_OBJECTS,
+            max_bytes: MAX_BYTES,
+        }
+    }
+
+    fn save_file() -> Self {
+        Self {
+            objects: 0,
+            bytes: 0,
+            max_objects: 200_000,
+            max_bytes: 32 * 1024 * 1024,
+        }
+    }
+
     fn obj(&mut self) -> Result<(), UnpickleError> {
         self.objects += 1;
-        if self.objects > MAX_OBJECTS {
+        if self.objects > self.max_objects {
             return Err(UnpickleError::new("pickle has too many objects"));
         }
         Ok(())
@@ -148,7 +168,7 @@ impl Budget {
 
     fn add_bytes(&mut self, n: usize) -> Result<(), UnpickleError> {
         self.bytes = self.bytes.saturating_add(n);
-        if self.bytes > MAX_BYTES {
+        if self.bytes > self.max_bytes {
             return Err(UnpickleError::new("pickle strings are too large"));
         }
         Ok(())
@@ -166,18 +186,31 @@ struct Parser<'a> {
     stack: Vec<StackItem>,
     memo: HashMap<usize, Val>,
     budget: Budget,
+    /// Accept every module name as an inert object. Nothing is imported or called.
+    inert: bool,
 }
 
 pub fn loads(data: &[u8]) -> Result<Value, UnpickleError> {
+    parse_with(data, false, Budget::standard())
+}
+
+/// Read a save or persistent pickle. Any global becomes an object value.
+/// Tighter size limits than a script pickle, and still no code execution.
+pub fn loads_inert(data: &[u8]) -> Result<Value, UnpickleError> {
+    if data.len() > 32 * 1024 * 1024 {
+        return Err(UnpickleError::new("pickle is too large"));
+    }
+    parse_with(data, true, Budget::save_file())
+}
+
+fn parse_with(data: &[u8], inert: bool, budget: Budget) -> Result<Value, UnpickleError> {
     let mut p = Parser {
         data,
         i: 0,
         stack: Vec::new(),
         memo: HashMap::new(),
-        budget: Budget {
-            objects: 0,
-            bytes: 0,
-        },
+        budget,
+        inert,
     };
     let value = p.parse()?;
     let mut seen = Vec::new();
@@ -343,6 +376,10 @@ impl<'a> Parser<'a> {
                 let v = self.pop_val()?;
                 match self.stack.last() {
                     Some(StackItem::Value(Val::List(list))) => list.borrow_mut().push(v),
+                    // A list subclass the reader does not know: keep its items.
+                    Some(StackItem::Value(Val::Object(obj))) if self.inert => {
+                        obj.borrow_mut().args.push(v)
+                    }
                     _ => return Err(UnpickleError::new("APPEND without a list")),
                 }
             }
@@ -350,6 +387,9 @@ impl<'a> Parser<'a> {
                 let items = self.pop_mark()?;
                 match self.stack.last() {
                     Some(StackItem::Value(Val::List(list))) => list.borrow_mut().extend(items),
+                    Some(StackItem::Value(Val::Object(obj))) if self.inert => {
+                        obj.borrow_mut().args.extend(items)
+                    }
                     _ => return Err(UnpickleError::new("APPENDS without a list")),
                 }
             }
@@ -357,6 +397,9 @@ impl<'a> Parser<'a> {
                 let items = self.pop_mark()?;
                 match self.stack.last() {
                     Some(StackItem::Value(Val::Set(set))) => set.borrow_mut().extend(items),
+                    Some(StackItem::Value(Val::Object(obj))) if self.inert => {
+                        obj.borrow_mut().args.extend(items)
+                    }
                     _ => return Err(UnpickleError::new("ADDITEMS without a set")),
                 }
             }
@@ -365,6 +408,9 @@ impl<'a> Parser<'a> {
                 let key = self.pop_val()?;
                 match self.stack.last() {
                     Some(StackItem::Value(Val::Dict(dict))) => dict.borrow_mut().push((key, value)),
+                    Some(StackItem::Value(Val::Object(obj))) if self.inert => {
+                        obj.borrow_mut().args.push(Val::Tuple(vec![key, value]))
+                    }
                     _ => return Err(UnpickleError::new("SETITEM without a dict")),
                 }
             }
@@ -373,6 +419,10 @@ impl<'a> Parser<'a> {
                 let extra = pairs(items)?;
                 match self.stack.last() {
                     Some(StackItem::Value(Val::Dict(dict))) => dict.borrow_mut().extend(extra),
+                    Some(StackItem::Value(Val::Object(obj))) if self.inert => obj
+                        .borrow_mut()
+                        .args
+                        .extend(extra.into_iter().map(|(k, v)| Val::Tuple(vec![k, v]))),
                     _ => return Err(UnpickleError::new("SETITEMS without a dict")),
                 }
             }
@@ -448,7 +498,7 @@ impl<'a> Parser<'a> {
     }
 
     fn push_callable(&mut self, module: &str, name: &str) -> Result<(), UnpickleError> {
-        if !allowed_module(module) {
+        if !self.inert && !allowed_module(module) {
             return Err(UnpickleError::new(format!(
                 "pickle global {module}.{name} is not allowed"
             )));
@@ -538,6 +588,8 @@ impl<'a> Parser<'a> {
                     dict.borrow_mut().extend(extra.borrow().clone());
                 }
             }
+            // Instance state for a list, set, or tuple subclass. Nothing to show.
+            Some(StackItem::Value(_)) if self.inert => {}
             _ => return Err(UnpickleError::new("BUILD without an object")),
         }
         Ok(())
@@ -886,12 +938,15 @@ fn decode_raw_unicode(line: &str) -> Result<String, UnpickleError> {
     Ok(out)
 }
 
-fn note_cycle(ptr: *const (), seen: &mut Vec<*const ()>) -> Result<(), UnpickleError> {
+/// True when `ptr` is already on the path being frozen. A Ren'Py statement
+/// pickle points `next` (and a screen child points at its parent) back at an
+/// ancestor. That back-edge is cut so the rest of the tree can still be read.
+fn is_back_edge(ptr: *const (), seen: &mut Vec<*const ()>) -> bool {
     if seen.contains(&ptr) {
-        return Err(UnpickleError::new("pickle contains a cycle"));
+        return true;
     }
     seen.push(ptr);
-    Ok(())
+    false
 }
 
 fn freeze(v: Val, seen: &mut Vec<*const ()>, depth: usize) -> Result<Value, UnpickleError> {
@@ -907,14 +962,20 @@ fn freeze(v: Val, seen: &mut Vec<*const ()>, depth: usize) -> Result<Value, Unpi
         Val::Str(s) => Ok(Value::Str(s)),
         Val::Tuple(items) => Ok(Value::Tuple(freeze_list(items, seen, depth)?)),
         Val::List(list) => {
-            note_cycle(Rc::as_ptr(&list) as *const (), seen)?;
+            let ptr = Rc::as_ptr(&list) as *const ();
+            if is_back_edge(ptr, seen) {
+                return Ok(Value::None);
+            }
             let items = list.borrow().clone();
             let out = Value::List(freeze_list(items, seen, depth)?);
             seen.pop();
             Ok(out)
         }
         Val::Dict(dict) => {
-            note_cycle(Rc::as_ptr(&dict) as *const (), seen)?;
+            let ptr = Rc::as_ptr(&dict) as *const ();
+            if is_back_edge(ptr, seen) {
+                return Ok(Value::None);
+            }
             let pairs = dict.borrow().clone();
             let mut out = Vec::new();
             for (k, v) in pairs {
@@ -924,14 +985,20 @@ fn freeze(v: Val, seen: &mut Vec<*const ()>, depth: usize) -> Result<Value, Unpi
             Ok(Value::Dict(out))
         }
         Val::Set(set) => {
-            note_cycle(Rc::as_ptr(&set) as *const (), seen)?;
+            let ptr = Rc::as_ptr(&set) as *const ();
+            if is_back_edge(ptr, seen) {
+                return Ok(Value::None);
+            }
             let items = set.borrow().clone();
             let out = Value::Set(freeze_list(items, seen, depth)?);
             seen.pop();
             Ok(out)
         }
         Val::Object(obj) => {
-            note_cycle(Rc::as_ptr(&obj) as *const (), seen)?;
+            let ptr = Rc::as_ptr(&obj) as *const ();
+            if is_back_edge(ptr, seen) {
+                return Ok(Value::None);
+            }
             let (class, args, state) = {
                 let obj = obj.borrow();
                 (obj.class.clone(), obj.args.clone(), obj.state.clone())
@@ -1003,6 +1070,35 @@ mod tests {
     }
 
     #[test]
+    fn inert_accepts_a_module_that_would_otherwise_be_refused() {
+        let mut p = vec![0x80, 2, b'c'];
+        p.extend(b"os\nsystem\n");
+        p.push(b')');
+        p.push(b'R');
+        p.push(b'.');
+        assert!(loads(&p).is_err());
+        match loads_inert(&p).unwrap() {
+            Value::Object { class, .. } => assert_eq!(class, "os.system"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn inert_keeps_items_appended_to_an_unknown_list_subclass() {
+        let mut p = vec![0x80, 2, b'c'];
+        p.extend(b"game\nMyList\n");
+        p.extend([b')', b'R', b'(', b'K', 1, b'K', 2, b'e', b'.']);
+        assert!(loads(&p).is_err());
+        match loads_inert(&p).unwrap() {
+            Value::Object { class, args, .. } => {
+                assert_eq!(class, "game.MyList");
+                assert_eq!(args, vec![Value::Int(1), Value::Int(2)]);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
     fn truncated_pickle_is_an_error() {
         let err = loads(&[0x80, 2, b'J']).unwrap_err();
         assert!(err.0.contains("ended early"), "{err}");
@@ -1030,27 +1126,48 @@ mod tests {
     }
 
     #[test]
-    fn cyclic_object_is_an_error() {
-        // REDUCE a Say, memoize it, BUILD its own state from that memo.
+    fn cyclic_back_edge_keeps_the_other_fields() {
+        // Say memoized as 1, then a state dict {what: "Hi", next: <self>}.
         let mut p = vec![0x80, 2, b'c'];
         p.extend(b"renpy.ast\nSay\n");
-        p.push(b')');
-        p.push(b'R');
-        p.push(b'q');
-        p.push(1);
-        p.push(b'h');
-        p.push(1);
-        p.push(b'b');
-        p.push(b'.');
-        let err = loads(&p).unwrap_err();
-        assert!(err.0.contains("cycle"), "{err}");
+        p.extend([b')', b'R', b'q', 1, b'}']);
+        p.push(b'X');
+        p.extend(4u32.to_le_bytes());
+        p.extend(b"what");
+        p.push(b'X');
+        p.extend(2u32.to_le_bytes());
+        p.extend(b"Hi");
+        p.push(b's');
+        p.push(b'X');
+        p.extend(4u32.to_le_bytes());
+        p.extend(b"next");
+        p.extend([b'h', 1, b's', b'b', b'.']);
+        match loads(&p).unwrap() {
+            Value::Object { class, state, .. } => {
+                assert_eq!(class, "renpy.ast.Say");
+                let state = state.unwrap();
+                let Value::Dict(items) = state.as_ref() else {
+                    panic!("state is not a dict");
+                };
+                assert!(items.iter().any(|(k, v)| matches!(
+                    (k, v),
+                    (Value::Str(k), Value::Str(v)) if k == "what" && v == "Hi"
+                )));
+                assert!(items
+                    .iter()
+                    .any(|(k, v)| matches!((k, v), (Value::Str(k), Value::None) if k == "next")));
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]
-    fn cyclic_set_is_an_error() {
+    fn cyclic_set_is_cut() {
         let p = vec![0x80, 4, EMPTY_SET, b'q', 1, b'(', b'h', 1, ADDITEMS, b'.'];
-        let err = loads(&p).unwrap_err();
-        assert!(err.0.contains("cycle"), "{err}");
+        match loads(&p).unwrap() {
+            Value::Set(items) => assert_eq!(items, vec![Value::None]),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

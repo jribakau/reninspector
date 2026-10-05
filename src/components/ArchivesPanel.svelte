@@ -5,7 +5,8 @@
   import VirtualList from './VirtualList.svelte'
   import { api, errorText, readArchiveEntry } from '../lib/api'
   import { copyText, openContextMenu } from '../lib/context.svelte'
-  import { app, bakePatch, buildArchive, cancelArchiveJob, extractArchive, removePatch, undoPatch } from '../lib/store.svelte'
+  import { openRebase } from '../lib/nav.svelte'
+  import { app, bakePatch, buildArchive, cancelArchiveJob, exportMod, extractArchive, removePatch, undoPatch } from '../lib/store.svelte'
   import type { ArchiveEntryInfo, ArchiveInfo } from '../lib/types'
 
   let selected = $state('')
@@ -16,6 +17,7 @@
   let previewName = $state('')
   let previewText = $state('')
   let previewUrl = $state('')
+  let includeToggles = $state(false)
 
   const archives = $derived(app.info?.archives ?? [])
   const overrides = $derived(app.info?.files.filter((f) => f.origin === 'override') ?? [])
@@ -99,6 +101,11 @@
     return `${(n / (1024 * 1024)).toFixed(1)} MB`
   }
 
+  function stalePath(line: string): string | null {
+    const match = /^(.*?) (?:in |was patched|on disk)/.exec(line)
+    return match?.[1] || null
+  }
+
   function badge(archive: ArchiveInfo): string {
     if (archive.error) return 'unreadable'
     if (archive.isPatch) return 'patch'
@@ -125,9 +132,18 @@
       Nothing to package. A saved edit is already a loose file the game loads.
     {/if}
     <div class="row">
-      <button class="primary" onclick={bakePatch} disabled={!!app.busy || !packageCount}>
+      <button class="primary" onclick={() => bakePatch()} disabled={!!app.busy || !packageCount}>
         Package edits into a patch
       </button>
+      <button onclick={() => exportMod('rpa', includeToggles)} disabled={!!app.busy || !archives.some((a) => a.isPatch)}>
+        Export mod…
+      </button>
+      <button onclick={() => exportMod('loose', includeToggles)} disabled={!!app.busy || !archives.some((a) => a.isPatch)} title="Zip the changed files, not a patch archive">
+        Export loose…
+      </button>
+      <label class="sb-meta" title="vnide_toggles.rpy is left out unless this is checked">
+        <input type="checkbox" bind:checked={includeToggles} /> Include toggles
+      </label>
       <button onclick={undoPatch} disabled={!!app.busy}>Undo</button>
       <button onclick={removePatch} disabled={!!app.busy || !archives.some((a) => a.isPatch)}>
         Remove patch
@@ -145,6 +161,7 @@
         {archive.path}
         {#if archive.isPatch}<em class="sb-tag ok">patch</em>{/if}
         {#if archive.nested}<em class="sb-tag" title="Ren'Py 7 only loads archives at the top of game/">nested</em>{/if}
+        {#if archive.readOnlyFormat}<em class="sb-tag" title="This format can be read and extracted. New archives are written as RPA-3.0.">read-only</em>{/if}
       </span>
       <span class="sb-meta">
         {archive.error ? archive.error : `${archive.version || 'archive'} · ${badge(archive)} · ${formatBytes(archive.otherBytes)} other`}
@@ -153,7 +170,15 @@
       </span>
     </button>
     {#if archive.stale.length && selected === archive.path}
-      <p class="warn">{archive.stale[0]}{archive.stale.length > 1 ? ` (+${archive.stale.length - 1} more)` : ''}</p>
+      {#each archive.stale as line}
+        {@const rel = stalePath(line)}
+        <p class="warn">
+          {line}
+          {#if rel}
+            <button type="button" onclick={() => openRebase(rel)}>Rebase</button>
+          {/if}
+        </p>
+      {/each}
     {/if}
   {/each}
 

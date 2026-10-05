@@ -84,7 +84,7 @@ export {
   toggleLive,
 } from './live.svelte'
 
-export { bakePatch, buildArchive, cancelArchiveJob, extractArchive, removePatch, undoPatch } from './archives.svelte'
+export { bakePatch, buildArchive, cancelArchiveJob, exportMod, extractArchive, removePatch, undoPatch } from './archives.svelte'
 
 export { checkWithEngine, runEngineLint, toggleAutoreload } from './engine.svelte'
 export { openBuildDialog } from './build.svelte'

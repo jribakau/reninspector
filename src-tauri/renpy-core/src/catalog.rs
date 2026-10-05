@@ -1252,6 +1252,7 @@ mod tests {
             meta: std::sync::Arc::new(meta),
             source: None,
             engine: None,
+            decompile_reasons: Vec::new(),
         }
     }
 

@@ -74,7 +74,7 @@ fn write_stmt(v: &Value, indent: usize, out: &mut String) -> Result<(), String> 
             push(out, indent, &format!("function {expr}"));
             Ok(())
         }
-        "RawContainsExpr" => {
+        "RawContains" | "RawContainsExpr" => {
             let expr = text_field(v, "expression")
                 .or_else(|| text_field(v, "expr"))
                 .ok_or_else(|| class.clone())?;
@@ -129,8 +129,11 @@ fn multipurpose(v: &Value) -> Result<String, String> {
             Some(duration) => parts.push(format!("{warper} {duration}")),
             None => parts.push(warper),
         }
-    } else if field(v, "warp_function").is_some_and(|w| !ast::is_none(w)) {
-        return Err(class);
+    } else if let Some(warp) = field(v, "warp_function").filter(|w| !ast::is_none(w)) {
+        match expr_text(warp) {
+            Some(expr) if !expr.is_empty() && expr != "None" => parts.push(format!("warp {expr}")),
+            _ => return Err(class),
+        }
     }
     if let Some(props) = field(v, "properties") {
         parts.extend(pairs(props, "", &class)?);

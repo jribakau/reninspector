@@ -14,6 +14,7 @@ pub mod prose;
 pub mod replay;
 pub mod rpa;
 pub mod rpyc;
+pub mod saves;
 pub mod scene;
 pub mod screens;
 pub mod stage;
@@ -27,4 +28,7 @@ pub use diagnostics::{DiagReport, Diagnostic};
 pub use engine::{EngineDump, EngineRun, EngineSummary, LintItem};
 pub use flow::LabelGraph;
 pub use parser::SyntaxIssue;
-pub use project::{ArchiveInfo, EngineTarget, Launcher, Origin, Project, ProjectInfo};
+pub use project::{
+    sha256_file, ArchiveDigest, ArchiveInfo, EngineTarget, FormatCount, GameInfo, GameLayout,
+    Launcher, Origin, Project, ProjectInfo,
+};

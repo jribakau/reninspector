@@ -10,12 +10,16 @@
   import { app, goTo, searchDialogue, symbolsOf, type RenpySection } from '../lib/store.svelte'
   import type { AssetReport, Symbol } from '../lib/types'
   import ArchivesPanel from './ArchivesPanel.svelte'
+  import GamePanel from './GamePanel.svelte'
+  import SavesPanel from './SavesPanel.svelte'
   import AssetsPanel from './AssetsPanel.svelte'
   import TranslatePanel from './TranslatePanel.svelte'
   import VarsPanel from './VarsPanel.svelte'
   import VirtualList from './VirtualList.svelte'
 
   const allSections: { id: RenpySection; label: string }[] = [
+    { id: 'game', label: 'Game' },
+    { id: 'saves', label: 'Saves' },
     { id: 'characters', label: 'Characters' },
     { id: 'images', label: 'Images' },
     { id: 'screens', label: 'Screens' },
@@ -159,6 +163,8 @@
     </div>
   </div>
   <div class="section">
+    <div class="keep" class:off={app.renpySection !== 'game'}><GamePanel /></div>
+    <div class="keep" class:off={app.renpySection !== 'saves'}><SavesPanel /></div>
     <div class="keep" class:off={app.renpySection !== 'characters'}>
       <div class="sb-tools">
         <FilterInput placeholder="Filter characters…" bind:value={symbolFilter} />

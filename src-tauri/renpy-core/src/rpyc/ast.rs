@@ -50,6 +50,10 @@ pub enum Kind {
         early: bool,
         one_line: bool,
         init: Option<i64>,
+        /// `python hide:` — the block does not see the store.
+        hide: bool,
+        /// `python in name:` when the store is not the default.
+        store: Option<String>,
     },
     Define {
         keyword: &'static str,
@@ -365,7 +369,11 @@ fn block(v: &Value, key: &str, partial: &mut bool, reasons: &mut Vec<String>) ->
 
 fn child_nodes(items: &[Value], partial: &mut bool, reasons: &mut Vec<String>) -> Vec<Node> {
     fold_same_line(fold_with(omit_synthetic(
-        items.iter().map(|n| convert(n, partial, reasons)).collect(),
+        items
+            .iter()
+            .filter(|n| !matches!(n, Value::None))
+            .map(|n| convert(n, partial, reasons))
+            .collect(),
     )))
 }
 
@@ -499,6 +507,21 @@ fn python_kind(short: &str, v: &Value) -> Kind {
         early: short == "EarlyPython",
         init: None,
         code,
+        hide: field(v, "hide").is_some_and(|h| matches!(h, Value::Bool(true))),
+        store: python_store(v),
+    }
+}
+
+fn python_store(v: &Value) -> Option<String> {
+    let store = text_field(v, "store")?;
+    if store.is_empty() || store == "store" {
+        return None;
+    }
+    let rest = store.strip_prefix("store.").unwrap_or(&store);
+    if rest.is_empty() {
+        None
+    } else {
+        Some(rest.to_string())
     }
 }
 
@@ -548,12 +571,16 @@ fn unwrap_same_line_init(line: u32, priority: i64, body: &[Node]) -> Option<Kind
             code,
             early,
             one_line,
+            hide,
+            store,
             ..
         } if !one_line => Some(Kind::Python {
             code: code.clone(),
             early: *early,
             one_line: false,
             init: Some(priority),
+            hide: *hide,
+            store: store.clone(),
         }),
         Kind::Image { .. } if priority == 500 => Some(only.kind.clone()),
         Kind::Screen { .. } if priority == -500 => Some(only.kind.clone()),

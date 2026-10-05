@@ -7,12 +7,13 @@
 //! requires the reader to agree with the engine about where labels are. There
 //! are no per-game exceptions: a mismatch is a reader bug.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use renpy_core::engine::{run_json_dump, EngineRun};
-use renpy_core::Project;
+use renpy_core::{Origin, Project};
 
 fn games(dir: &Path) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = fs::read_dir(dir)
@@ -77,6 +78,7 @@ fn corpus() {
     assert!(!list.is_empty(), "no games with a game/ folder under {dir}");
 
     let mut failures: Vec<String> = Vec::new();
+    let mut reasons: BTreeMap<String, u32> = BTreeMap::new();
     println!(
         "{:<28} {:>7} {:>9} {:>6} {:>5} {:>6} {:>5} {:>7} {:>5} {:>6} {:>7}",
         "game",
@@ -128,6 +130,27 @@ fn corpus() {
         {
             println!("    {} {}:{} {}", d.code, d.path, d.line, d.message);
         }
+        let mut rpyc = 0u32;
+        let mut editable_n = 0u32;
+        let mut partial_n = 0u32;
+        for file in &project.files {
+            if !matches!(file.origin, Origin::Compiled { .. }) {
+                continue;
+            }
+            rpyc += 1;
+            if file.origin.editable() {
+                editable_n += 1;
+            } else {
+                partial_n += 1;
+            }
+            for reason in &file.decompile_reasons {
+                *reasons.entry(reason_bucket(reason)).or_default() += 1;
+            }
+        }
+        println!(
+            "    rpyc {rpyc}  editable {editable_n}  partial {partial_n}  failed {}",
+            project.compiled_only.len()
+        );
         if !project.compiled_only.is_empty() || !project.archives.is_empty() {
             println!(
                 "    source-less: {} compiled-only .rpyc, {} .rpa archive(s)",
@@ -198,9 +221,42 @@ fn corpus() {
             }
         }
     }
+    let mut report = String::from("reason\tcount\n");
+    println!("decompile reasons:");
+    for (reason, count) in &reasons {
+        println!("  {count:>6}  {reason}");
+        report.push_str(&format!("{reason}\t{count}\n"));
+    }
+    let out = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target"))
+        .join("corpus-reasons.txt");
+    if let Some(dir) = out.parent() {
+        let _ = fs::create_dir_all(dir);
+    }
+    match fs::write(&out, report) {
+        Ok(()) => println!("wrote {}", out.display()),
+        Err(e) => println!("could not write {}: {e}", out.display()),
+    }
     assert!(
         failures.is_empty(),
         "corpus failures:\n  {}",
         failures.join("\n  ")
     );
+}
+
+fn reason_bucket(reason: &str) -> String {
+    let verify = reason == "flow"
+        || reason.starts_with("line ")
+        || reason.starts_with("dialogue ")
+        || reason.starts_with("labels ")
+        || reason.starts_with("jumps ")
+        || reason.starts_with("calls ")
+        || reason.starts_with("choices ")
+        || reason.starts_with("choice ");
+    if verify {
+        "verify".into()
+    } else {
+        reason.to_string()
+    }
 }

@@ -800,7 +800,7 @@ button.sb-item.sel:hover,
   color: var(--dim);
 }
 
-.sb-tag.menu {
+.sb-tag.tag-menu {
   color: var(--menu);
 }
 

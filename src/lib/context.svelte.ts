@@ -225,6 +225,14 @@ export function tabItems(tab: EditorTab): MenuEntry[] {
     const usable = (n: MapNode | null | undefined): n is MapNode => !!n && n.kind !== 'missing' && n.kind !== 'screen' && n.kind !== 'compiled'
     const flow = usable(here) ? here : nodesInFile(path).find(usable)
     const editable = info?.editable !== false
+    if (info?.reasons.length) {
+      const reasons = info.reasons.join('\n')
+      items.push({
+        kind: 'item',
+        label: 'Copy decompile reasons',
+        run: () => copyText(reasons),
+      })
+    }
     items.push(
       {
         kind: 'item',

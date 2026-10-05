@@ -5,7 +5,7 @@ export type Activity = 'explorer' | 'story' | 'search' | 'renpy' | 'git'
 
 export type BottomTab = 'problems' | 'log' | 'live' | 'build'
 
-export type RenpySection = 'characters' | 'images' | 'screens' | 'variables' | 'languages' | 'assets' | 'archives'
+export type RenpySection = 'game' | 'saves' | 'characters' | 'images' | 'screens' | 'variables' | 'languages' | 'assets' | 'archives'
 
 export type PaletteMode = 'commands' | 'files' | 'symbols' | null
 
@@ -14,11 +14,13 @@ export type EditorTab =
   | { kind: 'graph'; name: string }
   | { kind: 'map' }
   | { kind: 'diff'; path: string; rev: string }
+  | { kind: 'rebase'; path: string }
 
 export function editorTabId(tab: EditorTab): string {
   if (tab.kind === 'file') return `file:${tab.path}`
   if (tab.kind === 'graph') return `graph:${tab.name}`
   if (tab.kind === 'diff') return `diff:${tab.rev}:${tab.path}`
+  if (tab.kind === 'rebase') return `rebase:${tab.path}`
   return 'map'
 }
 

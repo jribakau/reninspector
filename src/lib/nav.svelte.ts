@@ -98,7 +98,7 @@ export function unpinEditor(id: string) {
 const sessionKey = (root: string) => `vnide.session.${root}`
 const ACTIVITIES: Activity[] = ['explorer', 'story', 'search', 'renpy', 'git']
 const BOTTOM: BottomTab[] = ['problems', 'log', 'live', 'build']
-const RENPY: RenpySection[] = ['characters', 'images', 'screens', 'variables', 'languages', 'assets', 'archives']
+const RENPY: RenpySection[] = ['game', 'saves', 'characters', 'images', 'screens', 'variables', 'languages', 'assets', 'archives']
 
 function saveSession() {
   if (!app.info) return
@@ -202,6 +202,7 @@ function savedTab(raw: unknown, known: Set<string>): EditorTab | null {
   if (t.kind === 'diff' && typeof t.path === 'string' && typeof t.rev === 'string' && t.rev && t.path) {
     return { kind: 'diff', path: t.path, rev: t.rev }
   }
+  if (t.kind === 'rebase' && typeof t.path === 'string' && t.path) return { kind: 'rebase', path: t.path }
   return null
 }
 
@@ -348,6 +349,7 @@ function tabLabel(tab: EditorTab): string {
   if (tab.kind === 'map') return 'Project map'
   if (tab.kind === 'graph') return tab.name.startsWith('screen:') ? tab.name.slice(7) : tab.name
   if (tab.kind === 'diff') return `${tab.path.split('/').pop() ?? tab.path} (${tab.rev})`
+  if (tab.kind === 'rebase') return `${tab.path.split('/').pop() ?? tab.path} (rebase)`
   return tab.path.split('/').pop() ?? tab.path
 }
 
@@ -570,9 +572,24 @@ export function reopenClosedTab() {
       openDiff(tab.path, tab.rev)
       return
     }
+    if (tab.kind === 'rebase') {
+      openRebase(tab.path)
+      return
+    }
     openMapTab()
     return
   }
+}
+
+/** Opens the three-way rebase of a stale patch entry. */
+export function openRebase(path: string) {
+  const tab: EditorTab = { kind: 'rebase', path }
+  const id = editorTabId(tab)
+  if (!app.editorTabs.some((t) => editorTabId(t) === id)) {
+    adoptTabs([...app.editorTabs, tab])
+  }
+  app.activeEditor = id
+  saveSession()
 }
 
 /** Opens a read-only diff of `path` against `rev`. A rev ending in `^` compares that commit with its parent. */

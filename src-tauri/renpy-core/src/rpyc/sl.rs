@@ -15,7 +15,7 @@ pub fn render_screen(screen: &Value) -> Result<(String, String), String> {
         push(&mut body, 0, &doc);
     }
     if let Some(Value::List(children)) = field(screen, "children") {
-        for child in children {
+        for child in children.iter().filter(|child| !matches!(child, Value::None)) {
             write_node(child, 0, &mut body)?;
         }
     }
@@ -282,6 +282,12 @@ fn write_displayable(v: &Value, indent: usize, out: &mut String) -> Result<(), S
         }
     }
     head.push_str(&keywords(field(v, "keyword")));
+    if let Some(id) = field(v, "id").and_then(expr_text) {
+        if !id.is_empty() && id != "None" && !head.contains(" id ") {
+            head.push_str(" id ");
+            head.push_str(&id);
+        }
+    }
     if let Some(var) = text_field(v, "variable") {
         head.push_str(" as ");
         head.push_str(&var);
@@ -304,7 +310,7 @@ fn write_displayable(v: &Value, indent: usize, out: &mut String) -> Result<(), S
         }
     }
     if let Some(children) = children {
-        for child in children {
+        for child in children.iter().filter(|child| !matches!(child, Value::None)) {
             write_node(child, indent + 4, out)?;
         }
     }
@@ -395,7 +401,7 @@ fn write_custom_use(v: &Value, indent: usize, out: &mut String) -> Result<(), St
     }
     push(out, indent, &format!("{head}:"));
     if let Some(children) = children {
-        for child in children {
+        for child in children.iter().filter(|child| !matches!(child, Value::None)) {
             write_node(child, indent + 4, out)?;
         }
     }
@@ -404,7 +410,7 @@ fn write_custom_use(v: &Value, indent: usize, out: &mut String) -> Result<(), St
 
 fn write_children(v: &Value, indent: usize, out: &mut String) -> Result<(), String> {
     if let Some(Value::List(children)) = field(v, "children") {
-        for child in children {
+        for child in children.iter().filter(|child| !matches!(child, Value::None)) {
             write_node(child, indent, out)?;
         }
     }

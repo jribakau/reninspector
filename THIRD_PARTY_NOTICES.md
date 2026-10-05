@@ -15,6 +15,10 @@ is distributed under its own licence, linked from its source repository.
   http://wordlist.aspell.net/). Copyright Kevin Atkinson and others; the full
   licence and copyright notices are in `licenses/SCOWL.txt`.
 - **ICU4X crates** (Unicode-3.0) and **webpki-roots** (CDLA-Permissive-2.0).
+- **unrpa** (GPL-3.0, https://github.com/Lattyware/unrpa). The RPA-3.2, RPA-4.0,
+  ALT-1.0 and ZiX-12A/B header layouts, key derivation and index handling in
+  `renpy-core/src/rpa` were reimplemented in Rust from its `versions/` modules.
+  No unrpa code is included.
 
 ## Rust crates
 
@@ -76,6 +80,7 @@ every build.
 | dbus | 0.9.12 | Apache-2.0/MIT | https://github.com/diwic/dbus-rs |
 | deranged | 0.5.8 | MIT OR Apache-2.0 | https://github.com/jhpratt/deranged |
 | derive_more | 2.1.1 | MIT | https://github.com/JelteF/derive_more |
+| diffy | 0.4.2 | MIT OR Apache-2.0 | https://github.com/bmwill/diffy |
 | digest | 0.10.7 | MIT OR Apache-2.0 | https://github.com/RustCrypto/traits |
 | dirs | 7.0.0 | MIT OR Apache-2.0 | https://codeberg.org/dirs/dirs-rs |
 | dirs-sys | 0.5.0 | MIT OR Apache-2.0 | https://github.com/dirs-dev/dirs-sys-rs |
@@ -193,6 +198,7 @@ every build.
 | ndk-sys | 0.6.0+11769913 | MIT OR Apache-2.0 | https://github.com/rust-mobile/ndk |
 | new_debug_unreachable | 1.0.6 | MIT | https://github.com/mbrubeck/rust-debug-unreachable |
 | notify | 6.1.1 | CC0-1.0 | https://github.com/notify-rs/notify.git |
+| nu-ansi-term | 0.50.3 | MIT | https://github.com/nushell/nu-ansi-term |
 | num_enum | 0.7.6 | BSD-3-Clause OR MIT OR Apache-2.0 | https://github.com/illicitonion/num_enum |
 | num-conv | 0.2.2 | MIT OR Apache-2.0 | https://github.com/jhpratt/num-conv |
 | objc2 | 0.6.4 | MIT | https://github.com/madsmtm/objc2 |

@@ -673,7 +673,7 @@
                     {@const patched = app.info?.archives.find((a) => a.path === info.archive)?.isPatch}
                     <span class="mk" title={patched ? `Patched. Read from ${info.archive}. Saving writes a loose copy.` : `Read from ${info.archive}. Saving writes a loose copy.`}><Icon name="archive" size={12} /></span>
                   {/if}
-                  {#if info?.decompiled && !info.editable}<span class="mk warn" title="Decompiled, read-only"><Icon name="lock" size={12} /></span>{/if}
+                  {#if info?.decompiled && !info.editable}<span class="mk warn" title={info.reasons.length ? `Decompiled, read-only: ${info.reasons.join('; ')}` : 'Decompiled, read-only'}><Icon name="lock" size={12} /></span>{/if}
                   {#if rel && app.dirtyFiles.includes(rel)}<span class="mk warn" title="Unsaved changes"><Icon name="dot" size={12} /></span>
                   {:else if rel && app.modifiedFiles.includes(rel)}<span class="mk" title="Modified on disk"><Icon name="dot" size={12} /></span>{/if}
                   {#if mark}<span class="git-letter {mark === 'D' ? 'git-d' : mark === 'A' || mark === 'U' ? 'git-a' : 'git-m'}" title="Git status">{mark}</span>{/if}
@@ -710,7 +710,7 @@
           >
             <span class="sb-name">
               {labelOf(n)}
-              {#if n.kind === 'menu'}<em class="sb-tag menu">menu</em>{/if}
+              {#if n.kind === 'menu'}<em class="sb-tag tag-menu">menu</em>{/if}
               {#if n.kind === 'screen'}<em class="sb-tag screen">screen</em>{/if}
             </span>
             <span class="sb-meta">line {n.line}</span>

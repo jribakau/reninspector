@@ -38,7 +38,7 @@
     </button>
     <button class="big" onclick={createNewProject} disabled={!!app.busy}><Icon name="plus" size={15} /> New project…</button>
     <button class="big" onclick={() => void openSdkManager()} disabled={!!app.busy}>Ren'Py SDKs…</button>
-    <button class="big" onclick={() => void openDemo()} disabled={!!app.busy} title="A small game with a broken jump, a duplicate label and an undefined image">Open the demo</button>
+    <button class="big" onclick={() => void openDemo()} disabled={!!app.busy} title="A small game with a broken jump, an undefined image and an undefined speaker">Open the demo</button>
   </div>
   {#if app.busy}<p class="dim">{app.busy}</p>{/if}
 

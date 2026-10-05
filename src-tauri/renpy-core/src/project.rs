@@ -1,10 +1,13 @@
 //! Project discovery, file loading and the in-memory `Project`.
 
 use std::collections::{HashMap, HashSet};
-use std::fs;
+use std::fs::{self, File};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+use sha2::{Digest, Sha256};
 
 use rayon::prelude::*;
 use serde::Serialize;
@@ -89,6 +92,8 @@ pub struct SourceFile {
     pub meta: Arc<Meta>,
     /// Decompiled text, when this file exists only as a `.rpyc`.
     pub source: Option<Arc<str>>,
+    /// Why a decompiled script is read-only. Empty for loose files and full decompiles.
+    pub decompile_reasons: Vec<String>,
     /// Compiled `(filename relative to game/, linenumber per decompiled line)`.
     /// Set only for a file recovered from a `.rpyc`.
     pub engine: Option<(String, Vec<u32>)>,
@@ -256,6 +261,8 @@ pub struct FileInfo {
     pub editable: bool,
     /// True when the text was decompiled from a `.rpyc`.
     pub decompiled: bool,
+    /// Why a decompiled file is read-only. Empty when it is editable.
+    pub reasons: Vec<String>,
 }
 
 /// One `.rpa` / `.rpi` in the project. `error` is set when the file could not be read;
@@ -265,6 +272,9 @@ pub struct FileInfo {
 pub struct ArchiveInfo {
     pub path: String,
     pub version: String,
+    /// True for ALT, ZiX, RPA-3.2, RPA-4.0 and other non-official headers.
+    /// They can be read and extracted. New archives are still written as RPA-3.0.
+    pub read_only_format: bool,
     pub entries: u32,
     pub scripts: u32,
     pub compiled_only: u32,
@@ -275,6 +285,59 @@ pub struct ArchiveInfo {
     pub overrides: u32,
     pub stale: Vec<String>,
     pub error: Option<String>,
+}
+
+/// How the scripts and archives of one game are laid out.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GameLayout {
+    pub loose_scripts: u32,
+    pub override_scripts: u32,
+    pub archived_scripts: u32,
+    pub compiled_scripts: u32,
+    pub compiled_only: u32,
+    pub archives: u32,
+    pub nested_archives: u32,
+    /// Archive header label to how many archives use it. Unreadable files use `unreadable`.
+    pub formats: Vec<FormatCount>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FormatCount {
+    pub version: String,
+    pub count: u32,
+}
+
+/// One top-level archive. `sha256` stays empty until [`sha256_file`] fills it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveDigest {
+    pub path: String,
+    pub bytes: u64,
+    /// Modification time as UTC, when the filesystem reports one.
+    pub modified: Option<String>,
+    pub sha256: Option<String>,
+}
+
+/// Identity of the opened game. File dates are a heuristic: Ren'Py stores no build date.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GameInfo {
+    pub engine_version: Option<String>,
+    pub script_version: Option<String>,
+    pub name: Option<String>,
+    pub version: Option<String>,
+    pub build_name: Option<String>,
+    pub save_directory: Option<String>,
+    /// Oldest modification time among `.rpa` / `.rpi` / `.rpyc` files.
+    pub files_oldest: Option<String>,
+    /// Newest modification time among those files.
+    pub files_newest: Option<String>,
+    pub layout: GameLayout,
+    /// Top-level archives only. Nested archives are counted in `layout` but not hashed.
+    pub archives: Vec<ArchiveDigest>,
+    pub notes: Vec<String>,
 }
 
 pub struct LoadedArchive {
@@ -305,6 +368,7 @@ pub struct ProjectInfo {
     pub engine: Option<EngineSummary>,
     pub stage_images: Option<StageImagesSummary>,
     pub lint_count: Option<u32>,
+    pub game: GameInfo,
 }
 
 const SKIP_DIRS: &[&str] = &["cache", "saves", "tl"];
@@ -485,6 +549,7 @@ fn load_from_bytes(rel: &str, abs: &Path, bytes: &[u8], origin: Origin) -> Sourc
         meta: Arc::new(meta),
         source: None,
         engine: None,
+        decompile_reasons: Vec::new(),
     }
 }
 
@@ -638,6 +703,100 @@ pub fn read_engine_version(root: &Path) -> Option<String> {
     let tail = &init[at + "version_tuple = (".len()..];
     let close = tail.find(')')?;
     first_three(tail[..close].split(',').map(|s| s.trim()).collect())
+}
+
+fn version_at_least(version: Option<&str>, major: u32, minor: u32) -> bool {
+    let Some(version) = version else {
+        return false;
+    };
+    let mut parts = version.split('.');
+    let maj: u32 = parts.next().unwrap_or("0").parse().unwrap_or(0);
+    let min: u32 = parts.next().unwrap_or("0").parse().unwrap_or(0);
+    (maj, min) >= (major, minor)
+}
+
+/// Strip a Ren'Py string literal, including a `_("...")` translation wrapper.
+fn plain_config(raw: &str) -> String {
+    let mut s = raw.trim().trim_end_matches(',').trim();
+    if let Some(rest) = s.strip_prefix("_(").or_else(|| s.strip_prefix("__(")) {
+        if let Some(end) = rest.rfind(')') {
+            s = rest[..end].trim();
+        }
+    }
+    for q in ['"', '\''] {
+        if s.len() >= 2 && s.starts_with(q) && s.ends_with(q) {
+            return s[1..s.len() - 1].replace("\\\"", "\"").replace("\\'", "'");
+        }
+    }
+    s.to_string()
+}
+
+fn format_system_time(t: SystemTime) -> Option<String> {
+    t.duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|d| crate::rpa::format_utc(d.as_secs()))
+}
+
+/// Oldest and newest modification times of archive and compiled-script files.
+fn file_date_span(game_dir: &Path) -> (Option<String>, Option<String>) {
+    let mut oldest: Option<SystemTime> = None;
+    let mut newest: Option<SystemTime> = None;
+    fn walk(dir: &Path, oldest: &mut Option<SystemTime>, newest: &mut Option<SystemTime>) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let Ok(ty) = e.file_type() else { continue };
+            if ty.is_dir() {
+                if !is_skipped_dir(&e.file_name().to_string_lossy()) {
+                    walk(&e.path(), oldest, newest);
+                }
+                continue;
+            }
+            let ext = e
+                .path()
+                .extension()
+                .and_then(|x| x.to_str())
+                .map(|x| x.to_ascii_lowercase())
+                .unwrap_or_default();
+            if !matches!(ext.as_str(), "rpa" | "rpi" | "rpyc" | "rpymc") {
+                continue;
+            }
+            let Ok(modified) = e.metadata().and_then(|m| m.modified()) else {
+                continue;
+            };
+            match *oldest {
+                Some(t) if modified >= t => {}
+                _ => *oldest = Some(modified),
+            }
+            match *newest {
+                Some(t) if modified <= t => {}
+                _ => *newest = Some(modified),
+            }
+        }
+    }
+    walk(game_dir, &mut oldest, &mut newest);
+    (
+        oldest.and_then(format_system_time),
+        newest.and_then(format_system_time),
+    )
+}
+
+/// SHA-256 of a file, streamed so a large archive is not loaded whole.
+pub fn sha256_file(path: &Path) -> Result<String, String> {
+    let mut file = File::open(path).map_err(|e| format!("Could not read {}: {e}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = file
+            .read(&mut buf)
+            .map_err(|e| format!("Could not read {}: {e}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn read_script_version(game_dir: &Path) -> Option<String> {
@@ -821,6 +980,7 @@ fn source_from_decompiled(
         },
     );
     file.source = Some(Arc::from(got.text.as_str()));
+    file.decompile_reasons = got.reasons.clone();
     if let Some(name) = got.engine_file.clone() {
         if !got.engine_lines.is_empty() {
             file.engine = Some((name, got.engine_lines.clone()));
@@ -845,10 +1005,13 @@ fn cached_decompile(bytes: &[u8], cache: Option<&Path>) -> Result<crate::rpyc::D
 
 fn read_decompile_cache(dir: &Path, crc: u32) -> Option<crate::rpyc::Decompiled> {
     let text = fs::read_to_string(dir.join(format!("{crc:08x}.txt"))).ok()?;
-    let mut lines = text.splitn(5, '\n');
-    if lines.next()? != "v2" {
+    let (version, rest) = text.split_once('\n')?;
+    if version != "v2" && version != "v3" {
         return None;
     }
+    // v2 is flag, file, lines, then the script. v3 inserts a reasons line before the script.
+    let parts = if version == "v3" { 5 } else { 4 };
+    let mut lines = rest.splitn(parts, '\n');
     let editable = lines.next()? == "1";
     let file = lines.next()?;
     let engine_file = if file.is_empty() || file == "-" {
@@ -863,12 +1026,22 @@ fn read_decompile_cache(dir: &Path, crc: u32) -> Option<crate::rpyc::Decompiled>
             engine_lines.push(part.parse().ok()?);
         }
     }
-    let body = lines.next().unwrap_or("").to_string();
+    let (reasons, body) = if version == "v3" {
+        let raw = lines.next().unwrap_or("");
+        let reasons = if raw.is_empty() {
+            Vec::new()
+        } else {
+            raw.split('\t').map(|s| s.to_string()).collect()
+        };
+        (reasons, lines.next().unwrap_or("").to_string())
+    } else {
+        (Vec::new(), lines.next().unwrap_or("").to_string())
+    };
     Some(crate::rpyc::Decompiled {
         text: body,
         editable,
         partial: !editable,
-        reasons: Vec::new(),
+        reasons,
         engine_lines,
         engine_file,
     })
@@ -893,7 +1066,13 @@ fn write_decompile_cache(
         }
         nums.push_str(&n.to_string());
     }
-    let body = format!("v2\n{flag}\n{file}\n{nums}\n{}", got.text);
+    let reasons = got
+        .reasons
+        .iter()
+        .map(|r| r.replace(['\t', '\n', '\r'], " "))
+        .collect::<Vec<_>>()
+        .join("\t");
+    let body = format!("v3\n{flag}\n{file}\n{nums}\n{reasons}\n{}", got.text);
     fs::write(dir.join(format!("{crc:08x}.txt")), body).map_err(|e| e.to_string())
 }
 
@@ -961,7 +1140,8 @@ fn open_archives(game_dir: &Path, paths: &[String]) -> Vec<LoadedArchive> {
                 Ok(archive) => LoadedArchive {
                     info: ArchiveInfo {
                         path: rel.clone(),
-                        version: archive.version_label().to_string(),
+                        version: archive.version_label(),
+                        read_only_format: archive.read_only_format(),
                         entries: archive.entries.len() as u32,
                         scripts: 0,
                         compiled_only: 0,
@@ -978,7 +1158,8 @@ fn open_archives(game_dir: &Path, paths: &[String]) -> Vec<LoadedArchive> {
                 Err(e) => LoadedArchive {
                     info: ArchiveInfo {
                         path: rel.clone(),
-                        version: String::new(),
+                        version: e.known_version.clone().unwrap_or_default(),
+                        read_only_format: e.known_version.is_some(),
                         entries: 0,
                         scripts: 0,
                         compiled_only: 0,
@@ -994,6 +1175,67 @@ fn open_archives(game_dir: &Path, paths: &[String]) -> Vec<LoadedArchive> {
             }
         })
         .collect()
+}
+
+/// When an archive header is unknown, say which script registers a custom loader.
+fn annotate_custom_handlers(game_dir: &Path, loaded: &mut [LoadedArchive]) {
+    let unknown = loaded.iter().any(|a| {
+        a.info
+            .error
+            .as_ref()
+            .is_some_and(|e| e.contains("unsupported"))
+    });
+    if !unknown {
+        return;
+    }
+    let Some(script) = find_handler_script(game_dir) else {
+        return;
+    };
+    for arch in loaded.iter_mut() {
+        if let Some(err) = &mut arch.info.error {
+            if err.contains("unsupported") {
+                err.push_str(&format!(
+                    " A custom archive handler is registered in {script}."
+                ));
+            }
+        }
+    }
+}
+
+fn find_handler_script(game_dir: &Path) -> Option<String> {
+    find_handler_in(game_dir, game_dir)
+}
+
+fn find_handler_in(game_dir: &Path, dir: &Path) -> Option<String> {
+    let entries = fs::read_dir(dir).ok()?;
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let Ok(ty) = e.file_type() else { continue };
+        if ty.is_dir() {
+            if is_skipped_dir(&name) {
+                continue;
+            }
+            if let Some(hit) = find_handler_in(game_dir, &e.path()) {
+                return Some(hit);
+            }
+            continue;
+        }
+        let lower = name.to_ascii_lowercase();
+        if !(lower.ends_with(".rpy") || lower.ends_with(".py")) {
+            continue;
+        }
+        let Ok(meta) = e.metadata() else { continue };
+        if meta.len() > 2_000_000 {
+            continue;
+        }
+        let Ok(text) = fs::read_to_string(e.path()) else {
+            continue;
+        };
+        if text.contains("archive_handlers") {
+            return Some(rel_string(game_dir, &e.path()));
+        }
+    }
+    None
 }
 
 fn winning_archive(loaded: &[LoadedArchive], rel: &str) -> Option<String> {
@@ -1123,7 +1365,7 @@ fn fill_archive_stats(loaded: &mut [LoadedArchive], files: &[SourceFile]) {
     }
 }
 
-fn stale_entries(loaded: &[LoadedArchive]) -> Vec<String> {
+fn stale_entries(game_dir: &Path, loaded: &[LoadedArchive]) -> Vec<String> {
     let mut found = Vec::new();
     for arch in loaded {
         let Some(archive) = &arch.archive else {
@@ -1144,8 +1386,60 @@ fn stale_entries(loaded: &[LoadedArchive]) -> Vec<String> {
                 .map(|s| s.crc32)
         });
         found.extend(stale);
+        found.extend(loose_stale(game_dir, &manifest));
     }
     found
+}
+
+/// Patches of a loose `.rpyc` have no source archive. Compare the file on disk,
+/// when the game update put one back, with the CRC recorded at bake time.
+fn loose_stale(game_dir: &Path, manifest: &rpa::PatchManifest) -> Vec<String> {
+    let mut stale = Vec::new();
+    for (name, entry) in &manifest.entries {
+        if entry.generated || entry.source.is_some() {
+            continue;
+        }
+        let Some(expected) = entry.base_crc32 else {
+            continue;
+        };
+        let Some(rpyc) = compiled_sibling(name) else {
+            continue;
+        };
+        let Ok(bytes) = fs::read(loose_path(game_dir, &rpyc)) else {
+            continue;
+        };
+        if crc32fast::hash(&bytes) != expected {
+            stale.push(format!("{name} on disk changed after it was patched"));
+        }
+    }
+    stale
+}
+
+fn compiled_sibling(name: &str) -> Option<String> {
+    if let Some(stem) = name.strip_suffix(".rpy") {
+        Some(format!("{stem}.rpyc"))
+    } else if let Some(stem) = name.strip_suffix(".rpym") {
+        Some(format!("{stem}.rpymc"))
+    } else {
+        None
+    }
+}
+
+fn apply_stale(loaded: &mut [LoadedArchive], stale: &[String]) {
+    for arch in loaded.iter_mut() {
+        if arch.info.is_patch {
+            arch.info.stale = stale.to_vec();
+            continue;
+        }
+        let path = &arch.info.path;
+        arch.info.stale = stale
+            .iter()
+            .filter(|line| {
+                line.contains(&format!(" {path} ")) || line.contains(&format!(" {path},"))
+            })
+            .cloned()
+            .collect();
+    }
 }
 
 fn unreadable_archives(archives: &[LoadedArchive]) -> Vec<String> {
@@ -1309,6 +1603,7 @@ impl Project {
         let (decompiled, failed) = recover_compiled(&game_dir, &loose_jobs, cache_dir);
         files.extend(decompiled);
         let mut loaded = open_archives(&game_dir, &archive_paths);
+        annotate_custom_handlers(&game_dir, &mut loaded);
         sort_archives(&mut loaded);
         let (archived, extra_compiled, shadowed) =
             take_archived_scripts(&game_dir, &loaded, &files, cache_dir);
@@ -1326,7 +1621,8 @@ impl Project {
         compiled_only.sort();
         compiled_only.dedup();
         fill_archive_stats(&mut loaded, &files);
-        let stale = stale_entries(&loaded);
+        let stale = stale_entries(&game_dir, &loaded);
+        apply_stale(&mut loaded, &stale);
         let mut auto_images = index_images(&game_dir);
         index_archive_images(&loaded, &mut auto_images);
         let mut project = Project {
@@ -1601,7 +1897,9 @@ impl Project {
         fill_archive_stats(&mut loaded, &self.files);
         self.compiled_only = compiled_only;
         self.shadowed = shadowed;
-        self.stale = stale_entries(&loaded);
+        let stale = stale_entries(&self.game_dir, &loaded);
+        apply_stale(&mut loaded, &stale);
+        self.stale = stale;
         self.archives = loaded;
         self.compiled_fp = compiled_fp;
         self.has_archives = !archive_paths.is_empty();
@@ -1776,6 +2074,79 @@ impl Project {
             .map(|(_, v)| v.clone())
     }
 
+    pub fn game_info(&self) -> GameInfo {
+        let (files_oldest, files_newest) = file_date_span(&self.game_dir);
+        let mut format_counts: std::collections::BTreeMap<String, u32> =
+            std::collections::BTreeMap::new();
+        let mut nested = 0u32;
+        let mut archives = Vec::new();
+        for arch in &self.archives {
+            let label = if arch.info.version.is_empty() {
+                "unreadable".to_string()
+            } else {
+                arch.info.version.clone()
+            };
+            *format_counts.entry(label).or_default() += 1;
+            if arch.info.nested {
+                nested += 1;
+                continue;
+            }
+            let abs = loose_path(&self.game_dir, &arch.info.path);
+            let meta = fs::metadata(&abs).ok();
+            archives.push(ArchiveDigest {
+                path: arch.info.path.clone(),
+                bytes: meta.as_ref().map(|m| m.len()).unwrap_or(0),
+                modified: meta.and_then(|m| m.modified().ok()).and_then(format_system_time),
+                sha256: None,
+            });
+        }
+        let mut loose = 0u32;
+        let mut overrides = 0u32;
+        let mut archived = 0u32;
+        let mut compiled = 0u32;
+        for file in &self.files {
+            match file.origin.kind() {
+                "loose" => loose += 1,
+                "override" => overrides += 1,
+                "archived" => archived += 1,
+                "compiled" => compiled += 1,
+                _ => {}
+            }
+        }
+        let mut notes = Vec::new();
+        if version_at_least(self.engine_version.as_deref(), 8, 5) {
+            notes.push(
+                "Ren'Py 8.5 and later leave the --json-dump label list empty, so the label cross-check is unavailable."
+                    .into(),
+            );
+        }
+        GameInfo {
+            engine_version: self.engine_version.clone(),
+            script_version: self.script_version.clone(),
+            name: self.config_value("name").map(|v| plain_config(&v)),
+            version: self.config_value("version").map(|v| plain_config(&v)),
+            build_name: self.config_value("build.name").map(|v| plain_config(&v)),
+            save_directory: self.config_value("save_directory").map(|v| plain_config(&v)),
+            files_oldest,
+            files_newest,
+            layout: GameLayout {
+                loose_scripts: loose,
+                override_scripts: overrides,
+                archived_scripts: archived,
+                compiled_scripts: compiled,
+                compiled_only: self.compiled_only.len() as u32,
+                archives: self.archives.len() as u32,
+                nested_archives: nested,
+                formats: format_counts
+                    .into_iter()
+                    .map(|(version, count)| FormatCount { version, count })
+                    .collect(),
+            },
+            archives,
+            notes,
+        }
+    }
+
     pub fn info(&self) -> ProjectInfo {
         let mut label_counts = vec![0u32; self.files.len()];
         for d in &self.analysis.defs {
@@ -1819,6 +2190,7 @@ impl Project {
                     archive: f.origin.archive().map(|s| s.to_string()),
                     editable: f.origin.editable(),
                     decompiled: matches!(f.origin, Origin::Compiled { .. }),
+                    reasons: f.decompile_reasons.clone(),
                 })
                 .collect(),
             stats: self.analysis.stats.clone(),
@@ -1829,6 +2201,7 @@ impl Project {
                 .as_ref()
                 .map(|r| r.summary(&self.init_key())),
             lint_count: self.lint.as_ref().map(|l| l.len() as u32),
+            game: self.game_info(),
         }
     }
 
@@ -2053,6 +2426,62 @@ mod tests {
         assert!(!project.publish_analysis(first.epoch, old));
         assert!(project.publish_analysis(second.epoch, new));
         assert!(project.analysis.by_name.contains_key("start"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn game_info_reads_config_layout_and_warns_on_85() {
+        let root = std::env::temp_dir().join(format!("vnide-game-info-{}", std::process::id()));
+        let game = root.join("game");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("renpy")).unwrap();
+        fs::create_dir_all(&game).unwrap();
+        fs::write(
+            root.join("renpy").join("vc_version.py"),
+            "version = '8.5.2'\n",
+        )
+        .unwrap();
+        fs::write(game.join("script_version.txt"), "(8, 4, 1)\n").unwrap();
+        fs::write(
+            game.join("options.rpy"),
+            "define config.name = _(\"Demo\")\ndefine config.version = \"1.2\"\ndefine config.save_directory = \"Demo-1\"\ndefine build.name = \"demo-pkg\"\n",
+        )
+        .unwrap();
+        fs::write(game.join("script.rpy"), "label start:\n    return\n").unwrap();
+        fs::write(game.join("scripts.rpa"), b"not-an-archive").unwrap();
+        let info = Project::open(&root).unwrap().game_info();
+        assert_eq!(info.engine_version.as_deref(), Some("8.5.2"));
+        assert_eq!(info.script_version.as_deref(), Some("8.4.1"));
+        assert_eq!(info.name.as_deref(), Some("Demo"));
+        assert_eq!(info.version.as_deref(), Some("1.2"));
+        assert_eq!(info.build_name.as_deref(), Some("demo-pkg"));
+        assert_eq!(info.save_directory.as_deref(), Some("Demo-1"));
+        assert_eq!(info.layout.loose_scripts, 2);
+        assert_eq!(info.layout.archives, 1);
+        assert_eq!(info.archives.len(), 1);
+        assert!(info.archives[0].sha256.is_none());
+        assert!(info.files_newest.is_some());
+        assert!(info.notes.iter().any(|n| n.contains("8.5")));
+        fs::write(game.join("odd.rpa"), b"XYZ-9.9 nope\n").unwrap();
+        fs::write(
+            game.join("script.rpy"),
+            "label start:\n    return\ninit python:\n    config.archive_handlers.append(None)\n",
+        )
+        .unwrap();
+        let again = Project::open(&root).unwrap();
+        let odd = again
+            .archives
+            .iter()
+            .find(|a| a.info.path == "odd.rpa")
+            .unwrap();
+        let err = odd.info.error.as_deref().unwrap_or("");
+        assert!(err.contains("unsupported"), "{err}");
+        assert!(err.contains("script.rpy"), "{err}");
+        assert_eq!(odd.info.version, "XYZ-9.9");
+        assert!(!version_at_least(Some("8.4.1"), 8, 5));
+        assert!(version_at_least(Some("8.5.0"), 8, 5));
+        let hashed = sha256_file(&game.join("scripts.rpa")).unwrap();
+        assert_eq!(hashed.len(), 64);
         let _ = fs::remove_dir_all(&root);
     }
 }

@@ -152,8 +152,104 @@ pub fn compile_target(
     )))
 }
 
+pub const TOGGLES_NAME: &str = "vnide_toggles.rpy";
+pub const TOGGLES_COMPILED: &str = "vnide_toggles.rpyc";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModToggles {
+    #[serde(default)]
+    pub console: bool,
+    #[serde(default)]
+    pub developer: bool,
+    #[serde(default)]
+    pub quick_save_keys: bool,
+    #[serde(default)]
+    pub skip_unseen: bool,
+    #[serde(default)]
+    pub rollback: bool,
+}
+
+impl Default for ModToggles {
+    fn default() -> Self {
+        Self {
+            console: false,
+            developer: false,
+            quick_save_keys: false,
+            skip_unseen: false,
+            rollback: false,
+        }
+    }
+}
+
+impl ModToggles {
+    pub fn any(&self) -> bool {
+        self.console || self.developer || self.quick_save_keys || self.skip_unseen || self.rollback
+    }
+
+    /// `init 999` so it runs after the game's own options.
+    pub fn script(&self) -> String {
+        let mut lines = vec!["init 999 python:".to_string()];
+        if self.console {
+            lines.push("    config.console = True".into());
+        }
+        if self.developer {
+            lines.push("    config.developer = True".into());
+        }
+        if self.quick_save_keys {
+            lines.push("    config.keymap['quick_save'] = ['K_F5']".into());
+            lines.push("    config.keymap['quick_load'] = ['K_F9']".into());
+        }
+        if self.skip_unseen {
+            lines.push("    config.allow_skipping = True".into());
+            lines.push("    _preferences.skip_unseen = True".into());
+        }
+        if self.rollback {
+            lines.push("    config.rollback_enabled = True".into());
+        }
+        if lines.len() == 1 {
+            return String::new();
+        }
+        lines.push(String::new());
+        lines.join("\n")
+    }
+}
+
+pub fn toggles_path(app_data: &Path, project_root: &Path) -> PathBuf {
+    let hash = edit::backup_root(app_data, project_root)
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_default();
+    app_data.join("toggles").join(hash).with_extension("json")
+}
+
+pub fn load_toggles(app_data: &Path, project_root: &Path) -> ModToggles {
+    let Ok(text) = fs::read_to_string(toggles_path(app_data, project_root)) else {
+        return ModToggles::default();
+    };
+    serde_json::from_str(&text).unwrap_or_default()
+}
+
+pub fn save_toggles(
+    app_data: &Path,
+    project_root: &Path,
+    toggles: &ModToggles,
+) -> Result<(), String> {
+    let path = toggles_path(app_data, project_root);
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let text = serde_json::to_string_pretty(toggles).map_err(|e| e.to_string())?;
+    fs::write(path, text).map_err(|e| e.to_string())
+}
+
 /// Rebuild the patch from every loose override plus the entries already in it.
-pub fn bake(project: &Project, undo_dir: &Path, backup_root: &Path) -> Result<PatchReport, String> {
+pub fn bake(
+    project: &Project,
+    undo_dir: &Path,
+    backup_root: &Path,
+    toggles: &ModToggles,
+) -> Result<PatchReport, String> {
     let overrides: Vec<&renpy_core::project::SourceFile> = project
         .files
         .iter()
@@ -162,14 +258,20 @@ pub fn bake(project: &Project, undo_dir: &Path, backup_root: &Path) -> Result<Pa
                 || edit::decompiled_marker_path(backup_root, &f.rel).is_file()
         })
         .collect();
-    if overrides.is_empty() {
+    let rel = patch_rel(project);
+    let patch_abs = safe_join(&project.game_dir, &rel)?;
+    let had_toggles = patch_abs.is_file()
+        && Archive::open(&patch_abs)
+            .ok()
+            .and_then(|archive| rpa::read_manifest(&archive).ok().flatten())
+            .is_some_and(|m| m.entries.contains_key(TOGGLES_NAME));
+    if overrides.is_empty() && !toggles.any() && !had_toggles {
         return Err("Nothing to bake. Saving an archived script writes a loose file; bake folds those into the patch.".into());
     }
     // The game never parses a .rpy that lives only inside an archive. It runs
     // the compiled .rpyc. Compile while the loose file is still on disk.
+    let bases = capture_bases(project, &overrides);
     compile_overrides(project, &overrides)?;
-    let rel = patch_rel(project);
-    let patch_abs = safe_join(&project.game_dir, &rel)?;
     let _ = fs::remove_dir_all(undo_dir);
     fs::create_dir_all(undo_dir).map_err(|e| format!("Could not create the undo folder: {e}"))?;
 
@@ -245,16 +347,46 @@ pub fn bake(project: &Project, undo_dir: &Path, backup_root: &Path) -> Result<Pa
             }
         }
 
-        let source = file.origin.archive().map(|s| s.to_string());
-        let base_crc32 = source
-            .as_deref()
-            .and_then(|archive| project.archived_crc(archive, &file.rel));
+        // The patch sorts first, so a file baked before reports the patch as its
+        // archive. Keep what the first bake recorded: that is the real original.
+        let previous = old_manifest
+            .as_ref()
+            .and_then(|m| m.entries.get(&file.rel))
+            .filter(|e| !e.generated);
+        let from_patch = file.origin.archive() == Some(rel.as_str());
+        let reuse = previous.filter(|old| from_patch || old.source.is_none());
+        let (source, base_crc32) = match reuse {
+            Some(old) => (old.source.clone(), old.base_crc32),
+            None => {
+                let source = file
+                    .origin
+                    .archive()
+                    .filter(|name| *name != rel)
+                    .map(|s| s.to_string());
+                let mut crc = source
+                    .as_deref()
+                    .and_then(|archive| project.archived_crc(archive, &file.rel));
+                if crc.is_none() {
+                    crc = bases.get(&file.rel).and_then(|snap| snap.crc);
+                }
+                (source, crc)
+            }
+        };
+        if reuse.is_none() {
+            if let (Some(crc), Some(text)) = (
+                base_crc32,
+                bases.get(&file.rel).and_then(|snap| snap.text.as_deref()),
+            ) {
+                write_base(backup_root, crc, &file.rel, text)?;
+            }
+        }
         manifest.entries.insert(
             file.rel.clone(),
             PatchEntry {
                 source,
                 base_crc32,
                 baked_at: manifest.baked_at.clone(),
+                generated: false,
             },
         );
     }
@@ -275,6 +407,8 @@ pub fn bake(project: &Project, undo_dir: &Path, backup_root: &Path) -> Result<Pa
             carried.remove(&side_rel);
         }
     }
+
+    apply_toggles(&mut carried, &mut manifest, toggles, &project.game_dir)?;
 
     let manifest_bytes = manifest.to_bytes().map_err(|e| e.to_string())?;
     let op = UndoOp {
@@ -423,6 +557,262 @@ pub fn remove(project: &Project, undo_dir: &Path) -> Result<PatchReport, String>
     })
 }
 
+struct CapturedBase {
+    crc: Option<u32>,
+    text: Option<String>,
+}
+
+fn capture_bases(
+    project: &Project,
+    overrides: &[&renpy_core::project::SourceFile],
+) -> BTreeMap<String, CapturedBase> {
+    let mut out = BTreeMap::new();
+    for file in overrides {
+        let captured = match file.origin.archive() {
+            Some(archive) => capture_archived(project, archive, &file.rel),
+            None => capture_loose(project, &file.rel),
+        };
+        out.insert(file.rel.clone(), captured);
+    }
+    out
+}
+
+fn capture_archived(project: &Project, archive: &str, rel: &str) -> CapturedBase {
+    let crc = project.archived_crc(archive, rel);
+    let text = archived_text(project, archive, rel);
+    CapturedBase { crc, text }
+}
+
+fn capture_loose(project: &Project, rel: &str) -> CapturedBase {
+    let side = sidecar_rel(rel);
+    let Ok(path) = safe_join(&project.game_dir, &side) else {
+        return CapturedBase { crc: None, text: None };
+    };
+    let Ok(bytes) = fs::read(path) else {
+        return CapturedBase { crc: None, text: None };
+    };
+    let text = renpy_core::rpyc::decompile(&bytes).ok().map(|got| got.text);
+    CapturedBase {
+        crc: Some(crc32fast::hash(&bytes)),
+        text,
+    }
+}
+
+fn archived_text(project: &Project, archive: &str, rel: &str) -> Option<String> {
+    let loaded = project
+        .archives
+        .iter()
+        .find(|item| item.info.path == archive)?
+        .archive
+        .as_ref()?;
+    if rel.ends_with(".rpy") || rel.ends_with(".rpym") {
+        if let Ok(bytes) = loaded.read_entry(rel, rpa::SCRIPT_MAX) {
+            if let Ok(text) = String::from_utf8(bytes) {
+                return Some(text);
+            }
+        }
+    }
+    let side = sidecar_rel(rel);
+    let bytes = loaded.read_entry(&side, rpa::SCRIPT_MAX).ok()?;
+    renpy_core::rpyc::decompile(&bytes).ok().map(|got| got.text)
+}
+
+pub fn base_snapshot_path(backup_root: &Path, crc: u32, rel: &str) -> PathBuf {
+    backup_root
+        .join("bases")
+        .join(format!("{crc:08x}"))
+        .join(rel)
+}
+
+fn write_base(backup_root: &Path, crc: u32, rel: &str, text: &str) -> Result<(), String> {
+    if rel.is_empty() || rel.contains("..") || rel.contains('\0') {
+        return Err(format!("Refusing to store a base snapshot for `{rel}`."));
+    }
+    let path = base_snapshot_path(backup_root, crc, rel);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    fs::write(path, text).map_err(|e| e.to_string())
+}
+
+fn read_base(backup_root: &Path, crc: u32, rel: &str) -> Option<String> {
+    fs::read_to_string(base_snapshot_path(backup_root, crc, rel)).ok()
+}
+
+/// Where the toggles script is staged, loose, while the engine compiles it.
+pub fn toggles_loose_paths(game_dir: &Path) -> (PathBuf, PathBuf) {
+    (
+        game_dir.join(TOGGLES_NAME),
+        game_dir.join(TOGGLES_COMPILED),
+    )
+}
+
+/// The game ignores a `.rpy` that lives only in an archive and runs the `.rpyc`.
+/// So the toggles script is written loose, compiled by the engine, and the
+/// compiled file is what `bake` folds into the patch.
+pub fn compile_toggles(
+    project_root: &Path,
+    game_dir: &Path,
+    launcher: Option<&renpy_core::Launcher>,
+    toggles: &ModToggles,
+) -> Result<(), String> {
+    let script = toggles.script();
+    if script.is_empty() {
+        return Ok(());
+    }
+    let Some(launcher) = launcher else {
+        return Err(
+            "The mod toggles need Ren'Py to compile them. Pick a launcher or SDK first.".into(),
+        );
+    };
+    let (rpy, rpyc) = toggles_loose_paths(game_dir);
+    if rpy.exists() || rpyc.exists() {
+        return Err(format!(
+            "`{TOGGLES_NAME}` or `{TOGGLES_COMPILED}` already exists in game/. Move it before baking the toggles."
+        ));
+    }
+    let outcome = (|| {
+        fs::write(&rpy, script).map_err(|e| format!("Could not stage the toggles script: {e}"))?;
+        renpy_core::engine::run_json_dump(project_root, game_dir, launcher, "bake".into())
+            .map_err(|e| format!("Ren'Py could not compile the toggles: {e}"))?;
+        if !rpyc.is_file() {
+            return Err("Ren'Py ran, but it did not compile the toggles script.".to_string());
+        }
+        Ok(())
+    })();
+    if outcome.is_err() {
+        remove_toggles_loose(game_dir);
+    }
+    outcome
+}
+
+/// Remove the staged toggles script and its compiled file from `game/`.
+pub fn remove_toggles_loose(game_dir: &Path) {
+    let (rpy, rpyc) = toggles_loose_paths(game_dir);
+    let _ = fs::remove_file(rpy);
+    let _ = fs::remove_file(rpyc);
+}
+
+fn apply_toggles(
+    carried: &mut BTreeMap<String, Vec<u8>>,
+    manifest: &mut PatchManifest,
+    toggles: &ModToggles,
+    game_dir: &Path,
+) -> Result<(), String> {
+    carried.remove(TOGGLES_NAME);
+    carried.remove(TOGGLES_COMPILED);
+    manifest.entries.remove(TOGGLES_NAME);
+    let script = toggles.script();
+    if script.is_empty() {
+        return Ok(());
+    }
+    let (_, rpyc) = toggles_loose_paths(game_dir);
+    let compiled = fs::read(&rpyc).map_err(|_| {
+        format!("`{TOGGLES_COMPILED}` was not compiled, so the toggles cannot be baked.")
+    })?;
+    carried.insert(TOGGLES_COMPILED.to_string(), compiled);
+    carried.insert(TOGGLES_NAME.to_string(), script.into_bytes());
+    manifest.entries.insert(
+        TOGGLES_NAME.to_string(),
+        PatchEntry {
+            source: None,
+            base_crc32: None,
+            baked_at: manifest.baked_at.clone(),
+            generated: true,
+        },
+    );
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RebaseResult {
+    pub base: String,
+    pub upstream: String,
+    pub mine: String,
+    pub merged: String,
+    pub conflicts: u32,
+    pub base_missing: bool,
+}
+
+pub fn rebase(project: &Project, backup_root: &Path, rel: &str) -> Result<RebaseResult, String> {
+    if rel.is_empty() || rel.contains("..") || rel.contains('\0') {
+        return Err("That path is not a script in this game.".into());
+    }
+    let loaded = project
+        .archives
+        .iter()
+        .find(|item| item.info.is_patch)
+        .and_then(|item| item.archive.as_ref())
+        .ok_or_else(|| "There is no patch to rebase.".to_string())?;
+    let manifest = rpa::read_manifest(loaded)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "The patch has no manifest.".to_string())?;
+    let entry = manifest
+        .entries
+        .get(rel)
+        .ok_or_else(|| format!("`{rel}` is not in the patch."))?;
+    let mine = mine_text(project, loaded, rel)?;
+    let upstream = upstream_text(project, entry, rel);
+    let base = entry
+        .base_crc32
+        .and_then(|crc| read_base(backup_root, crc, rel));
+    let base_missing = base.is_none();
+    let (merged, conflicts) = match &base {
+        Some(text) => merge3(text, &mine, &upstream),
+        None => (String::new(), 0),
+    };
+    Ok(RebaseResult {
+        base: base.unwrap_or_default(),
+        upstream,
+        mine,
+        merged,
+        conflicts,
+        base_missing,
+    })
+}
+
+fn mine_text(project: &Project, patch: &Archive, rel: &str) -> Result<String, String> {
+    if let Ok(path) = safe_join(&project.game_dir, rel) {
+        if path.is_file() {
+            return fs::read_to_string(path)
+                .map_err(|e| format!("Could not read the loose copy of {rel}: {e}"));
+        }
+    }
+    let bytes = patch
+        .read_entry(rel, rpa::SCRIPT_MAX)
+        .map_err(|e| format!("Could not read `{rel}` from the patch: {e}"))?;
+    String::from_utf8(bytes).map_err(|_| format!("`{rel}` in the patch is not text."))
+}
+
+fn upstream_text(project: &Project, entry: &PatchEntry, rel: &str) -> String {
+    if let Some(archive) = entry.source.as_deref() {
+        if let Some(text) = archived_text(project, archive, rel) {
+            return text;
+        }
+    }
+    let side = sidecar_rel(rel);
+    let Ok(path) = safe_join(&project.game_dir, &side) else {
+        return String::new();
+    };
+    let Ok(bytes) = fs::read(path) else {
+        return String::new();
+    };
+    renpy_core::rpyc::decompile(&bytes)
+        .map(|got| got.text)
+        .unwrap_or_default()
+}
+
+fn merge3(base: &str, mine: &str, upstream: &str) -> (String, u32) {
+    match diffy::merge(base, mine, upstream) {
+        Ok(text) => (text, 0),
+        Err(conflicted) => {
+            let n = conflicted.matches("<<<<<<<").count() as u32;
+            (conflicted, n.max(1))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -430,6 +820,65 @@ mod tests {
     use renpy_core::engine::run_json_dump;
     use renpy_core::Launcher;
     use std::process::Command;
+
+    #[test]
+    fn toggles_script_lists_only_what_is_on() {
+        let mut toggles = ModToggles::default();
+        assert!(toggles.script().is_empty());
+        toggles.console = true;
+        toggles.rollback = true;
+        let script = toggles.script();
+        assert!(script.starts_with("init 999 python:"));
+        assert!(script.contains("config.console = True"));
+        assert!(script.contains("config.rollback_enabled = True"));
+        assert!(!script.contains("config.developer"));
+    }
+
+    #[test]
+    fn toggles_bake_their_compiled_file_and_turning_them_off_removes_it() {
+        let root = std::env::temp_dir().join(format!("vn-ide-toggles-{}", std::process::id()));
+        let game = root.join("game");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&game).unwrap();
+        fs::write(game.join("script.rpy"), "label start:\n    return\n").unwrap();
+        let project = Project::open(&root).unwrap();
+        let backups = root.join("backups");
+        let undo = root.join("undo");
+        let mut on = ModToggles::default();
+        on.console = true;
+
+        // The engine has not compiled the script, so there is nothing to fold in.
+        let err = bake(&project, &undo, &backups, &on).unwrap_err();
+        assert!(err.contains("was not compiled"), "{err}");
+
+        fs::write(game.join(TOGGLES_COMPILED), b"compiled").unwrap();
+        let report = bake(&project, &undo, &backups, &on).unwrap();
+        assert!(!game.join(TOGGLES_COMPILED).exists(), "the loose rpyc is folded in");
+        let patch = Archive::open(&game.join(&report.patch)).unwrap();
+        assert_eq!(patch.read_entry(TOGGLES_COMPILED, 1024).unwrap(), b"compiled");
+        let text = String::from_utf8(patch.read_entry(TOGGLES_NAME, 1024).unwrap()).unwrap();
+        assert!(text.contains("config.console = True"));
+        let manifest = rpa::read_manifest(&patch).unwrap().unwrap();
+        assert!(manifest.entries[TOGGLES_NAME].generated);
+
+        let mut project = Project::open(&root).unwrap();
+        project.refresh_archives();
+        bake(&project, &undo, &backups, &ModToggles::default()).unwrap();
+        let patch = Archive::open(&game.join(&report.patch)).unwrap();
+        assert!(patch.get(TOGGLES_NAME).is_none());
+        assert!(patch.get(TOGGLES_COMPILED).is_none());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn three_way_merge_marks_a_conflict_and_keeps_a_clean_edit() {
+        let (clean, n) = merge3("line\n", "line\nmine\n", "line\n");
+        assert_eq!(n, 0);
+        assert!(clean.contains("mine"));
+        let (conflicted, n) = merge3("line\n", "line\nmine\n", "line\ntheirs\n");
+        assert!(n >= 1);
+        assert!(conflicted.contains("<<<<<<<"));
+    }
 
     #[test]
     fn bake_puts_the_edit_in_a_patch_and_undo_restores_the_loose_file() {
@@ -454,7 +903,7 @@ mod tests {
         )
         .unwrap();
         let undo_dir = root.join("undo");
-        let report = bake(&project, &undo_dir, &backups).unwrap();
+        let report = bake(&project, &undo_dir, &backups, &ModToggles::default()).unwrap();
         assert!(report.patch.contains("vnide_patch"));
         assert!(!game.join("chapter.rpy").exists());
         project.refresh_archives();
@@ -498,6 +947,89 @@ mod tests {
         if ran == 0 {
             eprintln!("RENPY7_SDK and RENPY8_SDK are unset; skipping the engine check");
         }
+    }
+
+    /// Compiles the toggles with the engine, bakes them, and has the game read
+    /// its own settings after the patch's `init 999` block ran.
+    #[test]
+    fn engine_applies_baked_toggles() {
+        let mut ran = 0u32;
+        for (key, which) in [("RENPY7_SDK", "renpy7"), ("RENPY8_SDK", "renpy8")] {
+            let Ok(sdk) = std::env::var(key) else {
+                continue;
+            };
+            let sdk = PathBuf::from(sdk);
+            ran += 1;
+            toggles_engine_check(&sdk, which);
+        }
+        if ran == 0 {
+            eprintln!("RENPY7_SDK and RENPY8_SDK are unset; skipping the toggles engine check");
+        }
+    }
+
+    fn toggles_engine_check(sdk: &Path, which: &str) {
+        let work = std::env::temp_dir()
+            .join(format!("vn-ide-toggles-engine-{}-{}", which, std::process::id()));
+        let _guard = Stage::create(&work);
+        let sdk_copy = work.join("sdk");
+        stage_runtime(sdk, &sdk_copy).unwrap_or_else(|e| panic!("{which}: {e}"));
+        let (exe, _) = launcher_pair(&sdk_copy).unwrap_or_else(|e| panic!("{which}: {e}"));
+
+        let proj = work.join("proj");
+        let game = proj.join("game");
+        fs::create_dir_all(&game).unwrap();
+        let mark = work.join("settings.txt");
+        let mark_py = mark.display().to_string().replace('\\', "/");
+        // Runs after the patch's `init 999` block.
+        let probe = format!(
+            "label start:\n    return\n\ninit 1000 python:\n    f = open(\"{mark_py}\", \"w\")\n    f.write(repr((bool(config.console), bool(config.developer), bool(config.rollback_enabled), list(config.keymap.get(\"quick_save\", [])), list(config.keymap.get(\"quick_load\", [])))))\n    f.close()\n"
+        );
+        fs::write(game.join("script.rpy"), probe).unwrap();
+
+        let launcher = Launcher {
+            exe: exe.clone(),
+            prefix_args: vec![proj.to_string_lossy().into_owned()],
+        };
+        let off = ModToggles::default();
+        let mut on = ModToggles::default();
+        on.console = true;
+        on.developer = true;
+        on.quick_save_keys = true;
+        on.rollback = true;
+
+        run_json_dump(&proj, &game, &launcher, "before".into()).unwrap_or_else(|e| {
+            panic!("{which}: engine dump failed: {e}\n{}", engine_log(&exe, &proj))
+        });
+        let before = fs::read_to_string(&mark).unwrap_or_else(|e| panic!("{which}: no probe output: {e}"));
+        let _ = fs::remove_file(&mark);
+
+        compile_toggles(&proj, &game, Some(&launcher), &on).unwrap_or_else(|e| {
+            panic!("{which}: {e}\n{}", engine_log(&exe, &proj))
+        });
+        let project = Project::open(&proj).unwrap();
+        let backups = work.join("backups");
+        let undo = work.join("undo");
+        bake(&project, &undo, &backups, &on).unwrap_or_else(|e| panic!("{which}: {e}"));
+        remove_toggles_loose(&game);
+        assert!(!game.join(TOGGLES_NAME).exists() && !game.join(TOGGLES_COMPILED).exists());
+
+        run_json_dump(&proj, &game, &launcher, "after".into()).unwrap_or_else(|e| {
+            panic!("{which}: engine dump of the patch failed: {e}\n{}", engine_log(&exe, &proj))
+        });
+        let after = fs::read_to_string(&mark)
+            .unwrap_or_else(|e| panic!("{which}: no probe output after baking: {e}"));
+        let _ = fs::remove_file(&mark);
+        eprintln!("{which}: settings before {before}\n{which}: settings after  {after}");
+        assert!(after.starts_with("(True, True, True, ['K_F5']"), "{which}: {after}");
+        assert!(after.contains("['K_F9']"), "{which}: {after}");
+        assert_ne!(before, after, "{which}: the toggles changed nothing");
+
+        // Turn them off and bake again: the game goes back to its own settings.
+        bake(&Project::open(&proj).unwrap(), &undo, &backups, &off)
+            .unwrap_or_else(|e| panic!("{which}: {e}"));
+        run_json_dump(&proj, &game, &launcher, "off".into()).unwrap();
+        let reverted = fs::read_to_string(&mark).unwrap();
+        assert_eq!(reverted, before, "{which}: toggles stayed on after being turned off");
     }
 
     fn engine_check(sdk: &Path, which: &str) {
@@ -564,7 +1096,7 @@ mod tests {
         let _ = fs::remove_file(mark.with_extension("bin.err"));
 
         let undo_dir = work.join("undo");
-        let report = bake(&project, &undo_dir, &backups).unwrap();
+        let report = bake(&project, &undo_dir, &backups, &ModToggles::default()).unwrap();
         assert!(
             game.join(&report.patch).is_file(),
             "{which}: patch was not written"

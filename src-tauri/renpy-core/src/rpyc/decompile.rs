@@ -111,16 +111,25 @@ fn emit(node: &Node, indent: usize, rows: &mut Vec<(u32, String)>) {
             early,
             one_line,
             init,
+            hide,
+            store,
         } => {
             if *one_line {
                 let code = code.trim();
                 line(rows, node.line, format!("{pad}$ {code}"));
             } else {
                 let early = if *early { " early" } else { "" };
+                let hide = if *hide { " hide" } else { "" };
+                let store = store
+                    .as_ref()
+                    .map(|name| format!(" in {name}"))
+                    .unwrap_or_default();
                 let head = match init {
-                    Some(priority) if *priority != 0 => format!("init {priority} python{early}:"),
-                    Some(_) => format!("init python{early}:"),
-                    None => format!("python{early}:"),
+                    Some(priority) if *priority != 0 => {
+                        format!("init {priority} python{early}{hide}{store}:")
+                    }
+                    Some(_) => format!("init python{early}{hide}{store}:"),
+                    None => format!("python{early}{hide}{store}:"),
                 };
                 line(rows, node.line, format!("{pad}{head}"));
                 for src in code.trim_matches('\n').lines() {
@@ -346,6 +355,28 @@ pub(crate) fn quote(s: &str) -> String {
 mod tests {
     use super::super::ast::{Kind, Node, Tree};
     use super::render_mapped;
+
+    #[test]
+    fn python_hide_and_store_are_written_back() {
+        let tree = Tree {
+            nodes: vec![Node {
+                line: 1,
+                kind: Kind::Python {
+                    code: "x = 1\n".into(),
+                    early: false,
+                    one_line: false,
+                    init: None,
+                    hide: true,
+                    store: Some("prefs".into()),
+                },
+            }],
+            partial: false,
+            reasons: Vec::new(),
+        };
+        let (text, _) = render_mapped(&tree);
+        assert!(text.contains("python hide in prefs:"), "{text}");
+        assert!(text.contains("x = 1"), "{text}");
+    }
 
     #[test]
     fn output_lines_keep_the_compiled_line_number() {

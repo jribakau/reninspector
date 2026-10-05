@@ -13,12 +13,15 @@ mod patch;
 mod pickle;
 mod reader;
 mod writer;
+mod zix;
 
 pub use extract::{extract, ExtractOptions, ExtractReport};
 pub use format::{ArchiveVersion, Entry, RpaError, Segment};
 pub use patch::{
-    check_stale, patch_stem, read_manifest, utc_now, PatchEntry, PatchManifest, MANIFEST_NAME,
+    check_stale, format_utc, patch_stem, read_manifest, utc_now, PatchEntry, PatchManifest,
+    MANIFEST_NAME,
 };
+pub use pickle::{dump_index, IndexPair};
 pub use reader::{Archive, CopyStats};
 pub use writer::{build_from_dir, ArchiveWriter, BuildReport};
 

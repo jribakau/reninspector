@@ -14,6 +14,7 @@ use super::format::{
     self, looks_like_zlib, ArchiveVersion, Entry, Header, RpaError, Segment,
     MAX_COMPRESSED_INDEX_BYTES, MAX_INDEX_BYTES,
 };
+use super::zix;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CopyStats {
@@ -28,9 +29,11 @@ pub struct Archive {
     /// Where entry bytes live. For RPA-1.0 this is the sibling `.rpa`.
     pub data_path: PathBuf,
     pub version: ArchiveVersion,
-    pub key: Option<u32>,
+    pub key: Option<u64>,
     pub entries: BTreeMap<String, Entry>,
     pub data_len: u64,
+    /// ZiX-12B prefix length. `None` for every other format.
+    pub zix_prefix: Option<u64>,
 }
 
 impl Archive {
@@ -46,8 +49,12 @@ impl Archive {
         open_rpa(path)
     }
 
-    pub fn version_label(&self) -> &'static str {
-        self.version.label()
+    pub fn version_label(&self) -> String {
+        self.version.label().to_string()
+    }
+
+    pub fn read_only_format(&self) -> bool {
+        self.version.read_only()
     }
 
     pub fn get(&self, name: &str) -> Option<&Entry> {
@@ -71,8 +78,30 @@ impl Archive {
     }
 
     /// Stream one entry. The returned CRC32 covers the bytes that were written,
-    /// including any prefix stored in the index.
+    /// including any prefix stored in the index. ZiX-12B deobfuscates its prefix first.
     pub fn copy_entry(&self, name: &str, out: &mut dyn Write) -> Result<CopyStats, RpaError> {
+        if let Some(amount) = self.zix_prefix {
+            let mut raw = Vec::new();
+            self.copy_segments(name, &mut raw)?;
+            if raw.len() > 512 * 1024 * 1024 {
+                return Err(RpaError::named(
+                    "ZiX-12B",
+                    format!("`{name}` is too large to deobfuscate"),
+                ));
+            }
+            let plain = zix::restore_prefix(&raw, amount, self.key.unwrap_or(0));
+            let mut hasher = crc32fast::Hasher::new();
+            hasher.update(&plain);
+            out.write_all(&plain)?;
+            return Ok(CopyStats {
+                len: plain.len() as u64,
+                crc32: hasher.finalize(),
+            });
+        }
+        self.copy_segments(name, out)
+    }
+
+    fn copy_segments(&self, name: &str, out: &mut dyn Write) -> Result<CopyStats, RpaError> {
         let entry = self
             .entries
             .get(name)
@@ -120,12 +149,15 @@ fn open_rpa(path: &Path) -> Result<Archive, RpaError> {
     let mut file = File::open(path)
         .map_err(|e| RpaError::new(format!("Could not open {}: {e}", path.display())))?;
     let data_len = file.metadata().map(|m| m.len()).unwrap_or(0);
-    let mut head = [0u8; 40];
-    let n = file.read(&mut head)?;
-    if n == 0 {
+    let head = read_header_line(&mut file)?;
+    if head.is_empty() {
         return Err(RpaError::new(format!("{} is empty", path.display())));
     }
-    let header = parse_header(&head[..n], path)?;
+    let header = if head.starts_with(b"ZiX-12A") || head.starts_with(b"ZiX-12B") {
+        zix_header(path, &head)?
+    } else {
+        parse_header(&head, path)?
+    };
     let index_offset = header
         .index_offset
         .ok_or_else(|| RpaError::new("archive has no index offset"))?;
@@ -160,11 +192,51 @@ fn open_v1(path: &Path) -> Result<Archive, RpaError> {
     }
     let data_len = std::fs::metadata(&data_path).map(|m| m.len()).unwrap_or(0);
     let header = Header {
-        version: ArchiveVersion::V1,
+        version: ArchiveVersion::Rpa1,
         index_offset: None,
         key: None,
+        zix_prefix: None,
     };
     finish_index(path, &data_path, header, data_len, &pickle)
+}
+
+fn read_header_line(file: &mut File) -> Result<Vec<u8>, RpaError> {
+    file.seek(SeekFrom::Start(0))?;
+    let mut buf = Vec::new();
+    let mut byte = [0u8; 1];
+    for _ in 0..512 {
+        let n = file.read(&mut byte)?;
+        if n == 0 {
+            break;
+        }
+        buf.push(byte[0]);
+        if byte[0] == b'\n' {
+            break;
+        }
+    }
+    Ok(buf)
+}
+
+fn zix_header(path: &Path, line: &[u8]) -> Result<Header, RpaError> {
+    let zix12b = line.starts_with(b"ZiX-12B");
+    let version = if zix12b {
+        ArchiveVersion::Zix12b
+    } else {
+        ArchiveVersion::Zix12a
+    };
+    let params = zix::load_params(path, zix12b)?;
+    let parts: Vec<&[u8]> = line
+        .split(|b| *b == b' ' || *b == b'\n' || *b == b'\r')
+        .filter(|p| !p.is_empty())
+        .collect();
+    let token = parts.last().copied().unwrap_or(b"");
+    let offset = zix::offset_from_token(token)?;
+    Ok(Header {
+        version,
+        index_offset: Some(offset),
+        key: Some(params.key),
+        zix_prefix: params.prefix,
+    })
 }
 
 fn parse_header(buf: &[u8], path: &Path) -> Result<Header, RpaError> {
@@ -202,6 +274,7 @@ fn finish_index(
         key: header.key,
         entries,
         data_len,
+        zix_prefix: header.zix_prefix,
     })
 }
 

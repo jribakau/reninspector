@@ -5,7 +5,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use renpy_core::engine::ImageRun;
-use renpy_core::{DiagReport, EngineRun, LabelGraph, Project, ProjectInfo, ProjectMap};
+use renpy_core::{
+    sha256_file, ArchiveDigest, DiagReport, EngineRun, LabelGraph, Project, ProjectInfo, ProjectMap,
+};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::edit::{self, EditImpact, EditState};
@@ -572,6 +574,72 @@ fn cache_file(app: &AppHandle, key: &str) -> Result<PathBuf, String> {
     Ok(dir.join(format!("{}.json", cache_name(key))))
 }
 
+fn fingerprint_cache_path(app: &AppHandle, root: &Path) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("layouts");
+    Ok(dir.join(format!(
+        "fp-{}.json",
+        cache_name(&root.to_string_lossy().to_lowercase())
+    )))
+}
+
+fn digest_key(digest: &ArchiveDigest) -> String {
+    format!(
+        "{}|{}|{}",
+        digest.path,
+        digest.bytes,
+        digest.modified.as_deref().unwrap_or("")
+    )
+}
+
+/// SHA-256 of each top-level archive. Results are cached next to layout data
+/// and reused while the path, size and modification time stay the same.
+#[tauri::command(async)]
+pub fn archive_fingerprints(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<ArchiveDigest>, String> {
+    let (root, game_dir, mut digests) = {
+        let guard = state.project.lock().map_err(|e| e.to_string())?;
+        let project = guard.as_ref().ok_or_else(no_project)?;
+        let game = project.game_info();
+        (
+            project.root.clone(),
+            project.game_dir.clone(),
+            game.archives,
+        )
+    };
+    let path = fingerprint_cache_path(&app, &root)?;
+    let mut cached: std::collections::BTreeMap<String, String> = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default();
+    let mut changed = false;
+    for digest in &mut digests {
+        let key = digest_key(digest);
+        if let Some(hit) = cached.get(&key) {
+            digest.sha256 = Some(hit.clone());
+            continue;
+        }
+        let abs = game_dir.join(digest.path.replace('/', std::path::MAIN_SEPARATOR_STR));
+        let hash = sha256_file(&abs)?;
+        cached.insert(key, hash.clone());
+        digest.sha256 = Some(hash);
+        changed = true;
+    }
+    if changed {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        let text = serde_json::to_string(&cached).map_err(|e| e.to_string())?;
+        std::fs::write(path, text).map_err(|e| e.to_string())?;
+    }
+    Ok(digests)
+}
+
 /// Layout positions are cached in the app data directory, never in the project.
 #[tauri::command(async)]
 pub fn layout_cache_get(app: AppHandle, key: String) -> Result<Option<String>, String> {
@@ -839,11 +907,28 @@ pub async fn patch_bake(app: AppHandle) -> Result<crate::patch::PatchReport, Str
             renpy_core::engine::run_json_dump(&root, &game_dir, &launcher, "bake".into())
                 .map_err(|e| format!("Ren'Py could not compile the edit before baking: {e}"))?;
         }
-        let mut guard = state.project.lock().map_err(|e| e.to_string())?;
-        let project = guard.as_mut().ok_or_else(no_project)?;
-        let report = crate::patch::bake(project, &undo, &backup)?;
-        project.refresh_archives();
-        Ok(report)
+        let data = app2.path().app_data_dir().map_err(|e| e.to_string())?;
+        // Toggles are compiled by the engine before the lock is held for the bake.
+        let (root, game_dir, launcher) = {
+            let guard = state.project.lock().map_err(|e| e.to_string())?;
+            let project = guard.as_ref().ok_or_else(no_project)?;
+            (
+                project.root.clone(),
+                project.game_dir.clone(),
+                project.launcher.clone(),
+            )
+        };
+        let toggles = crate::patch::load_toggles(&data, &root);
+        crate::patch::compile_toggles(&root, &game_dir, launcher.as_ref(), &toggles)?;
+        let result = (|| {
+            let mut guard = state.project.lock().map_err(|e| e.to_string())?;
+            let project = guard.as_mut().ok_or_else(no_project)?;
+            let report = crate::patch::bake(project, &undo, &backup, &toggles)?;
+            project.refresh_archives();
+            Ok::<_, String>(report)
+        })();
+        crate::patch::remove_toggles_loose(&game_dir);
+        result
     })
     .await
     .map_err(|e| e.to_string())?
@@ -876,6 +961,99 @@ pub async fn patch_remove(app: AppHandle) -> Result<crate::patch::PatchReport, S
         let report = crate::patch::remove(project, &undo)?;
         project.refresh_archives();
         Ok(report)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub fn mod_toggles_get(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<crate::patch::ModToggles, String> {
+    let data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let guard = state.project.lock().map_err(|e| e.to_string())?;
+    let project = guard.as_ref().ok_or_else(no_project)?;
+    Ok(crate::patch::load_toggles(&data, &project.root))
+}
+
+#[tauri::command]
+pub fn mod_toggles_set(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    toggles: crate::patch::ModToggles,
+) -> Result<(), String> {
+    let data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let guard = state.project.lock().map_err(|e| e.to_string())?;
+    let project = guard.as_ref().ok_or_else(no_project)?;
+    crate::patch::save_toggles(&data, &project.root, &toggles)
+}
+
+#[tauri::command]
+pub async fn mod_export(
+    app: AppHandle,
+    dest: String,
+    layout: String,
+    include_toggles: bool,
+    notes: String,
+) -> Result<String, String> {
+    let app2 = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app2.state::<AppState>();
+        let guard = state.project.lock().map_err(|e| e.to_string())?;
+        let project = guard.as_ref().ok_or_else(no_project)?;
+        crate::modexport::export(
+            project,
+            std::path::Path::new(&dest),
+            &layout,
+            include_toggles,
+            &notes,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn patch_rebase(app: AppHandle, rel: String) -> Result<crate::patch::RebaseResult, String> {
+    let app2 = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app2.state::<AppState>();
+        let (_, backup) = patch_dirs(&app2, &state)?;
+        let guard = state.project.lock().map_err(|e| e.to_string())?;
+        let project = guard.as_ref().ok_or_else(no_project)?;
+        crate::patch::rebase(project, &backup, &rel)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub fn save_list(state: State<'_, AppState>) -> Result<Vec<renpy_core::saves::SaveSlot>, String> {
+    let guard = state.project.lock().map_err(|e| e.to_string())?;
+    let project = guard.as_ref().ok_or_else(no_project)?;
+    let game = project.game_info();
+    Ok(renpy_core::saves::list_saves(
+        &project.game_dir,
+        game.save_directory.as_deref(),
+    ))
+}
+
+#[tauri::command]
+pub async fn save_inspect(app: AppHandle, path: String, deep: bool) -> Result<renpy_core::saves::SaveDetail, String> {
+    let app2 = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app2.state::<AppState>();
+        let guard = state.project.lock().map_err(|e| e.to_string())?;
+        let project = guard.as_ref().ok_or_else(no_project)?;
+        let game = project.game_info();
+        let roots = renpy_core::saves::save_roots(&project.game_dir, game.save_directory.as_deref());
+        let file = std::path::PathBuf::from(&path);
+        if !renpy_core::saves::within_roots(&file, &roots) {
+            return Err("That file is not in a save folder for this game.".into());
+        }
+        drop(guard);
+        renpy_core::saves::inspect_save(&file, deep)
     })
     .await
     .map_err(|e| e.to_string())?

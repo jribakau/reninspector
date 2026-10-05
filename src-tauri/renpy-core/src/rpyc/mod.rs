@@ -13,7 +13,7 @@ mod sl;
 mod unpickle;
 mod verify;
 
-pub use unpickle::Value;
+pub use unpickle::{loads_inert, Value};
 
 #[derive(Debug, Clone)]
 pub struct Decompiled {

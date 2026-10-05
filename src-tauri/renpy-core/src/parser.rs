@@ -1016,6 +1016,9 @@ pub fn scan_meta(lines: &[LLine]) -> Meta {
             if let Some(key) = name.strip_prefix("config.") {
                 meta.config
                     .push((key.to_string(), after[1..].trim().to_string()));
+            } else if name == "build.name" {
+                meta.config
+                    .push(("build.name".to_string(), after[1..].trim().to_string()));
             } else if !name.contains('.') {
                 meta.defs.push(name.to_string());
             }
@@ -1340,13 +1343,14 @@ mod tests {
 
     #[test]
     fn meta_collects_defs_images_config() {
-        let src = "define e = Character(\"Eileen\")\ndefault points = 0\nimage ice cream = \"x.png\"\ndefine config.name = _(\"Game\")\ninit python:\n    narr = Character(None)\n";
+        let src = "define e = Character(\"Eileen\")\ndefault points = 0\nimage ice cream = \"x.png\"\ndefine config.name = _(\"Game\")\ndefine build.name = \"game\"\ninit python:\n    narr = Character(None)\n";
         let meta = scan_meta(&lex(src).lines);
         assert!(meta.defs.contains(&"e".to_string()));
         assert!(meta.defs.contains(&"points".to_string()));
         assert!(meta.defs.contains(&"narr".to_string()));
         assert_eq!(meta.images, ["ice cream"]);
         assert_eq!(meta.config[0].0, "name");
+        assert!(meta.config.iter().any(|(k, v)| k == "build.name" && v == "\"game\""));
     }
 
     #[test]

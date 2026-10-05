@@ -14,11 +14,53 @@ export interface FileInfo {
   editable: boolean
   /** True when the text was recovered from a `.rpyc`. */
   decompiled: boolean
+  /** Why a decompiled file is read-only. Empty when it is editable. */
+  reasons: string[]
+}
+
+export interface FormatCount {
+  version: string
+  count: number
+}
+
+export interface GameLayout {
+  looseScripts: number
+  overrideScripts: number
+  archivedScripts: number
+  compiledScripts: number
+  compiledOnly: number
+  archives: number
+  nestedArchives: number
+  formats: FormatCount[]
+}
+
+export interface ArchiveDigest {
+  path: string
+  bytes: number
+  modified: string | null
+  sha256: string | null
+}
+
+export interface GameInfo {
+  engineVersion: string | null
+  scriptVersion: string | null
+  name: string | null
+  version: string | null
+  buildName: string | null
+  saveDirectory: string | null
+  /** Oldest modification time of archive and compiled files. A heuristic, not a build date. */
+  filesOldest: string | null
+  filesNewest: string | null
+  layout: GameLayout
+  archives: ArchiveDigest[]
+  notes: string[]
 }
 
 export interface ArchiveInfo {
   path: string
   version: string
+  /** Non-official header. Readable, but not rewritten. */
+  readOnlyFormat: boolean
   entries: number
   scripts: number
   compiledOnly: number
@@ -40,6 +82,47 @@ export interface PatchReport {
   patch: string
   files: number
   action: string
+}
+
+export interface ModToggles {
+  console: boolean
+  developer: boolean
+  quickSaveKeys: boolean
+  skipUnseen: boolean
+  rollback: boolean
+}
+
+export interface RebaseResult {
+  base: string
+  upstream: string
+  mine: string
+  merged: string
+  conflicts: number
+  baseMissing: boolean
+}
+
+export interface SaveSlot {
+  path: string
+  name: string
+  extra: string
+  version: string
+  modified: string | null
+  persistent: boolean
+}
+
+export interface SaveNode {
+  name: string
+  kind: string
+  repr: string
+  children: SaveNode[]
+}
+
+export interface SaveDetail {
+  slot: SaveSlot
+  json: string
+  screenshotBase64: string | null
+  tree: SaveNode | null
+  note: string | null
 }
 
 export interface RpaProgress {
@@ -82,6 +165,7 @@ export interface ProjectInfo {
   engine: EngineSummary | null
   stageImages: StageImagesSummary | null
   lintCount: number | null
+  game: GameInfo
 }
 
 export interface StageImagesSummary {

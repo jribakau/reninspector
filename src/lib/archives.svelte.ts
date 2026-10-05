@@ -1,4 +1,5 @@
-import { api, errorText, pickFolder, pickSavePath } from './api'
+import { api, errorText, pickFolder, pickSavePath, pickZipPath } from './api'
+import { askText } from './dialog.svelte'
 import { app } from './model.svelte'
 import { pullEditStatus, reloadAll } from './reload.svelte'
 
@@ -9,14 +10,17 @@ async function refreshAfterArchive(notice: string) {
   app.notice = notice
 }
 
-export async function bakePatch() {
+export async function bakePatch(options: { toggles?: boolean } = {}) {
   if (!app.info || app.busy) return
   const pending = app.info.files.filter((f) => f.origin === 'override').length
-  if (!pending) {
+  if (!pending && !options.toggles) {
     app.error = 'Nothing to bake. Save an archived script first; that writes a loose file the game uses immediately.'
     return
   }
-  if (!confirm(`Fold ${pending} loose override${pending === 1 ? '' : 's'} into a patch archive? The game's original archives are not modified. Undo puts the loose files back.`)) {
+  const ask = pending
+    ? `Fold ${pending} loose override${pending === 1 ? '' : 's'} into a patch archive? The game's original archives are not modified. Undo puts the loose files back.`
+    : 'Write the mod toggles into the patch? The game\'s original archives are not modified.'
+  if (!confirm(ask)) {
     return
   }
   app.error = ''
@@ -106,6 +110,28 @@ export async function buildArchive() {
     const info = await api.projectInfo()
     if (info) await reloadAll(info)
     app.notice = `Wrote ${files} files to ${out}.`
+  } catch (e) {
+    app.error = errorText(e)
+  } finally {
+    app.busy = ''
+  }
+}
+
+export async function exportMod(layout: 'rpa' | 'loose', includeToggles = false) {
+  if (!app.info || app.busy) return
+  if (!app.info.archives.some((a) => a.isPatch)) {
+    app.error = 'Bake a patch before exporting a mod.'
+    return
+  }
+  const notes = await askText('Mod notes', '', 'Continue')
+  if (notes === null) return
+  const dest = await pickZipPath('Export mod', 'mod.zip')
+  if (!dest) return
+  app.error = ''
+  app.busy = 'Exporting mod…'
+  try {
+    const notice = await api.modExport(dest, layout, includeToggles, notes)
+    app.notice = notice
   } catch (e) {
     app.error = errorText(e)
   } finally {

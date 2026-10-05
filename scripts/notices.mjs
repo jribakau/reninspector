@@ -66,6 +66,10 @@ is distributed under its own licence, linked from its source repository.
   http://wordlist.aspell.net/). Copyright Kevin Atkinson and others; the full
   licence and copyright notices are in \`licenses/SCOWL.txt\`.
 - **ICU4X crates** (Unicode-3.0) and **webpki-roots** (CDLA-Permissive-2.0).
+- **unrpa** (GPL-3.0, https://github.com/Lattyware/unrpa). The RPA-3.2, RPA-4.0,
+  ALT-1.0 and ZiX-12A/B header layouts, key derivation and index handling in
+  \`renpy-core/src/rpa\` were reimplemented in Rust from its \`versions/\` modules.
+  No unrpa code is included.
 
 ## Rust crates
 

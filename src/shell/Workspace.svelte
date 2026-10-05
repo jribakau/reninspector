@@ -7,6 +7,7 @@
   import BottomPanel from '../components/BottomPanel.svelte'
   import CodeView from '../components/CodeView.svelte'
   import DiffView from '../components/DiffView.svelte'
+  import RebaseView from '../components/RebaseView.svelte'
   import FilePreview from '../components/FilePreview.svelte'
   import LabelGraph from '../components/LabelGraph.svelte'
   import StagePane from '../components/StagePane.svelte'
@@ -265,6 +266,7 @@
 
   const graphName = $derived(activeTab?.kind === 'graph' ? activeTab.name : null)
   const diffTab = $derived(activeTab?.kind === 'diff' ? activeTab : null)
+  const rebaseTab = $derived(activeTab?.kind === 'rebase' ? activeTab : null)
   const graphNode = $derived(graphName ? nodeByName(graphName) : undefined)
   const graphFile = $derived(graphNode ? fileOfNode(graphNode) : null)
 
@@ -305,7 +307,8 @@
     if (file.decompiled) {
       const compiled = file.path.replace(/\.rpym$/, '.rpymc').replace(/\.rpy$/, '.rpyc')
       if (!file.editable) {
-        return `Decompiled from ${compiled}, but not completely. Read-only, so a save cannot drop code.`
+        const why = file.reasons.length ? ` (${file.reasons.slice(0, 4).join('; ')})` : ''
+        return `Decompiled from ${compiled}, but not completely${why}. Read-only, so a save cannot drop code.`
       }
       return `Decompiled from ${compiled}. Comments and formatting are not recoverable.`
     }
@@ -321,7 +324,7 @@
   function tabIcon(t: EditorTab): IconName {
     if (t.kind === 'map') return 'map'
     if (t.kind === 'graph') return 'flow'
-    if (t.kind === 'diff') return 'diff'
+    if (t.kind === 'diff' || t.kind === 'rebase') return 'diff'
     const kind = previewKind(t.path)
     if (kind === 'image') return 'image'
     if (kind === 'audio') return 'audio'
@@ -577,6 +580,13 @@
             <div class="pane">
               {#key `${diffTab.rev}:${diffTab.path}`}
                 <DiffView path={diffTab.path} rev={diffTab.rev} />
+              {/key}
+            </div>
+          {/if}
+          {#if rebaseTab}
+            <div class="pane">
+              {#key rebaseTab.path}
+                <RebaseView path={rebaseTab.path} />
               {/key}
             </div>
           {/if}

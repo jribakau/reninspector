@@ -12,7 +12,7 @@ Windows builds are attached to [releases](https://github.com/jribakau/reninspect
 
 The files are not code-signed, so Windows SmartScreen may warn the first time. Choose "More info", then "Run anyway".
 
-The welcome screen has **Open the demo**, a small game with a broken jump, a duplicate label and an undefined image, so the project map and the Problems list have something to show without a Ren'Py SDK.
+The welcome screen has **Open the demo**, a small game with a broken jump, an undefined image and an undefined speaker, so the project map and the Problems list have something to show without a Ren'Py SDK. It launches.
 
 The demo is copied to the app's data folder the first time and is not overwritten afterwards, so your edits to it stay. Delete the `sample` folder there to get a fresh copy.
 

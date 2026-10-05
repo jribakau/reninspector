@@ -12,6 +12,7 @@ mod git;
 mod ide;
 mod launch;
 mod live;
+mod modexport;
 mod patch;
 mod process;
 mod sdk;
@@ -81,6 +82,7 @@ pub fn run() {
             commands::initial_revert,
             commands::launch_game,
             commands::warp_to,
+            commands::archive_fingerprints,
             commands::layout_cache_get,
             commands::layout_cache_put,
             commands::archive_list,
@@ -91,6 +93,12 @@ pub fn run() {
             commands::patch_bake,
             commands::patch_undo,
             commands::patch_remove,
+            commands::patch_rebase,
+            commands::mod_toggles_get,
+            commands::mod_toggles_set,
+            commands::mod_export,
+            commands::save_list,
+            commands::save_inspect,
             ide::get_catalog,
             ide::get_translations,
             ide::label_routes,

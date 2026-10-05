@@ -64,7 +64,7 @@
         >
           <span class="sb-name">
             {n.kind === 'screen' ? n.id.slice(7) : n.id}
-            {#if n.kind === 'menu'}<em class="sb-tag menu">menu</em>{/if}
+            {#if n.kind === 'menu'}<em class="sb-tag tag-menu">menu</em>{/if}
             {#if n.kind === 'screen'}<em class="sb-tag screen">screen</em>{/if}
             {#if n.kind === 'compiled'}<em class="sb-tag" title="Known from the engine dump; no readable source">compiled</em>{/if}
             {#if n.indirect}<em class="sb-tag" title="Only reached through a label name kept as data">indirect</em>{/if}

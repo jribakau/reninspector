@@ -10,6 +10,7 @@ export function tabTitle(t: EditorTab): string {
   if (t.kind === 'map') return 'Project map'
   if (t.kind === 'graph') return t.name.startsWith('screen:') ? t.name.slice(7) : t.name
   if (t.kind === 'diff') return `${t.path.split('/').pop() ?? t.path} (${t.rev === 'HEAD' ? 'diff' : t.rev.slice(0, 7)})`
+  if (t.kind === 'rebase') return `${t.path.split('/').pop() ?? t.path} (rebase)`
   return t.path.split('/').pop() ?? t.path
 }
 

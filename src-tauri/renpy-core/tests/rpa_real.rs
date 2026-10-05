@@ -153,6 +153,7 @@ fn real_game_archives_round_trip_in_a_temp_dir() {
             source: Some("original.rpa".into()),
             base_crc32: Some(crc32fast::hash(&bytes)),
             baked_at: when,
+            generated: false,
         },
     );
     let manifest_bytes = manifest.to_bytes().unwrap();

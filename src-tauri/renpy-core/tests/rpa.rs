@@ -10,7 +10,8 @@ use std::sync::atomic::AtomicBool;
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
 use renpy_core::rpa::{
-    build_from_dir, extract, patch_stem, Archive, ArchiveWriter, ExtractOptions, RpaError,
+    build_from_dir, dump_index, extract, patch_stem, Archive, ArchiveWriter, ExtractOptions,
+    IndexPair, RpaError,
 };
 
 const KEY: u32 = 0x11223344;
@@ -26,10 +27,14 @@ fn temp_dir(name: &str) -> PathBuf {
     dir
 }
 
-fn wrap_v3(pickle: &[u8], payload: &[u8]) -> Vec<u8> {
+fn zlib_wrap(pickle: &[u8]) -> Vec<u8> {
     let mut enc = ZlibEncoder::new(Vec::new(), Compression::new(6));
     enc.write_all(pickle).unwrap();
-    let compressed = enc.finish().unwrap();
+    enc.finish().unwrap()
+}
+
+fn wrap_v3(pickle: &[u8], payload: &[u8]) -> Vec<u8> {
+    let compressed = zlib_wrap(pickle);
     let offset = 34 + payload.len() as u64;
     let mut out = format!("RPA-3.0 {offset:016x} {KEY:08x}\n").into_bytes();
     assert_eq!(out.len(), 34);
@@ -95,7 +100,120 @@ fn unknown_header_names_itself() {
     let err = Archive::open(&fixtures().join("custom.rpa")).unwrap_err();
     let text = err.to_string();
     assert!(text.contains("RPA-3.2"), "{text}");
+    assert!(
+        text.contains("missing") || text.contains("not hex"),
+        "{text}"
+    );
+
+    let dir = temp_dir("unknown");
+    let path = dir.join("nope.rpa");
+    fs::write(&path, b"XYZ-9.9 not-a-real-format\n").unwrap();
+    let err = Archive::open(&path).unwrap_err();
+    let text = err.to_string();
     assert!(text.contains("unsupported"), "{text}");
+    assert!(text.contains("XYZ-9.9"), "{text}");
+    assert_eq!(err.known_version.as_deref(), Some("XYZ-9.9"));
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn rpa32_and_rpa40_and_alt_read_the_v3_payload() {
+    let original = fs::read(fixtures().join("v3-proto2.rpa")).unwrap();
+    assert!(original.starts_with(b"RPA-3.0 "));
+
+    for (magic, label) in [(b"RPA-3.2 ", "RPA-3.2"), (b"RPA-4.0 ", "RPA-4.0")] {
+        let mut bytes = original.clone();
+        bytes[..8].copy_from_slice(magic);
+        let dir = temp_dir(label);
+        let path = dir.join("a.rpa");
+        fs::write(&path, &bytes).unwrap();
+        let archive = Archive::open(&path).unwrap_or_else(|e| panic!("{label}: {e}"));
+        assert_eq!(archive.version_label(), label);
+        assert!(archive.read_only_format());
+        assert_eq!(read_named(&archive, "dir/script.rpy"), "HELLO");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    // ALT-1.0 stores the key first, XORed with 0xDABE8DF0, then the offset.
+    let offset = u64::from_str_radix(std::str::from_utf8(&original[8..24]).unwrap(), 16).unwrap();
+    let stored = (KEY as u64) ^ 0xDABE8DF0;
+    let mut alt = format!("ALT-1.0 {stored:08x} {offset:016x}\n").into_bytes();
+    assert_eq!(alt.len(), 34);
+    alt.extend_from_slice(&original[34..]);
+    let dir = temp_dir("alt");
+    let path = dir.join("a.rpa");
+    fs::write(&path, &alt).unwrap();
+    let archive = Archive::open(&path).unwrap();
+    assert_eq!(archive.version_label(), "ALT-1.0");
+    assert!(archive.read_only_format());
+    assert_eq!(read_named(&archive, "dir/script.rpy"), "HELLO");
+    assert_eq!(read_named(&archive, "note.txt"), "PRE:NOTE");
+    let _ = fs::remove_dir_all(dir);
+}
+
+fn zix_token(offset: u64) -> [u8; 8] {
+    let hex = format!("{offset:08x}");
+    let r = hex.as_bytes();
+    [r[2], r[3], r[4], r[7], r[6], r[5], r[1], r[0]]
+}
+
+#[test]
+fn zix_12a_reads_with_a_loader_and_12b_deobfuscates() {
+    let key = 2_217_633u64;
+    let payload = b"HELLO!!!WORLD";
+    let header_len = 17u64;
+    let index_at = header_len + payload.len() as u64;
+    let token = zix_token(index_at);
+    let pickle = dump_index(&[(
+        "script.rpy",
+        vec![IndexPair {
+            offset: header_len ^ key,
+            len: (payload.len() as u64) ^ key,
+        }],
+    )]);
+    let compressed = zlib_wrap(&pickle);
+
+    let dir = temp_dir("zix");
+    fs::write(
+        dir.join("loader.py"),
+        "verificationcode = _string.sha1('abc123')\n_string.run(rv.read(8), verificationcode)\n",
+    )
+    .unwrap();
+    let mut bytes = b"ZiX-12A ".to_vec();
+    bytes.extend_from_slice(&token);
+    bytes.push(b'\n');
+    bytes.extend_from_slice(payload);
+    bytes.extend_from_slice(&compressed);
+    let path = dir.join("a.rpa");
+    fs::write(&path, &bytes).unwrap();
+    let archive = Archive::open(&path).unwrap();
+    assert_eq!(archive.version_label(), "ZiX-12A");
+    assert!(archive.read_only_format());
+    assert_eq!(read_named(&archive, "script.rpy"), "HELLO!!!WORLD");
+
+    let mut obf = payload.to_vec();
+    let part = u64::from_le_bytes(payload[..8].try_into().unwrap());
+    let encoded = 3621826839565189698u64 ^ key ^ part;
+    obf[..8].copy_from_slice(&encoded.to_le_bytes());
+    let mut b2 = b"ZiX-12B ".to_vec();
+    b2.extend_from_slice(&token);
+    b2.push(b'\n');
+    b2.extend_from_slice(&obf);
+    b2.extend_from_slice(&compressed);
+    let path2 = dir.join("b.rpa");
+    fs::write(&path2, &b2).unwrap();
+    let archive = Archive::open(&path2).unwrap();
+    assert_eq!(archive.version_label(), "ZiX-12B");
+    assert_eq!(read_named(&archive, "script.rpy"), "HELLO!!!WORLD");
+
+    let bare = temp_dir("zix-none");
+    fs::write(bare.join("c.rpa"), &bytes).unwrap();
+    let err = Archive::open(&bare.join("c.rpa")).unwrap_err();
+    let text = err.to_string();
+    assert!(text.contains("ZiX-12A detected"), "{text}");
+    assert!(text.contains("could not be read"), "{text}");
+    let _ = fs::remove_dir_all(dir);
+    let _ = fs::remove_dir_all(bare);
 }
 
 #[test]

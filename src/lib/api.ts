@@ -11,8 +11,13 @@ import type {
   LaunchReport,
   LiveReport,
   LiveState,
+  ArchiveDigest,
   ArchiveEntryInfo,
   PatchReport,
+  ModToggles,
+  RebaseResult,
+  SaveSlot,
+  SaveDetail,
   ProjectInfo,
   ProjectMap,
   RpaProgress,
@@ -67,6 +72,7 @@ export const api = {
   liveReload: () => invoke<string>('live_reload'),
   liveStop: () => invoke<void>('live_stop'),
   liveSetWatch: (names: string[]) => invoke<void>('live_set_watch', { names }),
+  archiveFingerprints: () => invoke<ArchiveDigest[]>('archive_fingerprints'),
   layoutCacheGet: (key: string) => invoke<string | null>('layout_cache_get', { key }),
   layoutCachePut: (key: string, data: string) => invoke<void>('layout_cache_put', { key, data }),
   archiveList: (path: string) => invoke<ArchiveEntryInfo[]>('archive_list', { path }),
@@ -77,6 +83,13 @@ export const api = {
   patchBake: () => invoke<PatchReport>('patch_bake'),
   patchUndo: () => invoke<PatchReport>('patch_undo'),
   patchRemove: () => invoke<PatchReport>('patch_remove'),
+  patchRebase: (rel: string) => invoke<RebaseResult>('patch_rebase', { rel }),
+  modTogglesGet: () => invoke<ModToggles>('mod_toggles_get'),
+  modTogglesSet: (toggles: ModToggles) => invoke<void>('mod_toggles_set', { toggles }),
+  modExport: (dest: string, layout: 'rpa' | 'loose', includeToggles: boolean, notes: string) =>
+    invoke<string>('mod_export', { dest, layout, includeToggles, notes }),
+  saveList: () => invoke<SaveSlot[]>('save_list'),
+  saveInspect: (path: string, deep: boolean) => invoke<SaveDetail>('save_inspect', { path, deep }),
   catalog: () => invoke<CatalogView>('get_catalog'),
   translations: (lang: string) => invoke<TranslationEntry[]>('get_translations', { lang }),
   labelRoutes: (name: string) => invoke<Route[]>('label_routes', { name }),
@@ -245,6 +258,11 @@ export async function pickProjectFolder(): Promise<string | null> {
 
 export async function pickFolder(title: string): Promise<string | null> {
   const result = await open({ directory: true, multiple: false, title })
+  return typeof result === 'string' ? result : null
+}
+
+export async function pickZipPath(title: string, name: string): Promise<string | null> {
+  const result = await save({ title, defaultPath: name, filters: [{ name: 'Zip archive', extensions: ['zip'] }] })
   return typeof result === 'string' ? result : null
 }
 
