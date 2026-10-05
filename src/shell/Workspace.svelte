@@ -20,6 +20,7 @@
   import { bindStage } from '../lib/stage.svelte'
   import { storedSize } from '../lib/pane'
   import { layout, settings } from '../lib/settings.svelte'
+  import { bindPython, syncPython } from '../lib/pylsp.svelte'
   import { previewKind } from '../lib/preview'
   import {
     activateEditor,
@@ -58,6 +59,12 @@
   } from '../lib/store.svelte'
 
   bindStage()
+  void bindPython()
+  $effect(() => {
+    void settings.pythonServer
+    void app.info
+    syncPython()
+  })
 
   const W_SIDE = 'vnide.w.side'
   const W_FLOW = 'vnide.w.flow'

@@ -4306,6 +4306,7 @@ version = "0.1.0"
 dependencies = [
  "crc32fast",
  "diffy",
+ "flate2",
  "log",
  "notify",
  "renpy-core",
@@ -4313,6 +4314,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "spellbook",
+ "tar",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

@@ -6,6 +6,7 @@
   import { toggleAutoreload } from '../lib/engine.svelte'
   import { setWatchVars } from '../lib/live.svelte'
   import { app } from '../lib/model.svelte'
+  import { cancelPython, installPython, py, removePython } from '../lib/pylsp.svelte'
   import { openSdkManager, refreshSdks, sdk, setProjectEngine } from '../lib/sdk.svelte'
   import {
     CATEGORIES,
@@ -55,12 +56,13 @@
     const out: { id: CategoryId; label: string; defs: SettingDef[]; extra: boolean }[] = []
     for (const cat of CATEGORIES) {
       const all = SETTINGS.filter((d) => d.category === cat.id)
-      const block = cat.id === 'layout' || cat.id === 'project'
+      const block = cat.id === 'layout' || cat.id === 'project' || cat.id === 'editor'
       if (searching) {
         const defs = all.filter((d) => hit(`${d.label} ${d.description} ${d.key} ${cat.label}`))
         const extra =
           (cat.id === 'layout' && hit(`${LAYOUT_WORDS} ${cat.label}`)) ||
-          (cat.id === 'project' && !!app.info && hit(`${PROJECT_WORDS} ${cat.label}`))
+          (cat.id === 'project' && !!app.info && hit(`${PROJECT_WORDS} ${cat.label}`)) ||
+          (cat.id === 'editor' && hit(`python language server ty install ${cat.label}`))
         if (defs.length || extra) out.push({ id: cat.id, label: cat.label, defs, extra })
       } else if (cat.id === settingsUi.category) {
         out.push({ id: cat.id, label: cat.label, defs: all, extra: block })
@@ -253,6 +255,44 @@
   </div>
 {/snippet}
 
+{#snippet pythonBlock()}
+  <div class="row">
+    <div class="text">
+      <span class="name">ty {py.version || '0.0.84'}</span>
+      <p class="desc">
+        {#if py.status === 'installing'}
+          {py.progress?.label || 'Downloading…'}
+          {#if py.progress && py.progress.total > 0}
+            ({Math.min(100, Math.round((py.progress.done / py.progress.total) * 100))}%)
+          {/if}
+        {:else if py.status === 'missing'}
+          Not installed. Turning the language server on downloads it into this app's data folder.
+        {:else if py.status === 'ready'}
+          Running. It reads python blocks and $ lines, using the project's Ren'Py SDK when one is set.
+        {:else if py.status === 'starting'}
+          Starting…
+        {:else if py.detail}
+          {py.detail}
+        {:else}
+          Installed, and idle until the language server is turned on.
+        {/if}
+      </p>
+    </div>
+    <div class="ctl">
+      {#if py.status === 'installing'}
+        <button type="button" onclick={cancelPython}>Cancel</button>
+      {:else}
+        {#if !py.installed}
+          <button type="button" onclick={() => void installPython(false)}>Install</button>
+        {:else}
+          <button type="button" onclick={() => void installPython(true)}>Update</button>
+          <button type="button" onclick={() => void removePython()}>Remove</button>
+        {/if}
+      {/if}
+    </div>
+  </div>
+{/snippet}
+
 {#snippet layoutBlock()}
   <div class="row">
     <div class="text">
@@ -420,6 +460,8 @@
             {#if section.extra}
               {#if section.id === 'layout'}
                 {@render layoutBlock()}
+              {:else if section.id === 'editor'}
+                {@render pythonBlock()}
               {:else}
                 {@render projectBlock()}
               {/if}

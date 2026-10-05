@@ -5,6 +5,8 @@
 #[link_section = ".drectve"]
 static COMCTL_V6: [u8; include_bytes!("comctl.drectve").len()] = *include_bytes!("comctl.drectve");
 
+use tauri::Manager;
+
 mod commands;
 mod edit;
 mod fs_tree;
@@ -15,6 +17,7 @@ mod live;
 mod modexport;
 mod patch;
 mod process;
+mod pylsp;
 mod sdk;
 mod settings;
 mod spell;
@@ -163,6 +166,14 @@ pub fn run() {
             git::git_stage_text,
             git::git_log,
             git::git_commit_files,
+            pylsp::pylsp_status,
+            pylsp::pylsp_env,
+            pylsp::pylsp_install,
+            pylsp::pylsp_cancel,
+            pylsp::pylsp_remove,
+            pylsp::pylsp_start,
+            pylsp::pylsp_send,
+            pylsp::pylsp_stop,
             spell::spell_check,
             spell::spell_suggest,
             spell::spell_add_word,
@@ -188,6 +199,9 @@ pub fn run() {
     app.run(|app_handle, event| {
         if matches!(event, tauri::RunEvent::Exit) {
             live::on_exit(app_handle);
+            if let Some(state) = app_handle.try_state::<commands::AppState>() {
+                pylsp::stop(&state);
+            }
         }
     });
 }

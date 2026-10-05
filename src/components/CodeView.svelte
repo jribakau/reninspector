@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { autocompletion, closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete'
+  import { acceptCompletion, autocompletion, closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete'
 import { copyLineDown, copyLineUp, defaultKeymap, history, historyKeymap, indentLess, indentMore, moveLineDown, moveLineUp, redo, selectAll, toggleComment, undo } from '@codemirror/commands'
 import { bracketMatching, codeFolding, foldCode, foldGutter, foldKeymap, foldService, indentService, indentUnit, unfoldCode } from '@codemirror/language'
   import { Chunk } from '@codemirror/merge'
@@ -38,6 +38,7 @@ import { formatEdits } from '../lib/editor/format'
 import { signatureHelp } from '../lib/editor/signature'
 import { inlayHints } from '../lib/editor/inlay'
 import { inPython } from '../lib/editor/python'
+import { py, pyDefinition, pyDiags, pyHover, pythonDiagnostics, setPyFile, syncDocument } from '../lib/pylsp.svelte'
 import { app, fileInfo, fileOfNode, lookupSymbol, nodeByName, openDiff, registerBufferSave, registerEditor, registerSave, symbolsOf, type Loc } from '../lib/store.svelte'
   import type { Diagnostic, Severity, Symbol } from '../lib/types'
 
@@ -182,8 +183,14 @@ import { app, fileInfo, fileOfNode, lookupSymbol, nodeByName, openDiff, register
     if (!found) return false
     const line = view.state.doc.lineAt(found.from)
     const prefer = preferHere(view.state, line.number, line.text, found.from - line.from, found.text)
-    void symbolHere(line.number, found.text, prefer).then((sym) => {
-      if (!sym) return
+    void symbolHere(line.number, found.text, prefer).then(async (sym) => {
+      if (!sym) {
+        if (how !== 'goto' || !inPython(view.state.doc, line.number)) return
+        const hit = await pyDefinition(line.number - 1, found.from - line.from)
+        if (hit === 'external') app.notice = 'That definition is outside this project, so it was not opened.'
+        else if (hit) ongoto(hit.path, hit.line)
+        return
+      }
       if (how === 'goto') {
         if (sym.path) ongoto(sym.path, sym.line)
         return
@@ -626,6 +633,8 @@ import { app, fileInfo, fileOfNode, lookupSymbol, nodeByName, openDiff, register
         indentService.of(renpyIndent),
         signatureHelp(),
         keymap.of([
+          // Accept the open suggestion first. Otherwise Tab inserts spaces.
+          { key: 'Tab', run: acceptCompletion },
           { key: 'Tab', run: spacesTab },
           { key: 'Shift-Tab', run: indentLess },
           { key: 'Mod-s', run: () => { ctx.save(); return true } },
@@ -694,6 +703,10 @@ import { app, fileInfo, fileOfNode, lookupSymbol, nodeByName, openDiff, register
             // statement names match when they open the line.
             const before = line.text.slice(0, found.from - line.from)
             const inString = ((before.replace(/\\./g, '').match(/["']/g) ?? []).length & 1) === 1
+            if (!inString && inPython(view.state.doc, line.number)) {
+              const tip = await pyHover(line.number - 1, found.from - line.from)
+              if (tip) return docText(tip, found.from, found.to)
+            }
             const doc = inString ? undefined : docNow(found.text)
             if (doc && (doc.kind !== 'statement' || /^\s*(\$\s*)?$/.test(before))) {
               return docTip(doc, found.from, found.to)
@@ -752,6 +765,7 @@ import { app, fileInfo, fileOfNode, lookupSymbol, nodeByName, openDiff, register
               app.followHold = true
             }
             scheduleSyntax()
+            syncDocument(loadedFile, u.state.doc.toString())
             scheduleSpell()
           }
           if (!u.selectionSet) return
@@ -876,6 +890,22 @@ import { app, fileInfo, fileOfNode, lookupSymbol, nodeByName, openDiff, register
         EditorView.scrollIntoView(pos, { y: 'start', yMargin: 90 }),
       ],
     })
+  }
+
+  function docText(text: string, from: number, to: number) {
+    return {
+      pos: from,
+      end: to,
+      above: true,
+      create() {
+        const dom = document.createElement('div')
+        dom.className = 'sym-tip'
+        const body = document.createElement('div')
+        body.textContent = text
+        dom.append(body)
+        return { dom }
+      },
+    }
   }
 
   function docTip(doc: DocEntry, from: number, to: number) {
@@ -1166,8 +1196,27 @@ import { app, fileInfo, fileOfNode, lookupSymbol, nodeByName, openDiff, register
     for (const [line, message] of syntax) {
       map.set(line, { severity: 'error', message })
     }
+    if (loadedFile) {
+      for (const d of pythonDiagnostics(loadedFile)) {
+        if (d.severity === 'info') continue
+        if (settings.pythonDiagnostics === 'syntax' && d.code !== 'invalid-syntax') continue
+        if (!inPython(view.state.doc, d.line)) continue
+        const severity: Severity = d.severity === 'warning' ? 'warning' : 'error'
+        const prev = map.get(d.line)
+        if (!prev || severity === 'error') map.set(d.line, { severity, message: d.message })
+      }
+    }
     view.dispatch({ effects: setDiags.of(map) })
   }
+
+  $effect(() => {
+    setPyFile(loadedFile ?? '')
+    void py.status
+    void pyDiags.seq
+    void settings.pythonDiagnostics
+    applyDiagnostics()
+    if (py.status === 'ready' && loadedFile && view) syncDocument(loadedFile, view.state.doc.toString())
+  })
 
   $effect(() => {
     void diagnostics

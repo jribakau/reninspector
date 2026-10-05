@@ -25,6 +25,8 @@ describe('defaults', () => {
     expect(settings.maxTabs).toBe(16)
     expect(settings.maxRecent).toBe(8)
     expect(settings.spell).toBe(true)
+    expect(settings.pythonServer).toBe('off')
+    expect(settings.pythonDiagnostics).toBe('syntax')
     expect(settings.wrap).toBe(false)
   })
 })

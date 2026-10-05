@@ -1,6 +1,8 @@
 import { StateEffect, StateField, type Extension } from '@codemirror/state'
-import { keymap, showTooltip, type Tooltip } from '@codemirror/view'
+import { keymap, showTooltip, ViewPlugin, type Tooltip, type ViewUpdate } from '@codemirror/view'
 import { docNow, loadDocs, type DocEntry } from '../docs/reference'
+import { inPython } from './python'
+import { pySignature, type PySignature } from '../pylsp.svelte'
 
 export interface CallContext {
   name: string
@@ -11,6 +13,46 @@ export interface CallContext {
 }
 
 const hideSig = StateEffect.define<null>()
+const setTySig = StateEffect.define<TySig | null>()
+
+interface TySig extends PySignature {
+  pos: number
+}
+
+/** Asks ty for a signature while the caret is inside a Python call, then falls back to the bundled docs. */
+const tySigFetch = ViewPlugin.fromClass(class {
+  timer: ReturnType<typeof setTimeout> | null = null
+  update(update: ViewUpdate) {
+    if (!update.docChanged && !update.selectionSet && !update.viewportChanged) return
+    if (this.timer) clearTimeout(this.timer)
+    const view = update.view
+    this.timer = setTimeout(() => {
+      const head = view.state.selection.main.head
+      const line = view.state.doc.lineAt(head)
+      const character = head - line.from
+      if (!inPython(view.state.doc, line.number) || !callContext(view.state.doc.sliceString(Math.max(0, head - 500), head))) {
+        view.dispatch({ effects: setTySig.of(null) })
+        return
+      }
+      void pySignature(line.number - 1, character).then((sig) => {
+        if (view.state.selection.main.head !== head) return
+        view.dispatch({ effects: setTySig.of(sig ? { ...sig, pos: head } : null) })
+      })
+    }, 120)
+  }
+  destroy() {
+    if (this.timer) clearTimeout(this.timer)
+  }
+})
+
+const tySigField = StateField.define<TySig | null>({
+  create: () => null,
+  update(value, tr) {
+    for (const effect of tr.effects) if (effect.is(setTySig)) return effect.value
+    if (tr.docChanged) return null
+    return value
+  },
+})
 
 /** The call the caret is inside, looking only at `before` (the text up to the caret). */
 export function callContext(before: string): CallContext | null {
@@ -92,6 +134,29 @@ export function activeParam(ctx: CallContext, params: { name: string }[]): numbe
   return Math.min(ctx.activeArg, Math.max(0, params.length - 1))
 }
 
+function tyTooltip(pos: number, sig: TySig): Tooltip {
+  return {
+    pos,
+    above: true,
+    create() {
+      const dom = document.createElement('div')
+      dom.className = 'sig-tip'
+      const row = document.createElement('div')
+      row.className = 'sig-row'
+      row.textContent = sig.label
+      dom.append(row)
+      const name = sig.params[sig.active]
+      if (name) {
+        const body = document.createElement('div')
+        body.className = 'sig-note'
+        body.textContent = name
+        dom.append(body)
+      }
+      return { dom }
+    },
+  }
+}
+
 function tooltip(pos: number, entry: DocEntry, active: number): Tooltip {
   return {
     pos,
@@ -141,9 +206,11 @@ export function signatureHelp(): Extension {
       return value
     },
     provide: (f) =>
-      showTooltip.compute([f, 'doc', 'selection'], (state) => {
+      showTooltip.compute([f, tySigField, 'doc', 'selection'], (state) => {
         if (!state.field(f)) return null
         const head = state.selection.main.head
+        const ty = state.field(tySigField)
+        if (ty && ty.pos === head) return tyTooltip(head, ty)
         const from = Math.max(0, head - 500)
         const ctx = callContext(state.doc.sliceString(from, head))
         if (!ctx) return null
@@ -154,6 +221,8 @@ export function signatureHelp(): Extension {
   })
 
   return [
+    tySigField,
+    tySigFetch,
     field,
     keymap.of([
       {

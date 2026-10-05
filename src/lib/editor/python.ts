@@ -6,7 +6,8 @@ export interface PyState {
   inline: boolean
 }
 
-const HEAD = /^(?:init(?:\s+-?\d+)?\s+)?python(?:\s+(?:early|hide))*\s*(?:in\s+[\w.]+)?\s*:/
+/** `python:`, `init python:`, `python early:` and the other header forms. */
+export const PYTHON_HEADER = /^(?:init(?:\s+-?\d+)?\s+)?python(?:\s+(?:early|hide))*\s*(?:in\s+[\w.]+)?\s*:/
 
 /**
  * Advance the Python-block state by one source line.
@@ -18,7 +19,7 @@ export function pythonLine(line: string, indent: number | null): PyState {
   if (indent != null && (!body || body.startsWith('#') || spaces > indent)) {
     return { indent, inline: !!body && !body.startsWith('#') && spaces > indent }
   }
-  if (HEAD.test(body)) return { indent: spaces, inline: false }
+  if (PYTHON_HEADER.test(body)) return { indent: spaces, inline: false }
   if (/^\$(\s|$)/.test(body)) return { indent: null, inline: true }
   return { indent: null, inline: false }
 }

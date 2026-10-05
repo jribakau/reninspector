@@ -15,6 +15,9 @@ is distributed under its own licence, linked from its source repository.
   http://wordlist.aspell.net/). Copyright Kevin Atkinson and others; the full
   licence and copyright notices are in `licenses/SCOWL.txt`.
 - **ICU4X crates** (Unicode-3.0) and **webpki-roots** (CDLA-Permissive-2.0).
+- **ty** (MIT, https://github.com/astral-sh/ty). Optional Python language server.
+  It is not part of the installer: the app downloads a pinned release, checks its
+  published SHA-256, and runs it only after you turn the feature on.
 - **unrpa** (GPL-3.0, https://github.com/Lattyware/unrpa). The RPA-3.2, RPA-4.0,
   ALT-1.0 and ZiX-12A/B header layouts, key derivation and index handling in
   `renpy-core/src/rpa` were reimplemented in Rust from its `versions/` modules.

@@ -19,6 +19,8 @@ export interface Settings {
   bracketMatching: boolean
   closeBrackets: boolean
   autocomplete: boolean
+  pythonServer: 'off' | 'on'
+  pythonDiagnostics: 'syntax' | 'all'
   keymap: 'default' | 'vim' | 'emacs'
   colorSwatches: boolean
   inlayHints: boolean
@@ -84,6 +86,8 @@ export const DEFAULTS: Settings = {
   bracketMatching: true,
   closeBrackets: true,
   autocomplete: true,
+  pythonServer: 'off',
+  pythonDiagnostics: 'syntax',
   keymap: 'default',
   colorSwatches: true,
   inlayHints: true,
@@ -206,6 +210,28 @@ export const SETTINGS: SettingDef[] = [
     label: 'Autocomplete',
     description: 'Suggest labels, characters, images, and keywords while typing.',
     type: 'bool',
+  },
+  {
+    key: 'pythonServer',
+    category: 'editor',
+    label: 'Python language server',
+    description: 'Use ty for completions, hover and diagnostics inside python blocks and $ lines. Turning this on downloads a checked copy the first time.',
+    type: 'enum',
+    options: [
+      { value: 'off', label: 'Off' },
+      { value: 'on', label: 'On' },
+    ],
+  },
+  {
+    key: 'pythonDiagnostics',
+    category: 'editor',
+    label: 'Python diagnostics',
+    description: 'Syntax shows only Python syntax errors. All also shows type warnings. Names defined in other files are not flagged.',
+    type: 'enum',
+    options: [
+      { value: 'syntax', label: 'Syntax only' },
+      { value: 'all', label: 'Syntax and types' },
+    ],
   },
   {
     key: 'keymap',

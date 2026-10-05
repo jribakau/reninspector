@@ -38,6 +38,8 @@ Folding markers in the gutter can be turned off in Settings. Vim and Emacs keyma
 
 F12 goes to the definition under the caret, Shift+F12 finds every use, and F2 renames it. This works for labels, screens, images, transforms, characters, variables, functions and classes. Styles can be found but not renamed, because a style prefix derives other names.
 
+Python blocks and `$` lines can use the [ty](https://docs.astral.sh/ty/) language server for completions, hover, signature help and diagnostics. It is off until you turn it on in Settings, which downloads a checked copy into the app's data folder. It does not read Ren'Py 7 projects, because those are Python 2.
+
 ## Develop
 
 You need [Node.js](https://nodejs.org/), [Rust](https://www.rust-lang.org/) 1.77 or newer, and the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your system. Windows 10 and 11 already include the WebView2 runtime the app uses.

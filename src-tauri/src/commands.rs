@@ -28,6 +28,11 @@ pub struct AppState {
     pub sdk_busy: AtomicBool,
     /// Set while a launcher build should stop.
     pub build_cancel: Arc<AtomicBool>,
+    /// The ty language server, when one is running.
+    pub pylsp: Mutex<crate::pylsp::Proc>,
+    /// Set while a ty download should stop.
+    pub pylsp_cancel: Arc<AtomicBool>,
+    pub pylsp_busy: AtomicBool,
     /// The launcher process for the current build, so it can be killed.
     pub build: Arc<Mutex<Option<std::process::Child>>>,
 }
@@ -112,6 +117,7 @@ pub fn open_project(
     path: String,
 ) -> Result<ProjectInfo, String> {
     crate::live::stop_session(&app, std::time::Duration::from_millis(400));
+    crate::pylsp::stop(&state);
     let cache = app
         .path()
         .app_data_dir()

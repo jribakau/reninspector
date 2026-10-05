@@ -51,6 +51,20 @@ export const api = {
   writeFile: (path: string, text: string) => invoke<EditImpact>('write_file', { path, text }),
   revertFile: (path: string) => invoke<EditImpact>('revert_file', { path }),
   checkSyntax: (text: string) => invoke<SyntaxIssue[]>('check_syntax', { text }),
+  pylspStatus: () => invoke<{ installed: boolean; version: string; running: boolean; exe: string }>('pylsp_status'),
+  pylspEnv: () => invoke<{
+    scriptVersion: string | null
+    pythonVersion: string | null
+    sdkRoot: string | null
+    unsupported: boolean
+    reason: string
+  }>('pylsp_env'),
+  pylspInstall: (force: boolean) => invoke<void>('pylsp_install', { force }),
+  pylspCancel: () => invoke<void>('pylsp_cancel'),
+  pylspRemove: () => invoke<void>('pylsp_remove'),
+  pylspStart: (settings: unknown) => invoke<void>('pylsp_start', { settings }),
+  pylspSend: (message: unknown) => invoke<void>('pylsp_send', { message }),
+  pylspStop: () => invoke<void>('pylsp_stop'),
   projectInfo: () => invoke<ProjectInfo | null>('get_project_info'),
   projectMap: () => invoke<ProjectMap>('get_project_map'),
   diagnostics: () => invoke<DiagReport>('get_diagnostics'),

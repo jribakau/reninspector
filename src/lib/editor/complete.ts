@@ -4,6 +4,7 @@ import { docNow, docsStarting, loadDocs } from '../docs/reference'
 import { inPython } from './python'
 import { symbolsOf } from '../indexes.svelte'
 import { app } from '../model.svelte'
+import { pyComplete } from '../pylsp.svelte'
 
 const KEYWORDS = [
   'label', 'menu', 'jump', 'call', 'return', 'if', 'elif', 'else', 'while', 'pass', 'show', 'scene',
@@ -79,6 +80,16 @@ function pythonPool(): Completion[] {
   ]
 }
 
+function asCompletion(item: { label: string; detail: string; type: string; info?: string }): Completion {
+  return { label: item.label, detail: item.detail, type: item.type, info: item.info }
+}
+
+/** Local names first. A later copy of the same label is dropped. */
+function merge(local: Completion[], remote: Completion[]): Completion[] {
+  const seen = new Set(local.map((item) => item.label))
+  return [...local, ...remote.filter((item) => !seen.has(item.label))]
+}
+
 function pick(pool: Completion[], prefix: string): Completion[] {
   const pre = prefix.toLowerCase()
   if (!pre) return pool.slice(0, 40)
@@ -135,7 +146,16 @@ export async function renpyComplete(context: CompletionContext): Promise<Complet
   } else if (word && /^renpy(\.|$)/.test(word.text)) {
     pool = renpyApi()
   } else if (inPython(context.state.doc, line.number) || /(?:^|\s)\$(?:\s*[\w.]*)?$/.test(before)) {
-    pool = pythonPool()
+    const remote = await pyComplete(line.number - 1, context.pos - line.from)
+    const member = !!word && word.text.includes('.')
+    if (member && remote.length) {
+      pool = remote.map(asCompletion)
+      const dot = word.text.lastIndexOf('.')
+      from = word.from + dot + 1
+      prefix = word.text.slice(dot + 1)
+    } else {
+      pool = merge(pythonPool(), remote.map(asCompletion))
+    }
   } else if (/\b(?:if|elif|while)\s+[\w.]*$/.test(before) || /\b(?:define|default)\b[^=\n]*=\s*[\w.]*$/.test(before)) {
     pool = variables()
   } else if (/\b(?:jump|call|menu)\s+[\w.]*$/.test(before)) {
