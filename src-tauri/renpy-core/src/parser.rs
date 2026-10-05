@@ -1,6 +1,8 @@
 //! Indentation-aware parser producing a statement tree with exact line spans.
 //! Anything not understood becomes `Kind::Opaque`; the parser never fails.
 
+use std::collections::HashMap;
+
 use serde::Serialize;
 
 use crate::ast::*;
@@ -67,6 +69,12 @@ pub struct Meta {
     pub translates: Vec<TrNote>,
     /// Quoted file paths on `image`, `play`, `voice` and `Movie` lines.
     pub quoted_paths: Vec<QuotedPath>,
+    /// Every bare identifier in code, with the lines it appears on. Skips
+    /// attributes (`obj.greet`), `def`/`class` names and Ren'Py-only statements.
+    pub idents: HashMap<String, Vec<u32>>,
+    /// Exact style names used by `style ... is parent`, `style "name"` and
+    /// `style.name`. `style_prefix` is left out because it derives names.
+    pub style_uses: Vec<(String, u32)>,
 }
 
 /// One translated string or one line inside a `translate` block.
@@ -1216,6 +1224,193 @@ fn scan_notes(lines: &[LLine], meta: &mut Meta) {
                 }
             }
         }
+        // Runs here, not in `scan_meta`, so a `translate` block (whose lines `continue`
+        // above) is not searched for uses.
+        collect_idents(t, l.line, &mut meta.idents);
+        // A logical line can span several physical lines; rename works per physical line.
+        for (k, part) in t.split('\n').enumerate() {
+            collect_style_uses(part, l.line + k as u32, &mut meta.style_uses);
+        }
+    }
+}
+
+/// Statements whose first word is Ren'Py syntax, so the words after it are not
+/// Python names (`show greet` is an image, not a call).
+const RENPY_LINE: &[&str] = &[
+    "show", "scene", "hide", "play", "jump", "call", "label", "image", "layeredimage", "with",
+    "menu", "voice", "queue", "stop", "window", "pause", "translate", "nvl",
+];
+
+/// Record bare identifiers on a logical line. Quoted strings and comments are
+/// skipped, as are attributes (`obj.greet`) and the name after `def` or `class`.
+/// `text` joins physical lines with `\n`, and each hit gets its own physical line,
+/// because a rename rewrites whole physical lines.
+fn collect_idents(text: &str, first_line: u32, out: &mut HashMap<String, Vec<u32>>) {
+    let mut line = first_line;
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    let first = ident_at(bytes, i);
+    if let Some((_, word)) = first {
+        if RENPY_LINE.contains(&word) {
+            return;
+        }
+    }
+    let mut prev_dot = false;
+    let mut prev_def = false;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if c == b'#' {
+            // Comments are stripped by the lexer; this is only a safety net.
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if c == b'"' || c == b'\'' {
+            i += 1;
+            while i < bytes.len() && bytes[i] != c {
+                if bytes[i] == b'\\' {
+                    i += 1;
+                }
+                if i < bytes.len() {
+                    if bytes[i] == b'\n' {
+                        line += 1;
+                    }
+                    i += 1;
+                }
+            }
+            i += 1;
+            prev_dot = false;
+            prev_def = false;
+            continue;
+        }
+        if c == b'\n' {
+            line += 1;
+            i += 1;
+            continue;
+        }
+        if c == b'.' {
+            prev_dot = true;
+            prev_def = false;
+            i += 1;
+            continue;
+        }
+        if c.is_ascii_alphabetic() || c == b'_' {
+            let start = i;
+            i += 1;
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            let word = &text[start..i];
+            let is_def = word == "def" || word == "class";
+            if !prev_dot && !prev_def {
+                let lines = out.entry(word.to_string()).or_default();
+                if lines.last() != Some(&line) {
+                    lines.push(line);
+                }
+            }
+            prev_dot = false;
+            prev_def = is_def;
+            continue;
+        }
+        // Whitespace keeps the `def`/`class` and `.` flags, so `def name` and
+        // `obj . name` are still recognised.
+        if !c.is_ascii_whitespace() {
+            prev_dot = false;
+            prev_def = false;
+        }
+        i += 1;
+    }
+}
+
+fn ident_at(bytes: &[u8], mut i: usize) -> Option<(usize, &str)> {
+    if i >= bytes.len() || !(bytes[i].is_ascii_alphabetic() || bytes[i] == b'_') {
+        return None;
+    }
+    let start = i;
+    i += 1;
+    while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+        i += 1;
+    }
+    Some((i, std::str::from_utf8(&bytes[start..i]).unwrap_or("")))
+}
+
+fn is_style_key(word: &str) -> bool {
+    word == "style" || word.ends_with("_style")
+}
+
+/// Exact style names: the parent after `is` on a `style` header, `style "name"`
+/// and `*_style "name"` properties, and `style.name`. `style_prefix` derives
+/// names (`name_text`), so it is not a style key and is left out.
+fn collect_style_uses(text: &str, line: u32, out: &mut Vec<(String, u32)>) {
+    let t = text.trim();
+    let bytes = t.as_bytes();
+    // `style name:` and `style name is parent:` declare a style. Only the parent is a use.
+    let header = t.starts_with("style ")
+        && !t["style ".len()..].trim_start().starts_with(['"', '\''])
+        && (t.ends_with(':') || t.contains(" is "));
+    let mut i = 0;
+    let mut prev = "";
+    while i < bytes.len() {
+        let c = bytes[i];
+        if c == b'#' {
+            break;
+        }
+        if c == b'"' || c == b'\'' {
+            let start = i + 1;
+            i += 1;
+            while i < bytes.len() && bytes[i] != c {
+                if bytes[i] == b'\\' {
+                    i += 1;
+                }
+                if i < bytes.len() {
+                    i += 1;
+                }
+            }
+            if is_style_key(prev) && start <= i {
+                let name = &t[start..i];
+                if !name.is_empty() {
+                    out.push((name.to_string(), line));
+                }
+            }
+            i += 1;
+            prev = "";
+            continue;
+        }
+        if c == b'.' {
+            if prev == "style" {
+                let name = ident_prefix(&t[i + 1..]);
+                if !name.is_empty() {
+                    out.push((name, line));
+                }
+            }
+            prev = "";
+            i += 1;
+            continue;
+        }
+        if c.is_ascii_alphabetic() || c == b'_' {
+            let start = i;
+            i += 1;
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            let word = &t[start..i];
+            if is_style_key(prev) && !header {
+                out.push((word.to_string(), line));
+            }
+            if header && prev == "is" {
+                out.push((word.to_string(), line));
+            }
+            prev = word;
+            continue;
+        }
+        if !c.is_ascii_whitespace() {
+            prev = "";
+        }
+        i += 1;
     }
 }
 
@@ -1411,6 +1606,60 @@ mod tests {
         let issues = check_syntax("label start:\n    \"hello\n");
         assert!(issues.iter().any(|i| i.message.contains("Unterminated")));
         assert!(check_syntax("label start:\n    \"hello\"\n    return\n").is_empty());
+    }
+
+    #[test]
+    fn meta_collects_idents_and_style_uses() {
+        let src = r##"
+init python:
+    def greet(who):
+        return who
+    class Box:
+        def method(self):
+            pass
+    x = greet(1)
+    y = obj.greet(2)
+    z = "greet"
+label start:
+    $ greet("x")
+    if greet():
+        e "Hello"
+    show greet
+screen phone():
+    textbutton "Go" style "big" text_style "my_text" action Function(greet)
+style say_dialogue is default:
+    color "#fff"
+style say_thought:
+    pass
+$ style.big.color = "#000"
+"##;
+        let lexed = lex(src);
+        let meta = scan_meta(&lexed.lines);
+        let has = |name: &str| meta.idents.get(name).map(|v| !v.is_empty()).unwrap_or(false);
+        // A call is recorded; the `def` name, an attribute and a quoted string are not.
+        assert!(has("greet"));
+        assert!(!has("method"));
+        let def_line = lexed
+            .lines
+            .iter()
+            .find(|l| l.text.trim().starts_with("def greet"))
+            .unwrap()
+            .line;
+        assert!(!meta.idents.get("greet").unwrap().contains(&def_line));
+        assert!(meta.style_uses.iter().any(|(n, _)| n == "default"));
+        assert!(meta.style_uses.iter().any(|(n, _)| n == "big"));
+        assert!(meta.style_uses.iter().any(|(n, _)| n == "my_text"));
+        // A `style name:` header is a declaration, not a use of that name.
+        assert!(!meta.style_uses.iter().any(|(n, _)| n == "say_thought"));
+        assert!(!meta.style_uses.iter().any(|(n, _)| n == "say_dialogue"));
+    }
+
+    #[test]
+    fn idents_keep_their_physical_line_in_a_multi_line_statement() {
+        let src = "init python:\n    def greet(n):\n        return n\ndefine table = [\n    greet(1),\n    \"greet\",\n    greet(2),\n]\n";
+        let meta = scan_meta(&lex(src).lines);
+        // Lines 5 and 7 hold the calls; the string on line 6 and the def on line 2 do not count.
+        assert_eq!(meta.idents.get("greet").unwrap(), &vec![5, 7]);
     }
 
     #[test]

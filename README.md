@@ -36,6 +36,8 @@ The script editor is a CodeMirror buffer. A few of the bindings that are easy to
 
 Folding markers in the gutter can be turned off in Settings. Vim and Emacs keymaps are a setting too.
 
+F12 goes to the definition under the caret, Shift+F12 finds every use, and F2 renames it. This works for labels, screens, images, transforms, characters, variables, functions and classes. Styles can be found but not renamed, because a style prefix derives other names.
+
 ## Develop
 
 You need [Node.js](https://nodejs.org/), [Rust](https://www.rust-lang.org/) 1.77 or newer, and the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your system. Windows 10 and 11 already include the WebView2 runtime the app uses.

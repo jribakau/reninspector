@@ -187,6 +187,28 @@ pub fn build(files: &[SourceFile]) -> Catalog {
     let mut say_words = 0u32;
     let mut sites: Vec<Occurrence> = Vec::new();
 
+    // Names that can be called or used as a style, gathered first so a use that
+    // appears before its definition (even in another file) is still recognised.
+    let mut callables: HashMap<String, &'static str> = HashMap::new();
+    let mut styles: HashSet<String> = HashSet::new();
+    for f in files {
+        walk_all(&f.stmts, &mut |s| match &s.kind {
+            Kind::Python { names, .. } => {
+                for n in names {
+                    callables.insert(n.name.clone(), n.kind);
+                }
+            }
+            Kind::Style { name } => {
+                styles.insert(name.clone());
+            }
+            _ => {}
+        });
+    }
+    // A call to a defined function is not an undeclared variable.
+    for name in callables.keys() {
+        declared.insert(name.clone());
+    }
+
     for f in files {
         walk_all(&f.stmts, &mut |s| match &s.kind {
             Kind::Label { name, .. } => {
@@ -444,6 +466,19 @@ pub fn build(files: &[SourceFile]) -> Catalog {
             }
             _ => {}
         });
+
+        for (name, lines) in &f.meta.idents {
+            if let Some(kind) = callables.get(name) {
+                for line in lines {
+                    push_site(&mut sites, kind, name, "use", &f.rel, *line);
+                }
+            }
+        }
+        for (name, line) in &f.meta.style_uses {
+            if styles.contains(name) {
+                push_site(&mut sites, "style", name, "use", &f.rel, *line);
+            }
+        }
 
         for note in &f.meta.translates {
             translations.push(note_to_tr(&f.rel, note));
@@ -1460,6 +1495,115 @@ init python:
         let dialogue = resolve(&cat, "script.rpy", 9, "later", Some("label"));
         assert!(!dialogue.hit);
         assert!(dialogue.symbol.is_none());
+    }
+
+    #[test]
+    fn indexes_function_class_and_style_uses() {
+        let src = r##"
+init python:
+    def greet(who):
+        return Box(who)
+    class Box:
+        def method(self):
+            pass
+    value = greet(1)
+    other = obj.greet(2)
+define score = greet(0)
+label start:
+    $ greet("x")
+    if greet():
+        "Hi"
+screen phone():
+    textbutton "Go" style "big" action Function(greet)
+style big is default:
+    color "#fff"
+"##;
+        let cat = build(&[file(src)]);
+        let line_of = |needle: &str| src.lines().position(|l| l.contains(needle)).unwrap() as u32 + 1;
+
+        let uses = roles(&cat, "function", "greet");
+        for needle in [
+            "value = greet(1)",
+            "define score = greet(0)",
+            "$ greet(\"x\")",
+            "if greet():",
+            "Function(greet)",
+        ] {
+            assert!(
+                uses.contains(&("use", line_of(needle))),
+                "missing use on `{needle}`"
+            );
+        }
+        // The definition, an attribute access and a nested method are not uses.
+        assert!(!uses.contains(&("use", line_of("def greet"))));
+        assert!(!uses.contains(&("use", line_of("obj.greet"))));
+        assert!(!cat.occurrences.iter().any(|o| o.name == "method"));
+
+        assert!(roles(&cat, "class", "Box").contains(&("use", line_of("return Box"))));
+        assert!(roles(&cat, "style", "big").contains(&("use", line_of("style \"big\""))));
+        // `default` is not a declared style, so the parent reference is not indexed.
+        assert!(roles(&cat, "style", "default").is_empty());
+
+        // Calling a defined function is not an undeclared variable.
+        assert!(!cat
+            .diags
+            .iter()
+            .any(|d| d.code == "undeclared-var" && d.message.contains("`greet`")));
+
+        // Go to definition works from a call site.
+        let call = resolve(&cat, "script.rpy", line_of("$ greet"), "greet", None);
+        assert!(call.hit);
+        assert_eq!(call.symbol.unwrap().line, line_of("def greet"));
+    }
+
+    /// What a rename applies: every owned line (the declaration and each use) is
+    /// rewritten, and a line that is not owned is left alone.
+    #[test]
+    fn renaming_rewrites_owned_lines_only() {
+        let src = r#"
+init python:
+    def greet(who):
+        return Box(who)
+    class Box:
+        pass
+    value = greet(1)
+    other = obj.greet(2)
+label start:
+    $ greet("x")
+"#;
+        let cat = build(&[file(src)]);
+        let owned = |kind: &str, name: &str| -> HashSet<u32> {
+            cat.occurrences
+                .iter()
+                .filter(|o| o.kind == kind && o.name == name)
+                .map(|o| o.line)
+                .collect()
+        };
+        let check = |kind: &str, old: &str, new: &str, expect: usize| {
+            let lines = owned(kind, old);
+            let mut changed = 0;
+            for (i, line) in src.lines().enumerate() {
+                if !lines.contains(&((i + 1) as u32)) {
+                    continue;
+                }
+                let next = rename_in_line(line, old, new);
+                assert_ne!(next, line, "line `{}` was not rewritten", line.trim());
+                assert!(
+                    !next.contains(old),
+                    "`{old}` still in `{}`",
+                    next.trim()
+                );
+                changed += 1;
+            }
+            assert_eq!(changed, expect);
+        };
+        // def greet, return... no. greet owned lines: def greet, value = greet(1), $ greet. = 3
+        check("function", "greet", "hello", 3);
+        // class Box and return Box(who) = 2
+        check("class", "Box", "Crate", 2);
+        // `obj.greet` is an attribute, so that line is not part of the rename.
+        let attr = src.lines().position(|l| l.contains("obj.greet")).unwrap() as u32 + 1;
+        assert!(!owned("function", "greet").contains(&attr));
     }
 
     #[test]

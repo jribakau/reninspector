@@ -188,9 +188,9 @@ import { app, fileInfo, fileOfNode, lookupSymbol, nodeByName, openDiff, register
         if (sym.path) ongoto(sym.path, sym.line)
         return
       }
-      // Uses of these kinds are not indexed, so references and rename would only see the definition.
-      if (['function', 'class', 'style'].includes(sym.kind)) {
-        app.notice = `Find references and rename are not available for ${sym.kind}s yet.`
+      // `style_prefix` derives names like `name_text`, which a rename cannot follow.
+      if (sym.kind === 'style' && how === 'rename') {
+        app.notice = 'Styles can be found but not renamed, because a style prefix derives other names.'
         return
       }
       if (how === 'refs') {
