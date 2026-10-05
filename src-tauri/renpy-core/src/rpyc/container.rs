@@ -56,18 +56,13 @@ fn slot_bytes(bytes: &[u8], want: u32) -> Result<Vec<u8>, String> {
 }
 
 fn inflate(bytes: &[u8]) -> Result<Vec<u8>, String> {
-    let mut dec = ZlibDecoder::new(bytes);
-    let mut out = Vec::new();
-    let mut buf = [0u8; 64 * 1024];
-    loop {
-        let n = dec.read(&mut buf).map_err(|e| format!("rpyc zlib: {e}"))?;
-        if n == 0 {
-            break;
-        }
-        if out.len().saturating_add(n) > MAX_SLOT {
-            return Err("rpyc decompressed slot is too large".into());
-        }
-        out.extend_from_slice(&buf[..n]);
+    let mut out = Vec::with_capacity(bytes.len().saturating_mul(4).min(MAX_SLOT));
+    ZlibDecoder::new(bytes)
+        .take(MAX_SLOT as u64 + 1)
+        .read_to_end(&mut out)
+        .map_err(|e| format!("rpyc zlib: {e}"))?;
+    if out.len() > MAX_SLOT {
+        return Err("rpyc decompressed slot is too large".into());
     }
     Ok(out)
 }

@@ -383,3 +383,52 @@ fn save_rejects_an_oversized_input() {
     let err = save(&vec![0; 32 * 1024 * 1024 + 1]).unwrap_err();
     assert!(err.0.contains("too large"), "{err}");
 }
+
+#[test]
+fn a_huge_memo_index_round_trips_without_a_dense_table() {
+    let mut p = vec![PROTO, 2, NONE_OP, LONG_BINPUT];
+    p.extend(u32::MAX.to_le_bytes());
+    p.push(LONG_BINGET);
+    p.extend(u32::MAX.to_le_bytes());
+    p.push(STOP);
+    assert_eq!(script(&p).unwrap(), Value::None);
+}
+
+/// `BININT1 value`, `LONG_BINPUT idx`, `POP`.
+fn put_int(p: &mut Vec<u8>, value: u8, idx: u32) {
+    p.extend([BININT1, value, LONG_BINPUT]);
+    p.extend(idx.to_le_bytes());
+    p.push(POP);
+}
+
+#[test]
+fn a_sparse_entry_survives_the_table_growing_over_it() {
+    let mut p = vec![PROTO, 4];
+    // Too far from the start for the dense table, so it goes in the sparse map.
+    put_int(&mut p, 42, 5000);
+    // Enough contiguous entries that the dense table may grow past 5000.
+    for i in 0..2100u32 {
+        put_int(&mut p, 0, i);
+    }
+    put_int(&mut p, 1, 5001);
+    // The sparse entry was counted once, so MEMOIZE takes the next free index.
+    p.extend([BININT1, 99, MEMOIZE, POP]);
+    p.push(LONG_BINGET);
+    p.extend(2102u32.to_le_bytes());
+    p.extend([LONG_BINGET]);
+    p.extend(5000u32.to_le_bytes());
+    p.extend([TUPLE2, STOP]);
+    assert_eq!(
+        script(&p).unwrap(),
+        Value::Tuple(vec![Value::Int(99), Value::Int(42)])
+    );
+}
+
+#[test]
+fn memoize_reuses_the_next_index() {
+    let p = vec![PROTO, 4, EMPTY_LIST, MEMOIZE, BINGET, 0, STOP];
+    match script(&p).unwrap() {
+        Value::List(items) => assert!(items.is_empty()),
+        other => panic!("{other:?}"),
+    }
+}

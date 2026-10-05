@@ -46,9 +46,16 @@ diffy = "0.4"
 spellbook = "0.4.2"
 flate2 = "1"
 tar = "0.4"
+mimalloc = { version = "0.1", default-features = false }
 
 [profile.release]
 opt-level = 3
 lto = "thin"
 codegen-units = 1
 strip = true
+
+[profile.dev.package.renpy-core]
+opt-level = 2
+
+[profile.dev.package."*"]
+opt-level = 2

@@ -25,6 +25,10 @@ use super::{PickleError, Value};
 pub(crate) const MAX_DEPTH: usize = 64;
 const MAX_STACK: usize = 100_000;
 const MAX_MEMO: usize = 2_000_000;
+/// Slack the dense memo table may carry beyond twice the stored entries. An
+/// index past that goes in the sparse map, so a few hostile `PUT`s cannot make
+/// the table allocate far more empty slots than there are real entries.
+const MEMO_DENSE_SLACK: usize = 1024;
 const MAX_LONG: usize = 16;
 
 struct Budget {
@@ -101,7 +105,29 @@ enum Val {
     Dict(Rc<RefCell<Pairs>>),
     Set(Rc<RefCell<Seq>>),
     Object(Rc<RefCell<Obj>>),
-    Callable { module: Rc<str>, name: Rc<str> },
+    Callable(Rc<CallableInfo>),
+}
+
+/// Decided once, when the global is first read. Later objects reuse it from the memo.
+struct CallableInfo {
+    full: Rc<str>,
+    kind: CallKind,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CallKind {
+    Encode,
+    Reconstructor,
+    Container(ContainerKind),
+    Plain,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ContainerKind {
+    Dict,
+    List,
+    Set,
+    Tuple,
 }
 
 /// The items of a list, tuple or set. Not `Clone`: copy `.0` when a copy is meant.
@@ -112,7 +138,7 @@ struct Pairs(Vec<(Val, Val)>);
 
 #[derive(Clone)]
 struct Obj {
-    class: String,
+    class: Rc<str>,
     args: Vec<Val>,
     state: Option<Val>,
 }
@@ -229,7 +255,12 @@ struct Parser<'a> {
     data: &'a [u8],
     i: usize,
     stack: Vec<StackItem>,
-    memo: HashMap<usize, Val>,
+    /// Dense memo. `None` is an unused slot. Indices far past the end go in `memo_sparse`.
+    memo: Vec<Option<Val>>,
+    memo_sparse: HashMap<usize, Val>,
+    /// Number of stored entries. Matches what `HashMap::len` used to return, so
+    /// `MEMOIZE` keeps the same indices.
+    memo_count: usize,
     budget: Budget,
     policy: &'a Policy,
 }
@@ -239,7 +270,9 @@ pub(crate) fn parse(data: &[u8], policy: &Policy) -> Result<Value, PickleError> 
         data,
         i: 0,
         stack: Vec::new(),
-        memo: HashMap::new(),
+        memo: Vec::new(),
+        memo_sparse: HashMap::new(),
+        memo_count: 0,
         budget: Budget::new(policy),
         policy,
     };
@@ -261,7 +294,8 @@ impl Drop for Parser<'_> {
                 items.push(v);
             }
         }
-        items.extend(mem::take(&mut self.memo).into_values());
+        items.extend(mem::take(&mut self.memo).into_iter().flatten());
+        items.extend(mem::take(&mut self.memo_sparse).into_values());
         // Nothing the parser holds is used again. Force-empty it so a cycle,
         // which never reaches a reference count of zero, is freed too.
         dismantle(items, true);
@@ -310,7 +344,7 @@ fn dismantle(mut stack: Vec<Val>, force: bool) {
             | Val::Float(_)
             | Val::Bytes(_)
             | Val::Str(_)
-            | Val::Callable { .. } => {}
+            | Val::Callable(_) => {}
         }
     }
 }
@@ -488,9 +522,9 @@ impl<'a> Parser<'a> {
             SETITEM => self.set_one()?,
             SETITEMS => self.set_many()?,
             GLOBAL => {
-                let module = self.line()?.to_string();
-                let name = self.line()?.to_string();
-                self.push_callable(&module, &name)?;
+                let module = self.line()?;
+                let name = self.line()?;
+                self.push_callable(module, name)?;
             }
             STACK_GLOBAL => {
                 let name = self.expect_text()?;
@@ -512,11 +546,14 @@ impl<'a> Parser<'a> {
             }
             INST => {
                 self.not_in_archive(op)?;
-                let module = self.line()?.to_string();
-                let name = self.line()?.to_string();
-                self.push_callable(&module, &name)?;
+                let module = self.line()?;
+                let name = self.line()?;
+                self.push_callable(module, name)?;
+                let class = match self.stack.last() {
+                    Some(StackItem::Value(Val::Callable(info))) => Rc::clone(&info.full),
+                    _ => return Err(PickleError::new("INST without a class")),
+                };
                 let args = self.pop_mark()?;
-                let class = format!("{module}.{name}");
                 self.make_object(class, args, None)?;
             }
             OBJ => {
@@ -526,7 +563,7 @@ impl<'a> Parser<'a> {
                     return Err(PickleError::new("OBJ without a class"));
                 }
                 let class = match &args[0] {
-                    Val::Callable { module, name } => format!("{module}.{name}"),
+                    Val::Callable(info) => Rc::clone(&info.full),
                     _ => return Err(PickleError::new("OBJ class is not a global")),
                 };
                 self.make_object(class, args[1..].to_vec(), None)?;
@@ -544,7 +581,7 @@ impl<'a> Parser<'a> {
                 self.memo_put(idx)?;
             }
             MEMOIZE => {
-                let idx = self.memo.len();
+                let idx = self.memo_count;
                 self.memo_put(idx)?;
             }
             BINGET => {
@@ -597,40 +634,42 @@ impl<'a> Parser<'a> {
             }
             super::policy::Globals::Inert => {}
         }
-        self.push(Val::Callable {
-            module: Rc::from(module),
-            name: Rc::from(name),
-        })
+        let full: Rc<str> = Rc::from(format!("{module}.{name}"));
+        self.push(Val::Callable(Rc::new(CallableInfo {
+            kind: classify(module, name),
+            full,
+        })))
     }
 
     fn reduce(&mut self) -> Result<(), PickleError> {
         let args = self.pop_val()?;
         let func = self.pop_val()?;
-        let Val::Callable { module, name } = func else {
+        let Val::Callable(func) = func else {
             return Err(PickleError::new("REDUCE of a non-callable"));
         };
         let args = self.tuple_items(args)?;
-        if module.as_ref() == "_codecs" && name.as_ref() == "encode" {
+        if func.kind == CallKind::Encode {
             return self.reduce_encode(args);
         }
         if self.policy.encode_only() {
             return Err(PickleError::new(format!(
-                "pickle global {module}.{name} is not allowed"
+                "pickle global {} is not allowed",
+                func.full
             )));
         }
-        if name.as_ref() == "_reconstructor"
-            && (module.as_ref() == "copyreg" || module.as_ref() == "copy_reg")
-        {
-            let class = match args.first() {
-                Some(Val::Callable { module, name }) => format!("{module}.{name}"),
-                _ => return Err(PickleError::new("reconstructor is missing its class")),
-            };
-            return self.make_object(class, Vec::new(), None);
+        match func.kind {
+            CallKind::Reconstructor => {
+                let class = match args.first() {
+                    Some(Val::Callable(class)) => Rc::clone(&class.full),
+                    _ => return Err(PickleError::new("reconstructor is missing its class")),
+                };
+                self.make_object(class, Vec::new(), None)
+            }
+            CallKind::Container(kind) => self.reduce_container(kind, args),
+            CallKind::Encode | CallKind::Plain => {
+                self.make_object(Rc::clone(&func.full), args, None)
+            }
         }
-        if is_container(&module, &name) {
-            return self.reduce_container(&name, args);
-        }
-        self.make_object(format!("{module}.{name}"), args, None)
     }
 
     /// Archive indexes only ever REDUCE a tuple. Scripts sometimes pass one value.
@@ -668,25 +707,27 @@ impl<'a> Parser<'a> {
         self.push(Val::Bytes(Rc::from(bytes)))
     }
 
-    fn reduce_container(&mut self, name: &str, args: Vec<Val>) -> Result<(), PickleError> {
+    fn reduce_container(&mut self, kind: ContainerKind, args: Vec<Val>) -> Result<(), PickleError> {
         self.budget.obj()?;
-        let lower = name.to_ascii_lowercase();
-        if lower.contains("dict") || lower == "defaultdict" {
-            let dict = dict_cell(Vec::new());
-            if let Some(Val::Dict(items)) = args.first() {
-                let cloned = items.borrow().0.clone();
-                self.budget.charge_values(cloned.len())?;
-                dict.borrow_mut().extend(cloned);
+        match kind {
+            ContainerKind::Dict => {
+                let dict = dict_cell(Vec::new());
+                if let Some(Val::Dict(items)) = args.first() {
+                    let cloned = items.borrow().0.clone();
+                    self.budget.charge_values(cloned.len())?;
+                    dict.borrow_mut().extend(cloned);
+                }
+                self.push(Val::Dict(dict))
             }
-            self.push(Val::Dict(dict))
-        } else if lower.contains("list") {
-            let items = self.clone_seq(args.first())?;
-            self.push(Val::List(seq(items)))
-        } else if lower.contains("set") {
-            let items = self.clone_seq(args.first())?;
-            self.push(Val::Set(seq(items)))
-        } else {
-            self.push(self.tuple(args))
+            ContainerKind::List => {
+                let items = self.clone_seq(args.first())?;
+                self.push(Val::List(seq(items)))
+            }
+            ContainerKind::Set => {
+                let items = self.clone_seq(args.first())?;
+                self.push(Val::Set(seq(items)))
+            }
+            ContainerKind::Tuple => self.push(self.tuple(args)),
         }
     }
 
@@ -728,19 +769,19 @@ impl<'a> Parser<'a> {
         }
         let args = self.pop_val()?;
         let class = self.pop_val()?;
-        let Val::Callable { module, name } = class else {
+        let Val::Callable(class) = class else {
             return Err(PickleError::new("NEWOBJ class is not a global"));
         };
         let args = self.tuple_items(args)?;
-        if is_container(&module, &name) {
-            return self.reduce_container(&name, args);
+        if let CallKind::Container(kind) = class.kind {
+            return self.reduce_container(kind, args);
         }
-        self.make_object(format!("{module}.{name}"), args, None)
+        self.make_object(Rc::clone(&class.full), args, None)
     }
 
     fn make_object(
         &mut self,
-        class: String,
+        class: Rc<str>,
         args: Vec<Val>,
         state: Option<Val>,
     ) -> Result<(), PickleError> {
@@ -838,12 +879,12 @@ impl<'a> Parser<'a> {
         if n > MAX_LONG {
             return Err(PickleError::new("pickle integer is too big"));
         }
-        let bytes = self.read(n)?.to_vec();
-        self.push(Val::Int(decode_long(&bytes)?))
+        let bytes = self.read(n)?;
+        self.push(Val::Int(decode_long(bytes)?))
     }
 
     fn push_bytes(&mut self, n: usize) -> Result<(), PickleError> {
-        let bytes = self.read(n)?.to_vec();
+        let bytes = self.read(n)?;
         self.budget.add_bytes(bytes.len())?;
         self.push(Val::Bytes(Rc::from(bytes)))
     }
@@ -929,20 +970,68 @@ impl<'a> Parser<'a> {
     }
 
     fn memo_put(&mut self, idx: usize) -> Result<(), PickleError> {
-        if self.memo.len() >= MAX_MEMO {
+        if self.memo_count >= MAX_MEMO {
             return Err(PickleError::new("pickle memo is too large"));
         }
         let val = match self.stack.last() {
             Some(StackItem::Value(v)) => v.clone(),
             _ => return Err(PickleError::new("PUT with an empty stack")),
         };
-        self.memo.insert(idx, val);
+        if idx < self.memo.len() {
+            self.store_dense(idx, val);
+            return Ok(());
+        }
+        let dense_limit = self
+            .memo_count
+            .saturating_mul(2)
+            .saturating_add(MEMO_DENSE_SLACK);
+        if idx < MAX_MEMO && idx <= dense_limit {
+            let new_len = idx + 1;
+            self.memo.resize_with(new_len, || None);
+            self.migrate_sparse(new_len);
+            self.store_dense(idx, val);
+            return Ok(());
+        }
+        if self.memo_sparse.insert(idx, val).is_none() {
+            self.memo_count += 1;
+        }
         Ok(())
     }
 
+    fn store_dense(&mut self, idx: usize, val: Val) {
+        let replaced = self.memo[idx].is_some()
+            || (!self.memo_sparse.is_empty() && self.memo_sparse.remove(&idx).is_some());
+        if !replaced {
+            self.memo_count += 1;
+        }
+        self.memo[idx] = Some(val);
+    }
+
+    /// Move sparse entries that the dense table now covers, so a later get
+    /// finds them in the vec. Their count was already recorded.
+    fn migrate_sparse(&mut self, new_len: usize) {
+        if self.memo_sparse.is_empty() {
+            return;
+        }
+        let covered: Vec<usize> = self
+            .memo_sparse
+            .keys()
+            .copied()
+            .filter(|k| *k < new_len)
+            .collect();
+        for k in covered {
+            if let Some(existing) = self.memo_sparse.remove(&k) {
+                self.memo[k] = Some(existing);
+            }
+        }
+    }
+
     fn memo_get(&mut self, idx: usize) -> Result<(), PickleError> {
+        if let Some(val) = self.memo.get(idx).and_then(Clone::clone) {
+            return self.push(val);
+        }
         let val = self
-            .memo
+            .memo_sparse
             .get(&idx)
             .cloned()
             .ok_or_else(|| PickleError::new(format!("pickle memo {idx} is missing")))?;
@@ -1042,14 +1131,32 @@ fn allowed_module(module: &str) -> bool {
         || module == "types"
 }
 
-fn is_container(module: &str, name: &str) -> bool {
-    let n = name.to_ascii_lowercase();
-    (module == "collections" && name == "defaultdict")
-        || n.contains("revertabledict")
-        || n.contains("revertablelist")
-        || n.contains("revertableset")
+fn classify(module: &str, name: &str) -> CallKind {
+    if module == "_codecs" && name == "encode" {
+        return CallKind::Encode;
+    }
+    if name == "_reconstructor" && (module == "copyreg" || module == "copy_reg") {
+        return CallKind::Reconstructor;
+    }
+    let lower = name.to_ascii_lowercase();
+    let container = (module == "collections" && name == "defaultdict")
+        || lower.contains("revertabledict")
+        || lower.contains("revertablelist")
+        || lower.contains("revertableset")
         || ((module == "builtins" || module == "__builtin__")
-            && matches!(name, "list" | "dict" | "set" | "frozenset" | "tuple"))
+            && matches!(name, "list" | "dict" | "set" | "frozenset" | "tuple"));
+    if !container {
+        return CallKind::Plain;
+    }
+    if lower.contains("dict") || lower == "defaultdict" {
+        CallKind::Container(ContainerKind::Dict)
+    } else if lower.contains("list") {
+        CallKind::Container(ContainerKind::List)
+    } else if lower.contains("set") {
+        CallKind::Container(ContainerKind::Set)
+    } else {
+        CallKind::Container(ContainerKind::Tuple)
+    }
 }
 
 fn as_text(v: &Val) -> Option<String> {
@@ -1139,18 +1246,15 @@ fn freeze(
             if is_back_edge(ptr, seen) {
                 return cut_or_cycle(cut_cycles, "dict");
             }
-            let len = dict.borrow().len();
-            let mut out = Vec::with_capacity(len);
-            for i in 0..len {
-                let (k, child) = {
-                    let pairs = dict.borrow();
-                    (pairs[i].0.clone(), pairs[i].1.clone())
-                };
+            let pairs = dict.borrow();
+            let mut out = Vec::with_capacity(pairs.len());
+            for (k, child) in pairs.iter() {
                 out.push((
-                    freeze(&k, budget, cut_cycles, seen, depth + 1)?,
-                    freeze(&child, budget, cut_cycles, seen, depth + 1)?,
+                    freeze(k, budget, cut_cycles, seen, depth + 1)?,
+                    freeze(child, budget, cut_cycles, seen, depth + 1)?,
                 ));
             }
+            drop(pairs);
             seen.pop();
             Ok(Value::Dict(out))
         }
@@ -1159,24 +1263,27 @@ fn freeze(
             if is_back_edge(ptr, seen) {
                 return cut_or_cycle(cut_cycles, "object");
             }
-            let (class, args, state) = {
-                let obj = obj.borrow();
-                (obj.class.clone(), obj.args.clone(), obj.state.clone())
-            };
-            let args = freeze_owned(args, budget, cut_cycles, seen, depth)?;
-            let state = match state {
-                Some(s) => Some(Box::new(freeze(&s, budget, cut_cycles, seen, depth + 1)?)),
+            let obj = obj.borrow();
+            let class = obj.class.to_string();
+            let mut args = Vec::with_capacity(obj.args.len());
+            for arg in &obj.args {
+                args.push(freeze(arg, budget, cut_cycles, seen, depth + 1)?);
+            }
+            let state = match &obj.state {
+                Some(s) => Some(Box::new(freeze(s, budget, cut_cycles, seen, depth + 1)?)),
                 None => None,
             };
+            drop(obj);
             seen.pop();
             Ok(Value::Object { class, args, state })
         }
-        Val::Callable { module, name } => {
+        Val::Callable(info) => {
             if cut_cycles {
-                Ok(Value::Str(format!("{module}.{name}")))
+                Ok(Value::Str(info.full.to_string()))
             } else {
                 Err(PickleError::new(format!(
-                    "pickle global {module}.{name} was not called"
+                    "pickle global {} was not called",
+                    info.full
                 )))
             }
         }
@@ -1195,12 +1302,12 @@ fn freeze_seq(
     if is_back_edge(ptr, seen) {
         return cut_or_cycle(cut_cycles, kind);
     }
-    let len = items.borrow().len();
-    let mut out = Vec::with_capacity(len);
-    for i in 0..len {
-        let child = items.borrow()[i].clone();
-        out.push(freeze(&child, budget, cut_cycles, seen, depth + 1)?);
+    let borrowed = items.borrow();
+    let mut out = Vec::with_capacity(borrowed.len());
+    for child in borrowed.iter() {
+        out.push(freeze(child, budget, cut_cycles, seen, depth + 1)?);
     }
+    drop(borrowed);
     seen.pop();
     Ok(match kind {
         "tuple" => Value::Tuple(out),
@@ -1209,23 +1316,43 @@ fn freeze_seq(
     })
 }
 
-fn freeze_owned(
-    items: Vec<Val>,
-    budget: &mut Budget,
-    cut_cycles: bool,
-    seen: &mut Vec<*const ()>,
-    depth: usize,
-) -> Result<Vec<Value>, PickleError> {
-    items
-        .iter()
-        .map(|v| freeze(v, budget, cut_cycles, seen, depth + 1))
-        .collect()
-}
-
 fn cut_or_cycle(cut_cycles: bool, kind: &str) -> Result<Value, PickleError> {
     if cut_cycles {
         Ok(Value::None)
     } else {
         Err(PickleError::new(format!("pickle {kind} is cyclic")))
+    }
+}
+
+#[cfg(test)]
+mod memo_tests {
+    use super::*;
+
+    #[test]
+    fn hostile_indices_do_not_inflate_the_dense_table() {
+        let policy = &Policy::SCRIPT;
+        let mut p = Parser {
+            data: &[],
+            i: 0,
+            stack: vec![StackItem::Value(Val::None)],
+            memo: Vec::new(),
+            memo_sparse: HashMap::new(),
+            memo_count: 0,
+            budget: Budget::new(policy),
+            policy,
+        };
+        // Each index sits one step past the last, as a hostile pickle would.
+        for k in 1..=1500usize {
+            p.memo_put(k * 1024).unwrap();
+        }
+        assert!(
+            p.memo.len() <= p.memo_count * 2 + MEMO_DENSE_SLACK + 1,
+            "dense table has {} slots for {} entries",
+            p.memo.len(),
+            p.memo_count
+        );
+        for k in 1..=1500usize {
+            p.memo_get(k * 1024).unwrap();
+        }
     }
 }
