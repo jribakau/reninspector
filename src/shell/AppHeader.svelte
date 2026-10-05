@@ -582,7 +582,7 @@
     grid-template-columns: 1fr auto 1fr;
     align-items: center;
     gap: var(--sp-3);
-    padding-left: 6px;
+    padding: 0 6px;
     background: var(--bg);
     border-bottom: 1px solid var(--line);
     flex: none;
@@ -598,6 +598,7 @@
   }
   .right {
     justify-content: flex-end;
+    gap: var(--sp-2);
   }
   .center {
     display: flex;
@@ -705,8 +706,8 @@
   .wins {
     display: flex;
     align-items: center;
-    gap: var(--sp-1);
-    margin-left: 2px;
+    gap: var(--sp-2);
+    margin-left: var(--sp-2);
   }
   .win:hover:not(:disabled) {
     background: var(--active);
