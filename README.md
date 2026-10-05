@@ -6,6 +6,20 @@ Ren'Inspector is an independent project. It is not made by, endorsed by, or affi
 
 It reads `.rpy` scripts and compiled `.rpyc` files, shows the story as a map, and edits files in place. Changes to a released game go into a patch archive, so the game's own archives are left untouched. Running, live preview and builds use the game's engine or a Ren'Py SDK.
 
+## Download
+
+Windows builds are attached to [releases](https://github.com/jribakau/reninspector/releases). The `.msi` installs the app. `reninspector-windows.zip` is the program by itself.
+
+The files are not code-signed, so Windows SmartScreen may warn the first time. Choose "More info", then "Run anyway".
+
+The welcome screen has **Open the demo**, a small game with a broken jump, a duplicate label and an undefined image, so the project map and the Problems list have something to show without a Ren'Py SDK.
+
+The demo is copied to the app's data folder the first time and is not overwritten afterwards, so your edits to it stay. Delete the `sample` folder there to get a fresh copy.
+
+Help → **Copy diagnostic bundle** copies the app version, the system, and the open project's recent log lines. Nothing is sent anywhere. Your home folder is shown as `~`, but log lines can still contain other folder names, so read the text before posting it publicly.
+
+Help → **Check for updates** asks before it installs a newer release, saves your open files, and then closes the app while the installer runs. It only finds published releases, not drafts or pre-releases. Updates install the `.msi` version, so a copy run from the zip is not updated in place.
+
 ## Develop
 
 You need [Node.js](https://nodejs.org/), [Rust](https://www.rust-lang.org/) 1.77 or newer, and the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your system. Windows 10 and 11 already include the WebView2 runtime the app uses.

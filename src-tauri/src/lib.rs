@@ -57,6 +57,7 @@ pub fn run() {
     sweep_stale_temp();
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(commands::AppState::default())
         .invoke_handler(tauri::generate_handler![
             commands::initial_project,
@@ -171,6 +172,8 @@ pub fn run() {
             live::live_set_watch,
             live::live_shots,
             live::live_shot,
+            ide::open_sample,
+            ide::diagnostic_bundle,
         ])
         .build(tauri::generate_context!())
         .expect("error while running Ren'Inspector");

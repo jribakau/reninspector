@@ -20,6 +20,7 @@ serde_json = "1.0"
 log = "0.4"
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
+tauri-plugin-updater = "2"
 notify = "6"
 renpy-core = { path = "renpy-core" }
 sha2 = "0.10"

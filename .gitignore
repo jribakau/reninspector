@@ -4,3 +4,5 @@ src-tauri/target/
 src-tauri/gen/
 *.log
 ROADMAP.md
+src-tauri/updater.key
+src-tauri/updater.key.pub

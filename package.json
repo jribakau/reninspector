@@ -38,6 +38,7 @@
     "@lezer/highlight": "^1.2.1",
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-dialog": "^2.0.0",
+    "@tauri-apps/plugin-updater": "^2.13.1",
     "elkjs": "^0.10.0"
   }
 }

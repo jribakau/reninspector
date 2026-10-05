@@ -1,4 +1,6 @@
 import { hasEditor, requestSave, revertFile, runEditor, createScript } from './edit.svelte'
+import { check } from '@tauri-apps/plugin-updater'
+import { api, errorText } from './api'
 import { openBuildDialog } from './build.svelte'
 import {
   checkWithEngine,
@@ -303,6 +305,24 @@ export function menuSections(): MenuSection[] {
         {
           kind: 'action',
           action: action({
+            id: 'check-update',
+            label: 'Check for updates',
+            title: 'Looks for a newer release on GitHub and installs it. Restart the app afterwards.',
+            run: () => void checkForUpdates(),
+          }),
+        },
+        {
+          kind: 'action',
+          action: action({
+            id: 'diagnostics-copy',
+            label: 'Copy diagnostic bundle',
+            title: 'Copies the app version, system, and the open project\'s recent log lines. Nothing is sent anywhere.',
+            run: () => void copyDiagnostics(),
+          }),
+        },
+        {
+          kind: 'action',
+          action: action({
             id: 'about',
             label: "About Ren'Inspector",
             run: () => {
@@ -313,6 +333,53 @@ export function menuSections(): MenuSection[] {
       ],
     },
   ]
+}
+
+async function checkForUpdates() {
+  if (app.busy) return
+  app.error = ''
+  app.busy = 'Checking for updates…'
+  try {
+    const update = await check()
+    if (!update) {
+      app.notice = "Ren'Inspector is up to date."
+      return
+    }
+    const dirty = app.dirtyFiles.length
+    const go = confirm(
+      `Ren'Inspector ${update.version} is available.\n\n` +
+        `Installing closes Ren'Inspector${dirty ? ' after saving your unsaved changes' : ''}. ` +
+        `It installs the .msi version, so a copy run from the portable zip ends up installed separately.\n\n` +
+        `Install now?`,
+    )
+    if (!go) return
+    // The installer ends this process on Windows, so nothing unsaved may be left.
+    if (dirty) {
+      app.busy = 'Saving…'
+      await saveAll({ quiet: true })
+      if (app.dirtyFiles.length) {
+        app.error = 'Some files could not be saved, so the update was not installed.'
+        return
+      }
+    }
+    app.busy = `Downloading ${update.version}…`
+    await update.downloadAndInstall()
+    app.notice = `Installed ${update.version}. Restart Ren'Inspector to use it.`
+  } catch (e) {
+    app.error = errorText(e)
+  } finally {
+    app.busy = ''
+  }
+}
+
+async function copyDiagnostics() {
+  try {
+    const text = await api.diagnosticBundle()
+    await navigator.clipboard.writeText(text)
+    app.notice = 'Copied a diagnostic bundle to the clipboard.'
+  } catch (e) {
+    app.error = errorText(e)
+  }
 }
 
 export function paletteActions(): Action[] {

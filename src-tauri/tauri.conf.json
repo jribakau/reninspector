@@ -27,6 +27,14 @@
       "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' blob: data:; worker-src 'self' blob:; connect-src ipc: http://ipc.localhost https://ipc.localhost; object-src 'none'; base-uri 'self'"
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDMyNDY4MkI5QUFDNUM1MzkKUldRNXhjV3F1WUpHTW1Qd015eWZTenkxK2pWa2tsQ2hrbXhyZ0sxeG1ZbmdrVFJoTldGanBGWjYK",
+      "endpoints": [
+        "https://github.com/jribakau/reninspector/releases/latest/download/latest.json"
+      ]
+    }
+  },
   "bundle": {
     "active": true,
     "targets": ["msi"],

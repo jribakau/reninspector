@@ -23,19 +23,54 @@ jobs:
         with:
           workspaces: src-tauri
       - run: npm ci
-      - uses: tauri-apps/tauri-action@v0
+      - id: signing
+        shell: bash
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -n "$KEY" ]; then
+            echo "args=--config src-tauri/tauri.updater.json" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning title=Updates are not signed::TAURI_SIGNING_PRIVATE_KEY is not set, so this release has no latest.json and Help > Check for updates will not find it."
+          fi
+      - id: tauri
+        uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
+          args: ${{ steps.signing.outputs.args }}
           tagName: ${{ github.ref_name }}
           releaseName: "Ren'Inspector ${{ github.ref_name }}"
           releaseBody: |
-            Windows installer for Ren'Inspector.
+            Windows builds of Ren'Inspector.
 
-            The installer is not code-signed, so Windows SmartScreen may warn on first
+            - The `.msi` installs the app.
+            - `reninspector-windows.zip` is the program by itself, with no installer.
+
+            The files are not code-signed, so Windows SmartScreen may warn on first
             launch. Choose "More info", then "Run anyway".
 
             This is an early version. Ren'Inspector is an independent tool and is not
             affiliated with the Ren'Py project.
           releaseDraft: true
           prerelease: true
+      - name: Portable zip
+        shell: pwsh
+        run: |
+          Compress-Archive -Path src-tauri\target\release\vn-ide.exe -DestinationPath reninspector-windows.zip
+          # `gh release upload <tag>` cannot see a draft release, so address it by id.
+          $repo = "${{ github.repository }}"
+          $id = "${{ steps.tauri.outputs.releaseId }}"
+          if (-not $id) { throw "tauri-action did not report a release id." }
+          $old = gh api "repos/$repo/releases/$id/assets" --jq '.[] | select(.name == "reninspector-windows.zip") | .id'
+          if ($LASTEXITCODE -ne 0) { throw "Could not list the release assets." }
+          foreach ($asset in $old) {
+            gh api -X DELETE "repos/$repo/releases/assets/$asset"
+            if ($LASTEXITCODE -ne 0) { throw "Could not replace the earlier zip." }
+          }
+          gh api -X POST "https://uploads.github.com/repos/$repo/releases/$id/assets?name=reninspector-windows.zip" -H "Content-Type: application/zip" --input reninspector-windows.zip
+          if ($LASTEXITCODE -ne 0) { throw "Could not upload the zip." }
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

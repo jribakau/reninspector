@@ -1,7 +1,17 @@
 <script lang="ts">
   import Icon from '../components/Icon.svelte'
+  import { api, errorText } from '../lib/api'
   import { openSdkManager } from '../lib/sdk.svelte'
   import { app, chooseAndOpenProject, createNewProject, openProject } from '../lib/store.svelte'
+
+  async function openDemo() {
+    app.error = ''
+    try {
+      await openProject(await api.openSample())
+    } catch (e) {
+      app.error = errorText(e)
+    }
+  }
 
   function baseName(path: string): string {
     const parts = path.split(/[/\\]/).filter(Boolean)
@@ -18,7 +28,7 @@
 
 <div class="welcome anim-fade">
   <header>
-    <h1>Ren'Py IDE</h1>
+    <h1>Ren'Inspector</h1>
     <p class="dim">Open a Ren'Py game, whether you are writing it or it is already released, and start editing.</p>
   </header>
 
@@ -28,6 +38,7 @@
     </button>
     <button class="big" onclick={createNewProject} disabled={!!app.busy}><Icon name="plus" size={15} /> New project…</button>
     <button class="big" onclick={() => void openSdkManager()} disabled={!!app.busy}>Ren'Py SDKs…</button>
+    <button class="big" onclick={() => void openDemo()} disabled={!!app.busy} title="A small game with a broken jump, a duplicate label and an undefined image">Open the demo</button>
   </div>
   {#if app.busy}<p class="dim">{app.busy}</p>{/if}
 

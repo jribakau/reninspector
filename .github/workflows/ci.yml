@@ -87,3 +87,8 @@ jobs:
               | while IFS= read -r line; do echo "::error::${line%$'\r'}"; done
           fi
           exit "$status"
+      - name: Release compile
+        # One non-Windows system is enough to catch a release-only break.
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: src-tauri
+        run: cargo build --release -p vn-ide

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use renpy_core::scene::{self, LinkKind, Place, SceneOp, StmtSpec};
 use renpy_core::{catalog, DialogueStats, LanguageStat, SearchHit, Symbol, Translation, Variable};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 use crate::commands::{self, AppState};
 use crate::edit::{self, EditImpact};
@@ -1099,11 +1099,111 @@ pub fn read_logs(state: State<'_, AppState>) -> Result<Vec<LogLine>, String> {
     Ok(out)
 }
 
+const SAMPLE_SCRIPT: &str = include_str!("../sample/game/script.rpy");
+
+/// Copies the bundled demo into the app data folder the first time, then
+/// returns that folder. Later calls keep whatever the user changed.
+#[tauri::command(async)]
+pub fn open_sample(app: AppHandle) -> Result<String, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("sample");
+    let script = dir.join("game").join("script.rpy");
+    if !script.is_file() {
+        if let Some(parent) = script.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Could not create the demo: {e}"))?;
+        }
+        fs::write(&script, SAMPLE_SCRIPT).map_err(|e| format!("Could not write the demo: {e}"))?;
+    }
+    Ok(dir.to_string_lossy().into_owned())
+}
+
+/// Swaps the user's home folder for `~`, in both slash styles, so a pasted
+/// bundle does not carry the account name.
+fn hide_home(text: &str, home: Option<&str>) -> String {
+    let Some(home) = home.map(|h| h.trim_end_matches(['/', '\\'])).filter(|h| h.len() > 3) else {
+        return text.to_string();
+    };
+    let mut out = text.to_string();
+    for variant in [
+        home.to_string(),
+        home.replace('\\', "/"),
+        home.replace('/', "\\"),
+    ] {
+        out = out.replace(&variant, "~");
+    }
+    out
+}
+
+fn home_dir() -> Option<String> {
+    std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .ok()
+}
+
+/// Text the user asked to copy. Nothing is sent anywhere. The home folder is
+/// replaced with `~`, but log lines can still name other private folders.
+#[tauri::command(async)]
+pub fn diagnostic_bundle(state: State<'_, AppState>) -> String {
+    let mut out = format!(
+        "Ren'Inspector {}\n{} {}\n",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    );
+    // Only the facts are read under the lock. The log files are read after it is released.
+    let facts = state.project.lock().ok().and_then(|guard| {
+        guard.as_ref().map(|project| {
+            (
+                project.root.clone(),
+                project.engine_version.clone(),
+                project.script_version.clone(),
+            )
+        })
+    });
+    if let Some((root, engine_version, script_version)) = facts {
+        out.push_str(&format!("Project: {}\n", root.display()));
+        if let Some(version) = engine_version {
+            out.push_str(&format!("Ren'Py: {version}\n"));
+        }
+        if let Some(version) = script_version {
+            out.push_str(&format!("Script version: {version}\n"));
+        }
+        out.push('\n');
+        for name in ["traceback.txt", "errors.txt", "log.txt"] {
+            let Some(text) = tail_file(&root.join(name), 8_000) else {
+                continue;
+            };
+            let lines: Vec<&str> = text.lines().rev().take(40).collect();
+            if lines.is_empty() {
+                continue;
+            }
+            out.push_str(&format!("--- {name}\n"));
+            for line in lines.into_iter().rev() {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+    } else {
+        out.push_str("No project is open.\n");
+    }
+    hide_home(&out, home_dir().as_deref())
+}
+
 fn tail_file(path: &Path, max: usize) -> Option<String> {
-    let bytes = fs::read(path).ok()?;
-    let start = bytes.len().saturating_sub(max);
-    let slice = &bytes[start..];
-    let text = String::from_utf8_lossy(slice);
+    use std::io::{Read, Seek, SeekFrom};
+    // Only the end of a log is wanted, and a log can be large.
+    let mut file = fs::File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    let start = len.saturating_sub(max as u64);
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut bytes = Vec::with_capacity((len - start) as usize);
+    file.take(max as u64).read_to_end(&mut bytes).ok()?;
+    let start = start as usize;
+    let text = String::from_utf8_lossy(&bytes);
     let text = if start > 0 {
         text.split_once('\n')
             .map(|(_, rest)| rest)
@@ -2017,6 +2117,27 @@ mod tests {
         assert!(!rpy.exists());
         assert!(!rpy.with_extension("rpyc").exists());
         let _ = fs::remove_dir_all(&game);
+    }
+
+    #[test]
+    fn diagnostics_hide_the_home_folder() {
+        let text = "C:\\Users\\ann\\game\\x.rpy and C:/Users/ann/game/y.rpy";
+        assert_eq!(
+            hide_home(text, Some("C:\\Users\\ann")),
+            "~\\game\\x.rpy and ~/game/y.rpy"
+        );
+        assert_eq!(hide_home(text, None), text);
+        assert_eq!(hide_home(text, Some("/")), text);
+    }
+
+    #[test]
+    fn tail_keeps_only_the_end_of_a_file() {
+        let path = std::env::temp_dir().join(format!("vnide-tail-{}.txt", std::process::id()));
+        fs::write(&path, "one\ntwo\nthree\nfour\n").unwrap();
+        assert_eq!(tail_file(&path, 1000).unwrap(), "one\ntwo\nthree\nfour\n");
+        // Starts mid-line, so the partial first line is dropped.
+        assert_eq!(tail_file(&path, 10).unwrap(), "four\n");
+        let _ = fs::remove_file(&path);
     }
 
     #[test]

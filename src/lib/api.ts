@@ -173,6 +173,8 @@ export const api = {
   spellAddWord: (word: string) => invoke<void>('spell_add_word', { word }),
   spellWords: () => invoke<string[]>('spell_words'),
   spellRemoveWord: (word: string) => invoke<void>('spell_remove_word', { word }),
+  openSample: () => invoke<string>('open_sample'),
+  diagnosticBundle: () => invoke<string>('diagnostic_bundle'),
   settingsExport: (path: string, text: string) => invoke<void>('settings_export', { path, text }),
   settingsImport: (path: string) => invoke<string>('settings_import', { path }),
 }
