@@ -106,8 +106,14 @@
     background: var(--hover);
     border-color: transparent;
   }
+  .seg:active,
+  .label:active {
+    background: var(--active);
+    border-color: transparent;
+  }
   .seg.last {
     color: var(--text);
+    font-weight: 600;
   }
   .label {
     color: var(--text);

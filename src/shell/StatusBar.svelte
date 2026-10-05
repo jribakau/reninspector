@@ -7,7 +7,7 @@
   const warnings = $derived(app.diag?.warnings ?? 0)
 </script>
 
-<footer class="status">
+<footer class="status" class:busy-bar={!!app.busy || !!(sdk.installing && sdk.progress)} class:has-errors={errors > 0} aria-busy={!!app.busy || !!(sdk.installing && sdk.progress)}>
   {#if app.busy}
     <span class="busy"><i class="spinner"></i>{app.busy}</span>
   {:else if sdk.installing && sdk.progress}
@@ -31,8 +31,10 @@
       title="Problems"
       onclick={() => openBottom('problems')}
     >
-      <Icon name="error" size={12} />{errors}
-      <Icon name="warning" size={12} />{warnings}
+      <Icon name="error" size={12} />
+      <span class="badge" class:bad={errors > 0}>{errors}</span>
+      <Icon name="warning" size={12} />
+      <span class="badge" class:warn={warnings > 0}>{warnings}</span>
     </button>
   {/if}
   {#if app.live.running}
@@ -71,10 +73,20 @@
     padding: 0 var(--sp-3) 0 var(--sp-4);
     background: var(--panel);
     border-top: 1px solid var(--line);
+    box-shadow: inset 0 1px 0 transparent;
     font-size: var(--fs-sm);
     flex: none;
     min-height: var(--h-status);
     container-type: inline-size;
+  }
+  .status.busy-bar {
+    box-shadow: inset 0 2px 0 var(--accent);
+  }
+  .status.has-errors {
+    box-shadow: inset 2px 0 0 var(--error);
+  }
+  .status.busy-bar.has-errors {
+    box-shadow: inset 0 2px 0 var(--accent), inset 2px 0 0 var(--error);
   }
   @container (max-width: 860px) {
     .wide-only {
@@ -142,6 +154,10 @@
   }
   .bare.warn {
     color: var(--warning);
+  }
+  .bare .badge {
+    min-width: 14px;
+    line-height: 14px;
   }
   .bare.live {
     color: var(--ok);

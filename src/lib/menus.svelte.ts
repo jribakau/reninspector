@@ -10,6 +10,7 @@ import {
 import { openSdkManager } from './sdk.svelte'
 import { flowPane } from './flowops.svelte'
 import { sceneRedo, sceneUndo } from './scene.svelte'
+import { notify } from './toast.svelte'
 import { jumpGameHere, replayToCursor, runGame, toggleLive } from './live.svelte'
 import { forgetTrust, isTrusted } from './trust.svelte'
 import { app } from './model.svelte'
@@ -371,7 +372,7 @@ async function checkForUpdates() {
     }
     app.busy = `Downloading ${update.version}…`
     await update.downloadAndInstall()
-    app.notice = `Installed ${update.version}. Restart Ren'Inspector to use it.`
+    notify(`Installed ${update.version}. Restart Ren'Inspector to use it.`, 'ok')
   } catch (e) {
     app.error = errorText(e)
   } finally {
@@ -383,7 +384,7 @@ async function copyDiagnostics() {
   try {
     const text = await api.diagnosticBundle()
     await navigator.clipboard.writeText(text)
-    app.notice = 'Copied a diagnostic bundle to the clipboard.'
+    notify('Copied a diagnostic bundle to the clipboard.', 'ok')
   } catch (e) {
     app.error = errorText(e)
   }

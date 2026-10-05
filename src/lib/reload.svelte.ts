@@ -2,6 +2,7 @@ import { api, errorText } from './api'
 import { setCatalog, setDiag, setInfo, setMap } from './indexes.svelte'
 import { app } from './model.svelte'
 import { pruneEditors } from './nav.svelte'
+import { notify } from './toast.svelte'
 import type { ProjectInfo } from './types'
 
 export async function pullCatalog() {
@@ -51,7 +52,7 @@ export async function refresh(paths: string[]) {
     void pullCatalog()
     pruneEditors()
     app.changeSeq += 1
-    app.notice = `Reloaded ${paths.join(', ')}`
+    notify(`Reloaded ${paths.join(', ')}`, 'ok')
   } catch (e) {
     app.error = errorText(e)
   }

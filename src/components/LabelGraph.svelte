@@ -3,6 +3,7 @@
   import PanZoom from './PanZoom.svelte'
   import Hud from './Hud.svelte'
   import ZoomControls from './ZoomControls.svelte'
+  import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
   import FlowEditor from './FlowEditor.svelte'
   import { api, errorText } from '../lib/api'
@@ -39,6 +40,7 @@
   let layout = $state.raw<GraphLayout | null>(null)
   let loading = $state(false)
   let error = $state('')
+  let attempt = $state(0)
   let pz: ReturnType<typeof PanZoom> | undefined = $state()
   let view = $state.raw<ViewRect | null>(null)
   let rulerHeight = $state(0)
@@ -87,6 +89,7 @@
     const n = name
     const detail = app.flowDetail
     void reloadKey
+    void attempt
     const t = ++token
     loading = true
     error = ''
@@ -97,6 +100,7 @@
         if (t !== token) return
         graph = g
         layout = l
+        layoutGen += 1
         editor = null
         editorAt = null
         picker = null
@@ -149,7 +153,8 @@
 
   const selected = $derived(selectedNode === null ? null : (nodesById.get(selectedNode) ?? null))
 
-  let legendOpen = $state(localStorage.getItem('vnide.flowLegend') === '1')
+  let legendOpen = $state(localStorage.getItem('vnide.flowLegend') !== '0')
+  let layoutGen = $state(0)
   function toggleLegend() {
     legendOpen = !legendOpen
     localStorage.setItem('vnide.flowLegend', legendOpen ? '1' : '0')
@@ -575,6 +580,7 @@
       bind:this={pz}
       contentWidth={L.width}
       contentHeight={L.height}
+      fadeKey={layoutGen}
       fitKey={`${G.name}|${app.flowDetail ? 'd' : 'o'}`}
       minK={0.05}
       maxK={2.5}
@@ -615,9 +621,11 @@
         {:else}
           {#each edgeIds as i (L.edges[i].index)}
             {@const e = L.edges[i]}
+            {@const intoFall = nodesById.get(G.edges[e.index]?.to)?.kind === 'fall'}
             <path
               d={e.d}
               class={`edge ${edgeClass(e)}`}
+              class:fall={intoFall}
               marker-end={cheap ? undefined : `url(#g-arrow-${edgeClass(e)})`}
             />
           {/each}
@@ -642,6 +650,12 @@
               oncontextmenu={(ev) => nodeMenu(ev, n)}
             >
               <rect x={p.x} y={p.y} width={p.w} height={p.h} rx={sayCard(n) || n.kind === 'choice' || isBeatCard(n) ? 8 : p.h / 2} />
+              {#if !cheap && missing.has(n.id)}
+                <g class="miss" transform={`translate(${p.x + p.w - 18} ${p.y + 6})`}>
+                  <path d="M7 1.2 13 12H1z" />
+                  <text x="7" y="11" text-anchor="middle">!</text>
+                </g>
+              {/if}
               {#if !cheap && sayCard(n)}
                 <text x={p.x + 12} y={p.y + 18} class="head">{n.speakers[0] || 'narrator'}</text>
                 {#each wrapText(n.body, 38) as line, li (li)}
@@ -872,8 +886,19 @@
   {#if loading && !layout}
     <div class="spinner-overlay" role="status"><div class="spinner"></div>Building graph…</div>
   {/if}
+  {#if !loading && !error && graph && !graph.nodes.length}
+    <div class="graph-empty">
+      <EmptyState icon="flow" title="Nothing to draw" hint="This label has no lines the graph can show." />
+    </div>
+  {/if}
   {#if error}
-    <div class="spinner-overlay err" role="alert"><Icon name="error" size={18} />{error}</div>
+    <div class="spinner-overlay" role="alert">
+      <div class="alert err card">
+        <Icon name="error" size={14} />
+        <span class="msg">{error}</span>
+        <button type="button" class="sm" onclick={() => (attempt += 1)}>Retry</button>
+      </div>
+    </div>
   {/if}
 </div>
 
@@ -883,8 +908,13 @@
     width: 100%;
     height: 100%;
   }
-  .spinner-overlay.err {
-    color: var(--error);
+  .graph-empty {
+    position: absolute;
+    inset: 0;
+    display: flex;
+  }
+  .graph-empty :global(.empty-state) {
+    flex: 1;
   }
   .gname {
     font-size: var(--fs-md);
@@ -1031,8 +1061,8 @@
     font-weight: 600;
   }
   .node.choice rect {
-    stroke: var(--choice, var(--menu));
-    fill: color-mix(in srgb, var(--menu) 14%, var(--node-fill));
+    stroke: var(--choice);
+    fill: color-mix(in srgb, var(--choice) 14%, var(--node-fill));
   }
   .ruler {
     position: absolute;
@@ -1090,6 +1120,10 @@
     stroke: var(--warning);
     stroke-dasharray: 5 3;
   }
+  .edge.fall {
+    stroke: var(--fall);
+    stroke-dasharray: 6 4;
+  }
   .edge.hot {
     stroke: var(--accent);
     stroke-width: 2.4;
@@ -1139,14 +1173,18 @@
     stroke: var(--warning);
     fill: color-mix(in srgb, var(--warning) 10%, var(--node-fill));
   }
-  .node.jump rect,
-  .node.fall rect,
-  .node.call rect {
+  .node.jump rect {
     stroke: var(--accent);
     fill: color-mix(in srgb, var(--accent) 12%, var(--node-fill));
   }
+  .node.fall rect {
+    stroke: var(--fall);
+    stroke-dasharray: 5 3;
+    fill: color-mix(in srgb, var(--fall) 12%, var(--node-fill));
+  }
   .node.call rect {
     stroke: var(--call);
+    fill: color-mix(in srgb, var(--call) 12%, var(--node-fill));
   }
   .node.screen rect {
     stroke: var(--screen);
@@ -1154,7 +1192,16 @@
   }
   .node.missing rect {
     stroke: var(--error);
-    fill: color-mix(in srgb, var(--error) 18%, var(--node-fill));
+    stroke-width: 2.2;
+    fill: color-mix(in srgb, var(--error) 32%, var(--node-fill));
+  }
+  .miss path {
+    fill: var(--error);
+  }
+  .miss text {
+    fill: var(--on-error);
+    font-size: 9px;
+    font-weight: 700;
   }
   .node.dynamic rect {
     stroke-dasharray: 4 3;
@@ -1167,14 +1214,14 @@
     stroke: var(--ok);
     stroke-width: 3;
   }
+  .node.selected rect {
+    stroke: var(--accent);
+    stroke-width: 2.6;
+  }
   .node.live rect {
     stroke: var(--ok);
     stroke-width: 4;
     stroke-dasharray: 5 3;
-  }
-  .node.selected rect {
-    stroke: var(--accent);
-    stroke-width: 2.6;
   }
   .node.drop rect {
     stroke: var(--ok);

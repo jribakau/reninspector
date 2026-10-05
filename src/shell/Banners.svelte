@@ -1,7 +1,8 @@
 <script lang="ts">
   import { slide } from 'svelte/transition'
   import Icon from '../components/Icon.svelte'
-  import { app, goTo, impactSummary, openRenpy, selectLabel } from '../lib/store.svelte'
+  import { copyText } from '../lib/context.svelte'
+  import { app, checkWithEngine, goTo, impactSummary, openRenpy, selectLabel } from '../lib/store.svelte'
   import type { Diagnostic } from '../lib/types'
 
   const impact = $derived(app.impact)
@@ -35,7 +36,7 @@
 
 <div class="stack">
   {#if impact && !impactSummary(impact).startsWith('Nothing else')}
-    <div class="banner" class:err={impactBad} class:warn={!impactBad} role={impactBad ? 'alert' : 'status'} transition:slide={{ duration: 140 }}>
+    <div class="alert" class:err={impactBad} class:warn={!impactBad} role={impactBad ? 'alert' : 'status'} transition:slide={{ duration: 140 }}>
       <Icon name={impactBad ? 'error' : 'warning'} size={14} />
       <span class="msg">{impactSummary(impact)}</span>
       {#if impact.added[0]?.path}
@@ -46,37 +47,38 @@
   {/if}
 
   {#if app.error}
-    <div class="banner err" role="alert" transition:slide={{ duration: 140 }}>
+    <div class="alert err" role="alert" transition:slide={{ duration: 140 }}>
       <Icon name="error" size={14} />
       <span class="msg">{app.error}</span>
+      <button type="button" class="sm" onclick={() => copyText(app.error)}>Copy</button>
       {@render dismiss(() => (app.error = ''))}
     </div>
   {/if}
 
   {#if app.info && app.info.compiledOnly.length && !hidden.includes('compiled')}
-    <div class="banner warn" role="status" transition:slide={{ duration: 140 }}>
+    <div class="alert warn" role="status" transition:slide={{ duration: 140 }}>
       <Icon name="warning" size={14} />
       <span class="msg">
         {app.info.compiledOnly.length} compiled script{app.info.compiledOnly.length === 1 ? '' : 's'} could not be
         decompiled, so {app.info.compiledOnly.length === 1 ? 'it is' : 'they are'} not on the map.
       </span>
+      <button type="button" class="sm" onclick={() => openRenpy('game')}>Show</button>
       {@render dismiss(() => hide('compiled'))}
     </div>
   {/if}
   {#if archiveErrors && !hidden.includes('archives')}
-    <div class="banner warn" role="status" transition:slide={{ duration: 140 }}>
+    <div class="alert warn" role="status" transition:slide={{ duration: 140 }}>
       <Icon name="warning" size={14} />
-      <span class="msg">
-        {archiveErrors} archive{archiveErrors === 1 ? '' : 's'} could not be read.
-        <button class="link" onclick={() => openRenpy('archives')}>Show</button>
-      </span>
+      <span class="msg">{archiveErrors} archive{archiveErrors === 1 ? '' : 's'} could not be read.</span>
+      <button type="button" class="sm" onclick={() => openRenpy('archives')}>Show</button>
       {@render dismiss(() => hide('archives'))}
     </div>
   {/if}
   {#if app.info?.engine?.stale && !hidden.includes('stale')}
-    <div class="banner warn" role="status" transition:slide={{ duration: 140 }}>
+    <div class="alert info" role="status" transition:slide={{ duration: 140 }}>
       <Icon name="info" size={14} />
       <span class="msg">Scripts changed since the engine check; re-run it to refresh.</span>
+      <button type="button" class="sm" onclick={() => void checkWithEngine()}>Re-check</button>
       {@render dismiss(() => hide('stale'))}
     </div>
   {/if}
@@ -92,44 +94,5 @@
   }
   .stack:empty {
     display: none;
-  }
-  .banner {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-3);
-    padding: 4px 8px 4px 12px;
-    flex: none;
-    font-size: var(--fs-md);
-  }
-  .msg {
-    flex: 1;
-    min-width: 0;
-  }
-  .banner.err {
-    background: color-mix(in srgb, var(--error) 16%, var(--bg));
-    border-bottom: 1px solid color-mix(in srgb, var(--error) 55%, transparent);
-    color: var(--text);
-  }
-  .banner.err > :global(svg:first-child) {
-    color: var(--error);
-  }
-  .banner.warn {
-    background: color-mix(in srgb, var(--warning) 12%, var(--bg));
-    border-bottom: 1px solid color-mix(in srgb, var(--warning) 50%, transparent);
-  }
-  .banner.warn > :global(svg:first-child) {
-    color: var(--warning);
-  }
-  .link {
-    background: none;
-    border: none;
-    padding: 0 4px;
-    color: var(--accent);
-    cursor: pointer;
-    text-align: left;
-  }
-  .link:hover {
-    text-decoration: underline;
-    border-color: transparent;
   }
 </style>

@@ -9,6 +9,21 @@
   }
 
   let form: HTMLFormElement | undefined = $state()
+  let tried = $state(false)
+  let blurred = $state<boolean[]>([])
+
+  $effect(() => {
+    void dialog.current?.title
+    tried = false
+    blurred = []
+  })
+
+  function missing(i: number): boolean {
+    const cur = dialog.current
+    if (!cur) return false
+    const field = cur.fields[i]
+    return !!field && !field.optional && cur.values[i].trim() === ''
+  }
 
   const ready = $derived.by(() => {
     const cur = dialog.current
@@ -17,6 +32,7 @@
 
   function submit(e: SubmitEvent) {
     e.preventDefault()
+    tried = true
     if (ready) closeDialog(true)
   }
 
@@ -51,12 +67,14 @@
                 value={cur.values[i]}
                 placeholder={field.placeholder ?? ''}
                 oninput={(e) => (cur.values[i] = e.currentTarget.value)}
+                onblur={() => (blurred[i] = true)}
               />
             {/if}
             {#if field.browse}
               <button type="button" onclick={() => browse(i)}>Browse…</button>
             {/if}
           </span>
+          {#if (tried || blurred[i]) && missing(i)}<span class="need">Required</span>{/if}
         </label>
       {/each}
     </form>
@@ -95,5 +113,9 @@
   .field select {
     flex: 1;
     min-width: 0;
+  }
+  .need {
+    color: var(--error);
+    font-size: var(--fs-sm);
   }
 </style>

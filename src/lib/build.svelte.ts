@@ -2,6 +2,7 @@ import { api, errorText, pickFolder } from './api'
 import { app } from './model.svelte'
 import { openBottom } from './nav.svelte'
 import { installWeb, loadCatalog, majorMinor, projectVersion, sdk, sdkForBuild } from './sdk.svelte'
+import { notify } from './toast.svelte'
 import { ensureTrusted } from './trust.svelte'
 
 export interface BuildLine {
@@ -109,6 +110,7 @@ export async function startBuild() {
   app.error = ''
   openBottom('build')
   const dest = buildUi.dest.trim() || null
+  let failed = false
   try {
     if (buildUi.web && !target.hasWeb) {
       buildUi.status = 'Downloading Web support…'
@@ -125,11 +127,17 @@ export async function startBuild() {
       buildUi.status = lastLine(text)
     }
   } catch (e) {
+    failed = true
     const message = errorText(e)
     buildUi.status = message.split('\n').find((line) => line.trim()) || 'Build failed.'
     app.error = message.split('\n').slice(-4).join(' ')
   } finally {
     buildUi.running = false
+  }
+  if (!failed) {
+    notify(buildUi.status || 'Build finished.', 'ok', {
+      action: { label: 'Show log', run: () => openBottom('build') },
+    })
   }
 }
 

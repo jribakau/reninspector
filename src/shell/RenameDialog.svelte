@@ -38,7 +38,10 @@
     {#snippet footer()}
       <button onclick={cancelRename} disabled={!!app.busy}>Cancel</button>
       {#if !preview.truncated}
-        <button class="primary" onclick={applyRename} disabled={!!app.busy}>Apply</button>
+        <button class="primary apply" onclick={applyRename} disabled={!!app.busy}>
+          {#if app.busy}<i class="spinner"></i>{/if}
+          {app.busy ? 'Applying…' : 'Apply'}
+        </button>
       {/if}
     {/snippet}
   </Modal>
@@ -72,5 +75,15 @@
   }
   .bad {
     color: var(--error);
+  }
+  .apply {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-2);
+  }
+  .apply .spinner {
+    width: 12px;
+    height: 12px;
+    border-width: 2px;
   }
 </style>

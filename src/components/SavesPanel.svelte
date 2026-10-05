@@ -1,4 +1,5 @@
 <script lang="ts">
+  import EmptyState from './EmptyState.svelte'
   import { api, errorText } from '../lib/api'
   import { app } from '../lib/store.svelte'
   import type { SaveDetail, SaveNode, SaveSlot } from '../lib/types'
@@ -65,7 +66,7 @@
   {#if loading}<span class="sb-meta">Reading saves…</span>{/if}
   {#if errorMsg}<p class="warn">{errorMsg}</p>{/if}
   {#if !loading && !slots.length}
-    <p class="sb-empty">No saves in game/saves or the user save folder.</p>
+    <EmptyState icon="save" title="No saves" hint="Saves in game/saves and the user save folder show up here." />
   {/if}
   {#each slots as slot (slot.path)}
     <button class="sb-item" class:sel={selected === slot.path} onclick={() => open(slot, deep)}>

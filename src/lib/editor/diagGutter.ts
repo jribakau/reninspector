@@ -123,6 +123,32 @@ const liveGutter = gutter({
   initialSpacer: () => new LiveSpacer(),
 })
 
+const errorUnderline = Decoration.mark({ class: 'cm-diag cm-diag-error' })
+const warningUnderline = Decoration.mark({ class: 'cm-diag cm-diag-warning' })
+
+/** Wavy underline on the text of each marked line. The gutter dot stays the summary. */
+const diagDecoField = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(_value, tr) {
+    const marks = tr.state.field(diagField)
+    if (!marks.size) return Decoration.none
+    const b = new RangeSetBuilder<Decoration>()
+    const lines = [...marks.keys()].filter((n) => n >= 1 && n <= tr.state.doc.lines).sort((a, c) => a - c)
+    for (const n of lines) {
+      const mark = marks.get(n)
+      if (!mark || mark.severity === 'info') continue
+      const line = tr.state.doc.line(n)
+      const start = line.text.search(/\S/)
+      if (start < 0) continue
+      const end = line.text.trimEnd().length
+      if (end <= start) continue
+      b.add(line.from + start, line.from + end, mark.severity === 'error' ? errorUnderline : warningUnderline)
+    }
+    return b.finish()
+  },
+  provide: (f) => EditorView.decorations.from(f),
+})
+
 const diagGutter = gutter({
   class: 'cm-diag-gutter',
   lineMarker(v, line) {
@@ -134,7 +160,7 @@ const diagGutter = gutter({
   initialSpacer: () => new DiagMarker('info', ''),
 })
 
-export const markerExtensions: Extension[] = [liveGutter, liveField, liveDecoField, diagGutter, diagField, rangeField]
+export const markerExtensions: Extension[] = [liveGutter, liveField, liveDecoField, diagGutter, diagField, diagDecoField, rangeField]
 
 export interface PythonMark {
   line: number

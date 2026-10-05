@@ -9,23 +9,6 @@ use tauri::{AppHandle, State};
 
 use crate::commands::AppState;
 
-const SAMPLE_SCRIPT: &str = include_str!("../../sample/game/script.rpy");
-
-/// Copies the bundled demo into the app data folder the first time, then
-/// returns that folder. Later calls keep whatever the user changed.
-#[tauri::command(async)]
-pub fn open_sample(app: AppHandle) -> Result<String, AppError> {
-    let dir = crate::util::data_dir(&app)?.join("sample");
-    let script = dir.join("game").join("script.rpy");
-    if !script.is_file() {
-        if let Some(parent) = script.parent() {
-            fs::create_dir_all(parent).map_err(|e| format!("Could not create the demo: {e}"))?;
-        }
-        fs::write(&script, SAMPLE_SCRIPT).map_err(|e| format!("Could not write the demo: {e}"))?;
-    }
-    Ok(dir.to_string_lossy().into_owned())
-}
-
 /// With `sdk` (its `renpy.exe` or `renpy.sh`) the project is made the way the
 /// Ren'Py launcher makes one, GUI included. Without it, only a script and options.
 #[tauri::command(async)]

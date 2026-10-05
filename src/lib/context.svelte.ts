@@ -4,6 +4,7 @@ import { inGame, revealEntry, toTreePath } from './fileops.svelte'
 import { fileInfo, fileOfNode, labelAt, nodeByName, nodesInFile } from './indexes.svelte'
 import { jumpGameHere, replayToCursor } from './live.svelte'
 import { app, editorTabId, type EditorTab } from './model.svelte'
+import { notify } from './toast.svelte'
 import {
   activateEditor,
   bulkCloseCount,
@@ -99,17 +100,17 @@ export function openMenuBelow(el: Element, items: MenuEntry[]) {
 export function copyText(text: string) {
   const value = text.trim()
   if (!value) return
-  const done = () => {
-    app.notice = 'Copied.'
-  }
+  const done = () => notify('Copied.', 'ok')
+  const fail = () => notify('Could not copy.', 'error')
+  const finish = (ok: boolean) => (ok ? done() : fail())
   if (navigator.clipboard?.writeText) {
-    void navigator.clipboard.writeText(value).then(done).catch(() => copyFallback(value, done))
+    void navigator.clipboard.writeText(value).then(done).catch(() => finish(copyFallback(value)))
     return
   }
-  copyFallback(value, done)
+  finish(copyFallback(value))
 }
 
-function copyFallback(value: string, done: () => void) {
+function copyFallback(value: string): boolean {
   const area = document.createElement('textarea')
   area.value = value
   area.setAttribute('readonly', '')
@@ -117,9 +118,14 @@ function copyFallback(value: string, done: () => void) {
   area.style.left = '-9999px'
   document.body.appendChild(area)
   area.select()
-  document.execCommand('copy')
+  let ok = false
+  try {
+    ok = document.execCommand('copy')
+  } catch {
+    ok = false
+  }
   area.remove()
-  done()
+  return ok
 }
 
 function playAt(file: string, line: number, endLine: number, replay: boolean) {

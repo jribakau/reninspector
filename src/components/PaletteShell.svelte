@@ -66,6 +66,9 @@
       transform: translateX(-50%) translateY(-4px) scale(0.99);
     }
   }
+  .box:focus-within {
+    border-color: var(--accent);
+  }
   .field {
     display: flex;
     align-items: center;
@@ -73,6 +76,9 @@
     padding: 0 var(--sp-4);
     border-bottom: 1px solid var(--line);
     color: var(--dim);
+  }
+  .box:focus-within .field {
+    border-bottom-color: var(--accent);
   }
   input {
     flex: 1;

@@ -19,6 +19,7 @@ import { app, bootstrap, closeActiveTab, confirmDiscard, cycleTabs, jumpGameHere
   import ProjectLoading from './shell/ProjectLoading.svelte'
   import RenameDialog from './shell/RenameDialog.svelte'
   import StatusBar from './shell/StatusBar.svelte'
+  import Toasts from './shell/Toasts.svelte'
   import Welcome from './shell/Welcome.svelte'
   import Workspace from './shell/Workspace.svelte'
 
@@ -143,16 +144,18 @@ import { app, bootstrap, closeActiveTab, confirmDiscard, cycleTabs, jumpGameHere
     else navForward()
   }
 
-  function blockNativeMenu(e: MouseEvent) {
-    const target = e.target
-    if (target instanceof HTMLElement && target.closest('input, textarea, [contenteditable="true"]')) return
-    e.preventDefault()
-  }
+  const baseTitle = "Ren'Inspector"
+
+  $effect(() => {
+    const name = app.info?.name
+    const dirty = app.dirtyFiles.length > 0
+    const title = name ? `${dirty ? '*' : ''}${name} — ${baseTitle}` : baseTitle
+    void getCurrentWindow().setTitle(title).catch(() => {})
+  })
 
   onMount(() => {
     window.addEventListener('keydown', handleOverlayKey, true)
     window.addEventListener('keydown', paletteKey)
-    window.addEventListener('contextmenu', blockNativeMenu, true)
     window.addEventListener('mousedown', blockMouseNav)
     window.addEventListener('mouseup', mouseNav)
     void bootstrap()
@@ -167,7 +170,6 @@ import { app, bootstrap, closeActiveTab, confirmDiscard, cycleTabs, jumpGameHere
     return () => {
       window.removeEventListener('keydown', handleOverlayKey, true)
       window.removeEventListener('keydown', paletteKey)
-      window.removeEventListener('contextmenu', blockNativeMenu, true)
       window.removeEventListener('mousedown', blockMouseNav)
       window.removeEventListener('mouseup', mouseNav)
       unlisten?.()
@@ -189,6 +191,7 @@ import { app, bootstrap, closeActiveTab, confirmDiscard, cycleTabs, jumpGameHere
     {/if}
   </div>
   <StatusBar />
+  <Toasts />
   <CommandPalette />
   <BranchPicker />
   <RenameDialog />

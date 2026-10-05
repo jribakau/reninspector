@@ -127,7 +127,13 @@
       <button class="mini" onclick={accept} disabled={saving || loading || !result}>Accept</button>
     </span>
   </div>
-  {#if errorMsg}<div class="banner-err">{errorMsg}</div>{/if}
+  {#if errorMsg}
+    <div class="alert err" role="alert">
+      <Icon name="error" size={14} />
+      <span class="msg">{errorMsg}</span>
+      <button type="button" class="sm" onclick={() => void load()}>Retry</button>
+    </div>
+  {/if}
   <div class="host" bind:this={host}></div>
 </div>
 

@@ -111,6 +111,10 @@
   }
   button.on {
     color: var(--text);
+    background: var(--sel);
+  }
+  button:active:not(:disabled) {
+    background: var(--active);
   }
   button.on::before {
     content: '';

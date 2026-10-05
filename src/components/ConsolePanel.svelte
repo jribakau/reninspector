@@ -2,7 +2,8 @@
   import { onMount } from 'svelte'
   import { api, errorText } from '../lib/api'
   import { copyText, openContextMenu, placeItems } from '../lib/context.svelte'
-  import { goTo } from '../lib/store.svelte'
+  import { goTo, runGame } from '../lib/store.svelte'
+  import EmptyState from './EmptyState.svelte'
   import type { LogLine } from '../lib/types'
 
   let lines = $state<LogLine[]>([])
@@ -53,7 +54,9 @@
   </div>
   {#if err}<div class="sb-foot">{err}</div>{/if}
   <div class="sb-list" bind:this={box} onscroll={onScroll}>
-    {#if !shown.length && !err}<div class="sb-empty">No log output yet. Run the game to fill log.txt.</div>{/if}
+    {#if !shown.length && !err}
+      <EmptyState icon="history" title="No log output" hint="Run the game to fill log.txt." action="Run game" onaction={() => void runGame()} />
+    {/if}
     {#each shown as line, i (`${line.source}:${i}`)}
       {#if line.path && line.line}
         <div

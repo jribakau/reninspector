@@ -364,12 +364,12 @@
   }
   .tab .x:hover { background: var(--active); }
   .x .dot, .x .glyph { display: none; }
-  .x.dirty .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+  .x.dirty .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--warning); }
+  .tab .x.dirty { width: auto; min-width: 20px; gap: 2px; padding: 0 3px; }
   .tab .x .glyph { opacity: 0; display: inline-grid; }
   .tab:hover .x .glyph, .tab.on .x .glyph, .x:focus-visible .glyph { opacity: 1; }
   .x.dirty .glyph { display: none; }
   .tab:hover .x.dirty .glyph, .x.dirty:focus-visible .glyph { display: inline-grid; }
-  .tab:hover .x.dirty .dot, .x.dirty:focus-visible .dot { display: none; }
   .tab.on {
     color: var(--text);
     background: var(--bg-code);

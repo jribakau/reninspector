@@ -193,7 +193,6 @@ pub fn run() {
             live::live_set_watch,
             live::live_shots,
             live::live_shot,
-            ide::open_sample,
             ide::diagnostic_bundle,
         ])
         .build(tauri::generate_context!())

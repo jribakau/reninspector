@@ -79,12 +79,19 @@
     border-radius: var(--r-md);
   }
   .win:hover:not(:disabled) {
-    background: var(--active);
+    background: var(--hover);
     border-color: transparent;
     color: var(--text);
+  }
+  .win:active:not(:disabled) {
+    background: var(--active);
   }
   .win.close:hover:not(:disabled) {
     background: var(--error);
     color: var(--on-error);
+  }
+  .win.close:active:not(:disabled) {
+    background: var(--error);
+    filter: brightness(0.9);
   }
 </style>

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick, type Snippet } from 'svelte'
+  import { fade } from 'svelte/transition'
   import { dismissTransient, pushOverlay } from '../lib/overlay.svelte'
   import Icon from './Icon.svelte'
 
@@ -22,13 +23,21 @@
   const sizeClass = $derived(size !== 'normal' ? size : wide ? 'wide' : '')
   let sheet: HTMLDivElement | undefined = $state()
   const titleId = `modal-title-${Math.random().toString(36).slice(2, 8)}`
+  const motion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 140
+  // The overlay handler is registered once, so it reads this instead of the prop from mount time.
+  let dismissBlocked = false
+  $effect(() => {
+    dismissBlocked = busy
+  })
 
   onMount(() => {
     dismissTransient()
     const pop = pushOverlay({
       kind: 'modal',
       el: () => sheet ?? null,
-      onEscape: onclose,
+      onEscape: () => {
+        if (!dismissBlocked) onclose()
+      },
     })
     void tick().then(() => {
       const first =
@@ -42,7 +51,7 @@
 
 </script>
 
-<div class="modal">
+<div class="modal" transition:fade|global={{ duration: motion }}>
   <button type="button" class="backdrop" aria-label="Close dialog" disabled={busy} onclick={onclose}></button>
   <div class="sheet {sizeClass}" bind:this={sheet} role="dialog" aria-modal="true" aria-labelledby={titleId}>
     <header class="dialog-head">
@@ -70,7 +79,6 @@
     place-items: center;
     z-index: var(--z-modal);
     padding: var(--sp-6);
-    animation: fade-in var(--dur) var(--ease);
   }
   .backdrop {
     position: absolute;

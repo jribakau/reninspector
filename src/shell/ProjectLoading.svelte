@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from '../components/Icon.svelte'
   import { app } from '../lib/store.svelte'
 
   const name = $derived.by(() => {
@@ -11,6 +12,7 @@
 
 <div class="veil" role="status" aria-live="polite" aria-busy="true" aria-label={`Opening ${name}`}>
   <div class="card">
+    <div class="mark" aria-hidden="true"><Icon name="map" size={22} /></div>
     <p class="name" title={app.opening ?? ''}>{name}</p>
     <p class="status">{app.busy || 'Opening project…'}</p>
     <div class="track" aria-hidden="true"><span></span></div>
@@ -25,14 +27,26 @@
     display: grid;
     place-items: center;
     background: var(--bg);
-    animation: fade 120ms ease-out;
+    animation: fade var(--dur) var(--ease);
   }
 
   .card {
     display: grid;
     justify-items: center;
-    gap: 6px;
+    gap: var(--sp-2);
     min-width: 220px;
+  }
+
+  .mark {
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    margin-bottom: var(--sp-2);
+    border-radius: var(--r-lg);
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 16%, var(--panel));
+    border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
   }
 
   .name {
@@ -55,7 +69,7 @@
   .track {
     width: 160px;
     height: 2px;
-    margin-top: 8px;
+    margin-top: var(--sp-3);
     border-radius: var(--r-pill);
     background: var(--line);
     overflow: hidden;
@@ -66,7 +80,7 @@
     width: 40%;
     height: 100%;
     background: var(--accent);
-    animation: slide 1.1s ease-in-out infinite;
+    animation: slide 1.1s var(--ease) infinite;
   }
 
   @keyframes fade {

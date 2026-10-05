@@ -16,6 +16,7 @@ import { bracketMatching, codeFolding, foldCode, foldGutter, foldKeymap, foldSer
     rectangularSelection,
   } from '@codemirror/view'
   import { api, readAsset, readFileText, readPreview, errorText } from '../lib/api'
+  import Icon from './Icon.svelte'
   import { askText } from '../lib/dialog.svelte'
   import { keymapExtension, keymapNow, setKeymapSave } from '../lib/editor/keymaps'
 import { colorSwatches, isImagePath, quotedStringAt } from '../lib/editor/swatch'
@@ -28,7 +29,10 @@ import { editorTheme } from '../lib/editor/theme'
   import { gitChangeExtensions, setIndex } from '../lib/editor/gitGutter'
   import { docText, docTip } from '../lib/editor/hoverDocs'
   import { renpyComplete } from '../lib/editor/complete'
-  import { followWord, preferHere, symbolHere, wordAt, type WordActions } from '../lib/editor/wordNav'
+  import { ctrlHeld, ctrlLink } from '../lib/editor/ctrlLink'
+import { editorMenu, placeCaret } from '../lib/editor/editMenu'
+import { openContextMenu } from '../lib/context.svelte'
+import { followWord, preferHere, symbolHere, wordAt, type WordActions } from '../lib/editor/wordNav'
   import { onDictionaryChange, setSpelling, spellSupport } from '../lib/editor/spell'
   import { git } from '../lib/git.svelte'
   import { docNow, loadDocs } from '../lib/docs/reference'
@@ -89,6 +93,7 @@ import { app, fileInfo, fileOfNode, lookupSymbol, nodeByName, openDiff, register
   let loadedFile = $state<string | null>(null)
   let loading = $state(false)
   let errorMsg = $state('')
+  let errorFile = $state('')
   let lineCount = $state(0)
   let reqToken = 0
   let lastLoc: Loc | null = null
@@ -274,7 +279,12 @@ import { app, fileInfo, fileOfNode, lookupSymbol, nodeByName, openDiff, register
         foldService.of(renpyFold),
         swatchComp.of(swatchExt()),
         inlayComp.of(inlayExt()),
+        ctrlLink(() => ({
+          actions: wordActions(),
+          references: (kind, name) => api.findReferences(kind, name),
+        })),
         hoverTooltip(async (view, pos) => {
+          if (ctrlHeld()) return null
           await loadDocs()
           const found = wordAt(view.state, pos)
           const line = view.state.doc.lineAt(pos)
@@ -362,6 +372,21 @@ import { app, fileInfo, fileOfNode, lookupSymbol, nodeByName, openDiff, register
             })
             return true
           },
+          contextmenu(event, view) {
+            const pos = view.posAtCoords({ x: event.clientX, y: event.clientY })
+            placeCaret(view, pos)
+            openContextMenu(
+              event,
+              editorMenu(view, {
+                goto: () => ctx.goto(view),
+                refs: () => ctx.refs(view),
+                rename: () => ctx.rename(view),
+                find: () => openSearchPanel(view),
+                comment: () => toggleComment(view),
+              }),
+            )
+            return true
+          },
         }),
         ...(script ? [renpyLanguage, renpyHighlight] : []),
         themeComp.of(editorTheme(!appearance.light)),
@@ -440,6 +465,7 @@ import { app, fileInfo, fileOfNode, lookupSymbol, nodeByName, openDiff, register
     const token = ++reqToken
     loading = true
     errorMsg = ''
+    errorFile = ''
     try {
       const indexed = !!fileInfo(file)
       const raw = indexed ? await readFileText(file) : decodePreview(await readPreview(file))
@@ -458,7 +484,10 @@ import { app, fileInfo, fileOfNode, lookupSymbol, nodeByName, openDiff, register
       scheduleSpell()
       return true
     } catch (e) {
-      if (token === reqToken) errorMsg = errorText(e)
+      if (token === reqToken) {
+        errorMsg = errorText(e)
+        errorFile = file
+      }
       return false
     } finally {
       if (token === reqToken) loading = false
@@ -849,7 +878,13 @@ import { app, fileInfo, fileOfNode, lookupSymbol, nodeByName, openDiff, register
     {/if}
     {#if loading}<span class="dim">loading…</span>{/if}
   </div>
-  {#if errorMsg}<div class="banner-err">{errorMsg}</div>{/if}
+  {#if errorMsg}
+    <div class="alert err" role="alert">
+      <Icon name="error" size={14} />
+      <span class="msg">{errorMsg}</span>
+      {#if errorFile}<button type="button" class="sm" onclick={() => void load(errorFile)}>Retry</button>{/if}
+    </div>
+  {/if}
   <div class="host" class:off={!loadedFile} bind:this={host}></div>
   {#if !loadedFile && !loading}
     <div class="empty">Open a script from the explorer, or press Ctrl+P.</div>
@@ -980,8 +1015,13 @@ import { app, fileInfo, fileOfNode, lookupSymbol, nodeByName, openDiff, register
     max-height: 140px;
     margin-top: 6px;
   }
-  :global(.cm-spell) {
+  :global(.cm-spell),
+  :global(.cm-diag-error) {
     text-decoration: underline wavy var(--error);
+    text-underline-offset: 3px;
+  }
+  :global(.cm-diag-warning) {
+    text-decoration: underline wavy var(--warning);
     text-underline-offset: 3px;
   }
   :global(.spell-tip) {

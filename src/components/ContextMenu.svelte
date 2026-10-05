@@ -99,6 +99,7 @@
   }
   .ctx :global(.menu-item:focus-visible) {
     background: var(--sel);
-    outline: none;
+    outline: 2px solid var(--focus-ring);
+    outline-offset: -2px;
   }
 </style>

@@ -12,10 +12,6 @@ Windows builds are attached to [releases](https://github.com/jribakau/reninspect
 
 The files are not code-signed, so Windows SmartScreen may warn the first time. Choose "More info", then "Run anyway".
 
-The welcome screen has **Open the demo**, a small game with a broken jump, an undefined image and an undefined speaker, so the project map and the Problems list have something to show without a Ren'Py SDK. It launches.
-
-The demo is copied to the app's data folder the first time and is not overwritten afterwards, so your edits to it stay. Delete the `sample` folder there to get a fresh copy.
-
 Help → **Copy diagnostic bundle** copies the app version, the system, and the open project's recent log lines. Nothing is sent anywhere. Your home folder is shown as `~`, but log lines can still contain other folder names, so read the text before posting it publicly.
 
 Help → **Check for updates** asks before it installs a newer release, saves your open files, and then closes the app while the installer runs. It only finds published releases, not drafts or pre-releases. Updates install the `.msi` version, so a copy run from the zip is not updated in place.

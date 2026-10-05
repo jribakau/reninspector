@@ -3,6 +3,7 @@ import { impactSummary, reloadEditor } from './edit.svelte'
 import { app } from './model.svelte'
 import { pullEditStatus, reloadAll } from './reload.svelte'
 import { stageScriptsReloaded } from './stage.svelte'
+import { notify } from './toast.svelte'
 import type { SceneReport, StmtSpec } from './types'
 
 export interface SceneChange {
@@ -50,7 +51,7 @@ async function afterWrite(report: SceneReport, verb: string, open: boolean) {
       app.error = errorText(e)
     }
   }
-  app.notice = `${verb} ${report.path}. ${impactSummary(report.impact)}${extra}`
+  notify(`${verb} ${report.path}. ${impactSummary(report.impact)}${extra}`, 'ok')
 }
 
 /** Write one scene change into a script and refresh the project. */

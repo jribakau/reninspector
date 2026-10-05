@@ -6,6 +6,7 @@ import { fileInfo } from './indexes.svelte'
 import { app, editorTabId, type EditorTab } from './model.svelte'
 import { closeEditor, goTo, replaceTabs } from './nav.svelte'
 import { reloadAll } from './reload.svelte'
+import { notify } from './toast.svelte'
 import { baseName, isScriptName, isUnder, joinPath, tabFate, type TabFate } from './treepaths'
 
 /** The `game/` folder as a path inside the project, or '' when the project folder is the game folder. */
@@ -50,7 +51,7 @@ export function toTreePath(path: string): string {
 async function afterTreeChange(notice: string) {
   const info = await api.projectInfo()
   if (info) await reloadAll(info)
-  app.notice = notice
+  notify(notice, 'ok')
 }
 
 async function run(busy: string, work: () => Promise<void>): Promise<string | null> {

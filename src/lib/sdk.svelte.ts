@@ -1,6 +1,7 @@
 import { api, errorText, pickFolder, pickLauncher, pickSdk } from './api'
 import { ask } from './dialog.svelte'
 import { app } from './model.svelte'
+import { notify } from './toast.svelte'
 import type { ProjectInfo } from './types'
 
 export interface SdkInfo {
@@ -267,7 +268,7 @@ export async function chooseCustomLauncher() {
   const path = await pickLauncher()
   if (!path || !app.info) return
   await setProjectEngine(`custom:${path}`)
-  app.notice = `Launcher set to ${path}`
+  notify(`Launcher set to ${path}`, 'ok')
 }
 
 export async function installVersion(version: string): Promise<SdkInfo> {
@@ -277,9 +278,12 @@ export async function installVersion(version: string): Promise<SdkInfo> {
   try {
     const info = await api.sdkInstall(version)
     await refreshSdks()
-    app.notice = info.unverified
-      ? `Installed Ren'Py ${info.version ?? version}. This release had no published checksum.`
-      : `Installed Ren'Py ${info.version ?? version}.`
+    notify(
+      info.unverified
+        ? `Installed Ren'Py ${info.version ?? version}. This release had no published checksum.`
+        : `Installed Ren'Py ${info.version ?? version}.`,
+      info.unverified ? 'warn' : 'ok',
+    )
     if (app.info && sdk.kind === 'missing') await setProjectEngine(`sdk:${info.path}`)
     return info
   } finally {
@@ -297,7 +301,7 @@ export async function installWeb(path: string) {
   try {
     await api.sdkInstallWeb(path)
     await refreshSdks()
-    app.notice = `Web support is installed for Ren'Py ${version}.`
+    notify(`Web support is installed for Ren'Py ${version}.`, 'ok')
   } finally {
     sdk.installing = false
     sdk.progress = null
@@ -312,7 +316,7 @@ export async function changeSdkFolder() {
   const folder = await pickFolder("Folder for downloaded Ren'Py SDKs")
   if (!folder) return
   applyList(await api.sdkSetFolder(folder))
-  app.notice = `SDKs are kept in ${folder}`
+  notify(`SDKs are kept in ${folder}`, 'ok')
 }
 
 export async function addExistingSdk() {
@@ -320,7 +324,7 @@ export async function addExistingSdk() {
   if (!path) return
   const info = await api.sdkAdd(path)
   await refreshSdks()
-  app.notice = `Added Ren'Py ${info.version ?? info.path}`
+  notify(`Added Ren'Py ${info.version ?? info.path}`, 'ok')
 }
 
 export async function removeSdk(item: SdkInfo) {

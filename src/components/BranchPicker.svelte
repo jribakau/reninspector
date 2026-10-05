@@ -3,6 +3,7 @@
   import { api, errorText } from '../lib/api'
   import { askText } from '../lib/dialog.svelte'
   import { git, loadGit } from '../lib/git.svelte'
+  import { notify } from '../lib/toast.svelte'
   import { pushOverlay } from '../lib/overlay.svelte'
   import PaletteShell from './PaletteShell.svelte'
 
@@ -58,6 +59,7 @@
       await api.gitSwitch(name)
       close()
       await loadGit()
+      notify(`Switched to ${name}.`, 'ok')
     } catch (e) {
       err = errorText(e)
     }
@@ -71,6 +73,7 @@
       await api.gitCreateBranch(name)
       close()
       await loadGit()
+      notify(`Created ${name}.`, 'ok')
     } catch (e) {
       err = errorText(e)
     }

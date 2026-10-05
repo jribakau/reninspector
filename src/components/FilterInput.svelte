@@ -59,8 +59,7 @@
   }
   .filter:focus-within {
     border-color: var(--accent);
-    outline: 1px solid var(--accent);
-    outline-offset: 0;
+    box-shadow: 0 0 0 1px var(--focus-ring);
   }
   input {
     flex: 1;

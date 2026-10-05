@@ -1,4 +1,5 @@
 <script lang="ts">
+  import EmptyState from './EmptyState.svelte'
   import FilterInput from './FilterInput.svelte'
   import { ROW } from '../lib/view'
   import { api, errorText, readFileText } from '../lib/api'
@@ -231,9 +232,9 @@
         <div class="skeleton"></div>
       </div>
     {:else if query.trim().length === 1 && !useRegex}
-      <div class="sb-empty">Type at least two characters.</div>
+      <EmptyState icon="search" title="Keep typing" hint="Type at least two characters." />
     {:else if query.trim().length >= 2 && shown.length === 0 && !err}
-      <div class="sb-empty">No matches.</div>
+      <EmptyState icon="search" title="No matches" hint="Nothing in the project contains that text." action="Clear search" onaction={() => (query = '')} />
     {:else}
     <VirtualList items={rows} rowHeight={replaceOpen ? ROW.xl : ROW.md} itemKey={(r) => (r.kind === 'file' ? `f:${r.path}` : `${r.hit.path}:${r.hit.line}:${r.hit.text}`)}>
       {#snippet row(r)}

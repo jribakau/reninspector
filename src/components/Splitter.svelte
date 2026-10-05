@@ -29,6 +29,7 @@
   }: Props = $props()
 
   let el: HTMLDivElement | undefined = $state()
+  let dragging = $state(false)
 
   function limit(next: number): number {
     const parent = el?.parentElement
@@ -50,6 +51,7 @@
     const target = e.currentTarget
     if (!(target instanceof HTMLElement)) return
     target.setPointerCapture(e.pointerId)
+    dragging = true
     const start = axis === 'x' ? e.clientX : e.clientY
     const base = value
     const move = (ev: PointerEvent) => {
@@ -57,6 +59,7 @@
       apply(base + grow * delta)
     }
     const up = (ev: PointerEvent) => {
+      dragging = false
       if (target.hasPointerCapture(ev.pointerId)) target.releasePointerCapture(ev.pointerId)
       target.removeEventListener('pointermove', move)
       target.removeEventListener('pointerup', up)
@@ -105,6 +108,7 @@
   bind:this={el}
   class="split"
   class:h={axis === 'y'}
+  class:dragging
   role="separator"
   aria-orientation={axis === 'x' ? 'vertical' : 'horizontal'}
   aria-valuemin={min}
@@ -118,6 +122,7 @@
 
 <style>
   .split {
+    position: relative;
     flex: none;
     width: 5px;
     margin: 0 -2px;
@@ -130,8 +135,35 @@
     margin: -2px 0;
     cursor: row-resize;
   }
-  .split:hover,
-  .split:focus-visible {
-    background: color-mix(in srgb, var(--accent) 50%, transparent);
+  .split::before {
+    content: '';
+    position: absolute;
+    background: color-mix(in srgb, var(--line) 85%, var(--text));
+    transition: background var(--dur-fast) var(--ease), width var(--dur-fast) var(--ease), height var(--dur-fast) var(--ease);
+  }
+  .split:not(.h)::before {
+    left: 2px;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+  }
+  .split.h::before {
+    top: 2px;
+    left: 0;
+    right: 0;
+    height: 1px;
+  }
+  .split:hover::before,
+  .split:focus-visible::before,
+  .split.dragging::before {
+    background: var(--accent);
+  }
+  .split.dragging:not(.h)::before {
+    width: 3px;
+    left: 1px;
+  }
+  .split.h.dragging::before {
+    height: 3px;
+    top: 1px;
   }
 </style>

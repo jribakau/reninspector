@@ -7,10 +7,11 @@
     <span class="setting-name">ty {py.version || '0.0.84'}</span>
     <p class="setting-desc">
       {#if py.status === 'installing'}
-        {py.progress?.label || 'Downloading…'}
-        {#if py.progress && py.progress.total > 0}
-          ({Math.min(100, Math.round((py.progress.done / py.progress.total) * 100))}%)
-        {/if}
+        {@const percent = py.progress && py.progress.total > 0 ? Math.min(100, Math.round((py.progress.done / py.progress.total) * 100)) : null}
+        {py.progress?.label || 'Downloading…'}{percent !== null ? ` · ${percent}%` : ''}
+        <span class="meter" role="progressbar" aria-valuenow={percent ?? 0} aria-valuemin="0" aria-valuemax="100">
+          <span style={`width:${percent ?? 15}%`}></span>
+        </span>
       {:else if py.status === 'missing'}
         Not installed. Turning the language server on downloads it into this app's data folder.
       {:else if py.status === 'ready'}
@@ -42,5 +43,9 @@
     align-items: center;
     gap: var(--sp-3);
     justify-content: flex-end;
+  }
+  .meter {
+    display: block;
+    margin-top: var(--sp-2);
   }
 </style>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
   import FilterInput from './FilterInput.svelte'
   import { ROW } from '../lib/view'
@@ -116,9 +117,20 @@
         {/snippet}
       </VirtualList>
     {:else if !(app.diag?.items.length)}
-      <div class="sb-empty">No problems.</div>
+      <EmptyState tone="ok" icon="check" title="No problems" hint="Errors and warnings from the project show up here." />
     {:else}
-      <div class="sb-empty">No problems match these filters.{#if hiddenInfos} Info messages are hidden.{/if}</div>
+      <EmptyState
+        icon="filter"
+        title="No problems match"
+        hint={hiddenInfos ? 'Info messages are hidden.' : 'Try a different filter.'}
+        action="Show all"
+        onaction={() => {
+          problemUi.filter = ''
+          problemUi.error = true
+          problemUi.warning = true
+          problemUi.info = true
+        }}
+      />
     {/if}
   </div>
   {#if (app.diag?.truncated ?? 0) > 0}

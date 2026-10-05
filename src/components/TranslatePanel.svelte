@@ -4,6 +4,7 @@
   import { api, errorText } from '../lib/api'
   import { openContextMenu, placeItems } from '../lib/context.svelte'
   import { app, goTo } from '../lib/store.svelte'
+  import { notify } from '../lib/toast.svelte'
   import type { TranslationEntry } from '../lib/types'
   import VirtualList from './VirtualList.svelte'
 
@@ -61,7 +62,7 @@
       await api.updateTranslation(row.path, row.line, text)
       row.translated = text
       rows = [...rows]
-      app.notice = `Updated ${row.path}:${row.line}`
+      notify(`Updated ${row.path}:${row.line}`, 'ok')
     } catch (e) {
       err = errorText(e)
     } finally {

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
   import { api, errorText } from '../lib/api'
   import { copyText, openContextMenu, type MenuEntry } from '../lib/context.svelte'
@@ -8,6 +9,7 @@
   import { filesUnder, treeOf, type GitFolder } from '../lib/git-tree'
   import { setSetting, settings } from '../lib/settings.svelte'
   import { app, goTo, openDiff, revealInExplorer } from '../lib/store.svelte'
+  import { notify } from '../lib/toast.svelte'
   import type { GitChange, GitCommit, GitCommitFile } from '../lib/types'
 
   let commits = $state<GitCommit[]>([])
@@ -15,7 +17,6 @@
   let commitFiles = $state<GitCommitFile[]>([])
   let timeline = $state<GitCommit[]>([])
   let actionErr = $state('')
-  let ok = $state('')
   let message = $state('')
   let busy = $state(false)
   let stagedOpen = $state(true)
@@ -168,14 +169,18 @@
     return text.split('\n').map((line) => line.trim()).find(Boolean) ?? 'Done.'
   }
 
-  async function run(work: () => Promise<void>) {
+  function filesNote(verb: string, count: number): string {
+    return `${verb} ${count} file${count === 1 ? '' : 's'}.`
+  }
+
+  async function run(work: () => Promise<string | void>) {
     busy = true
     actionErr = ''
-    ok = ''
     menu = null
     try {
-      await work()
+      const note = await work()
       await loadGit()
+      if (note) notify(note, 'ok')
     } catch (e) {
       actionErr = errorText(e)
     } finally {
@@ -186,7 +191,7 @@
   async function initRepo() {
     await run(async () => {
       await api.gitInit()
-      ok = 'Repository initialized.'
+      return 'Repository initialized.'
     })
   }
 
@@ -199,7 +204,7 @@
     await run(async () => {
       const result = await api.gitCommit(text, amend)
       message = ''
-      ok = firstLine(result)
+      return firstLine(result)
     })
   }
 
@@ -210,7 +215,7 @@
       await api.gitCommit(text, false)
       message = ''
       await api.gitPush()
-      ok = 'Committed and pushed.'
+      return 'Committed and pushed.'
     })
   }
 
@@ -222,7 +227,7 @@
     await run(async () => {
       const subject = await api.gitUndoCommit()
       if (!message.trim()) message = subject
-      ok = 'Undid the last commit.'
+      return 'Undid the last commit.'
     })
   }
 
@@ -231,13 +236,12 @@
     const ahead = status?.ahead ?? 0
     if (behind > 0 && ahead > 0) {
       actionErr = 'Your branch and the remote have both changed. Pull with merge or rebase in a terminal.'
-      ok = ''
       return
     }
     await run(async () => {
       if (behind) await api.gitPull()
       if (ahead) await api.gitPush()
-      ok = 'Synced.'
+      return 'Synced.'
     })
   }
 
@@ -246,7 +250,7 @@
     if (!url) return
     await run(async () => {
       await api.gitAddRemote(url)
-      ok = 'Added origin.'
+      return 'Added origin.'
     })
   }
 
@@ -264,6 +268,7 @@
       await api.gitDiscard(path)
       const script = gameScript(path)
       if (script) reloadEditor(script)
+      return `Discarded changes to ${name}.`
     })
   }
 
@@ -277,6 +282,7 @@
         const script = gameScript(change.path)
         if (script) reloadEditor(script)
       }
+      return filesNote('Discarded changes to', unstagedOnly.length)
     })
   }
 
@@ -315,11 +321,18 @@
         kind: 'item',
         label: c.staged ? 'Unstage changes' : 'Stage changes',
         enabled: !busy,
-        run: () => void run(() => (c.staged ? api.gitUnstage([c.path]) : api.gitStage([c.path]))),
+        run: () => void run(async () => {
+          if (c.staged) {
+            await api.gitUnstage([c.path])
+            return 'Unstaged changes.'
+          }
+          await api.gitStage([c.path])
+          return 'Staged changes.'
+        }),
       },
       { kind: 'item', label: 'Discard changes', enabled: !busy && !c.staged, run: () => void discard(c.path) },
       // Ignoring a file git already tracks changes nothing, so only new files offer it.
-      { kind: 'item', label: 'Add to .gitignore', enabled: !busy && c.status === '?', run: () => void run(() => api.gitIgnore(c.path)) },
+      { kind: 'item', label: 'Add to .gitignore', enabled: !busy && c.status === '?', run: () => void run(async () => { await api.gitIgnore(c.path); return 'Added to .gitignore.' }) },
       { kind: 'item', label: 'Copy path', run: () => copyText(c.path) },
     ]
   }
@@ -343,9 +356,9 @@
       </button>
       {#if menu === 'more'}
         <div class="pop menu" role="menu" tabindex="-1" onpointerdown={(e) => e.stopPropagation()}>
-          <button role="menuitem" class="menu-item" disabled={!status?.hasRemote} onclick={() => void run(async () => { ok = firstLine(await api.gitPull()) })}>Pull</button>
-          <button role="menuitem" class="menu-item" disabled={!status?.hasRemote} onclick={() => void run(async () => { ok = firstLine(await api.gitPush()) })}>Push</button>
-          <button role="menuitem" class="menu-item" disabled={!status?.hasRemote} onclick={() => void run(async () => { ok = firstLine(await api.gitFetch() || 'Fetched.') })}>Fetch</button>
+          <button role="menuitem" class="menu-item" disabled={!status?.hasRemote} onclick={() => void run(async () => firstLine(await api.gitPull()))}>Pull</button>
+          <button role="menuitem" class="menu-item" disabled={!status?.hasRemote} onclick={() => void run(async () => firstLine(await api.gitPush()))}>Push</button>
+          <button role="menuitem" class="menu-item" disabled={!status?.hasRemote} onclick={() => void run(async () => firstLine(await api.gitFetch() || 'Fetched.'))}>Fetch</button>
           <button role="menuitem" class="menu-item" onclick={() => void addRemote()}>Add remote…</button>
           <button role="menuitem" class="menu-item" onclick={() => void undoCommit()}>Undo last commit</button>
         </div>
@@ -354,10 +367,7 @@
   </div>
 
   {#if notRepo}
-    <div class="empty-repo">
-      <p>This folder is not a Git repository.</p>
-      <button class="primary" onclick={initRepo} disabled={busy}>Initialize Repository</button>
-    </div>
+    <EmptyState icon="branch" title="Not a Git repository" hint="Initialize one to track changes in this project." action="Initialize repository" onaction={() => void initRepo()} />
   {:else}
     {#if outside.length}
       <div class="banner">
@@ -368,7 +378,7 @@
       <div class="banner">
         <p>Compiled .rpyc files and saves will show up as changes.</p>
         <div class="banner-actions">
-          <button disabled={busy} onclick={() => void run(async () => { await api.gitWriteIgnore(); ok = "Added a Ren'Py .gitignore." })}>Add Ren'Py .gitignore</button>
+          <button disabled={busy} onclick={() => void run(async () => { await api.gitWriteIgnore(); return "Added a Ren'Py .gitignore." })}>Add Ren'Py .gitignore</button>
           <button onclick={() => (ignoreDismissed = true)}>Dismiss</button>
         </div>
       </div>
@@ -406,28 +416,32 @@
       </div>
     </div>
     {#if status?.hasRemote && !status.upstream}
-      <button class="sync-btn" disabled={busy} onclick={() => void run(async () => { ok = firstLine(await api.gitPush() || 'Published branch.') })}>Publish Branch</button>
+      <button class="sync-btn" disabled={busy} onclick={() => void run(async () => firstLine(await api.gitPush() || 'Published branch.'))}>Publish Branch</button>
     {:else if status && (status.ahead > 0 || status.behind > 0)}
       <button class="sync-btn" disabled={busy} onclick={() => void sync()}>
         Sync Changes{#if status.behind}<span class="sync-n"><Icon name="arrow-down" size={11} />{status.behind}</span>{/if}{#if status.ahead}<span class="sync-n"><Icon name="arrow-up" size={11} />{status.ahead}</span>{/if}
       </button>
     {/if}
     {#if shownErr}<div class="sb-foot note">{shownErr}</div>{/if}
-    {#if ok}<div class="sb-foot good">{ok}</div>{/if}
 
     <div class="sb-list git">
       {#if !status && !git.err}
-        <div class="sb-empty">Reading git status…</div>
+        <div class="sb-empty" role="status">
+          Reading git status…
+          <div class="skeleton"></div>
+          <div class="skeleton"></div>
+          <div class="skeleton"></div>
+        </div>
       {/if}
 
       {#if staged.length}
         <div class="section">
-          <button class="section-toggle" onclick={() => (stagedOpen = !stagedOpen)}>
+          <button class="sb-section section-toggle" onclick={() => (stagedOpen = !stagedOpen)}>
             <span class="twist" class:open={stagedOpen} aria-hidden="true"><Icon name="chevron-right" size={12} /></span>
             <span>Staged Changes</span>
             <span class="count">{staged.length}</span>
           </button>
-          <button class="icon" title="Unstage all changes" aria-label="Unstage all changes" disabled={busy} onclick={() => void run(() => api.gitUnstage(staged.map((c) => c.path)))}>
+          <button class="icon" title="Unstage all changes" aria-label="Unstage all changes" disabled={busy} onclick={() => void run(async () => { const n = staged.length; await api.gitUnstage(staged.map((c) => c.path)); return filesNote('Unstaged', n) })}>
             <Icon name="minus" size={14} />
           </button>
         </div>
@@ -447,13 +461,13 @@
 
       {#if status && (unstaged.length || !staged.length)}
         <div class="section">
-          <button class="section-toggle" onclick={() => (changesOpen = !changesOpen)}>
+          <button class="sb-section section-toggle" onclick={() => (changesOpen = !changesOpen)}>
             <span class="twist" class:open={changesOpen} aria-hidden="true"><Icon name="chevron-right" size={12} /></span>
             <span>Changes</span>
             <span class="count">{unstaged.length}</span>
           </button>
           {#if unstaged.length}
-            <button class="icon" title="Stage all changes" aria-label="Stage all changes" disabled={busy} onclick={() => void run(() => api.gitStage(unstaged.map((c) => c.path)))}>
+            <button class="icon" title="Stage all changes" aria-label="Stage all changes" disabled={busy} onclick={() => void run(async () => { const n = unstaged.length; await api.gitStage(unstaged.map((c) => c.path)); return filesNote('Staged', n) })}>
               <Icon name="plus" size={14} />
             </button>
           {/if}
@@ -471,13 +485,13 @@
               <button class="more" onclick={() => (changesShown += ROW_STEP)}>Show {Math.min(ROW_STEP, unstaged.length - changesShown)} more of {unstaged.length - changesShown}</button>
             {/if}
           {:else if !staged.length}
-            <div class="sb-empty">No changes.</div>
+            <EmptyState tone="ok" icon="check" title="No changes" hint="The working tree matches the last commit." />
           {/if}
         {/if}
       {/if}
 
       <div class="section" bind:this={timelineEl}>
-        <button class="section-toggle" onclick={() => (timelineOpen = !timelineOpen)}>
+        <button class="sb-section section-toggle" onclick={() => (timelineOpen = !timelineOpen)}>
           <span class="twist" class:open={timelineOpen} aria-hidden="true"><Icon name="chevron-right" size={12} /></span>
           <span>Timeline{timelineName ? ` · ${timelineName}` : ''}</span>
           <span class="count">{timeline.length}</span>
@@ -502,7 +516,7 @@
 
       {#if commits.length}
         <div class="section">
-          <button class="section-toggle" onclick={() => (historyOpen = !historyOpen)}>
+          <button class="sb-section section-toggle" onclick={() => (historyOpen = !historyOpen)}>
             <span class="twist" class:open={historyOpen} aria-hidden="true"><Icon name="chevron-right" size={12} /></span>
             <span>Commits</span>
             <span class="count">{commits.length}</span>
@@ -549,14 +563,14 @@
       </button>
       <span class="actions">
         {#if isStaged}
-          <button class="icon" title="Unstage all changes" aria-label="Unstage all changes" disabled={busy} onclick={() => void run(() => api.gitUnstage(under.map((c) => c.path)))}>
+          <button class="icon" title="Unstage all changes" aria-label="Unstage all changes" disabled={busy} onclick={() => void run(async () => { await api.gitUnstage(under.map((c) => c.path)); return filesNote('Unstaged', under.length) })}>
             <Icon name="minus" size={14} />
           </button>
         {:else}
           <button class="icon" title="Discard all changes" aria-label="Discard all changes" disabled={busy} onclick={() => void discardMany(under)}>
             <Icon name="undo" size={14} />
           </button>
-          <button class="icon" title="Stage all changes" aria-label="Stage all changes" disabled={busy} onclick={() => void run(() => api.gitStage(under.map((c) => c.path)))}>
+          <button class="icon" title="Stage all changes" aria-label="Stage all changes" disabled={busy} onclick={() => void run(async () => { await api.gitStage(under.map((c) => c.path)); return filesNote('Staged', under.length) })}>
             <Icon name="plus" size={14} />
           </button>
         {/if}
@@ -589,11 +603,11 @@
         </button>
       {/if}
       {#if isStaged}
-        <button class="icon" title="Unstage changes" aria-label="Unstage changes" disabled={busy} onclick={() => void run(() => api.gitUnstage([c.path]))}>
+        <button class="icon" title="Unstage changes" aria-label="Unstage changes" disabled={busy} onclick={() => void run(async () => { await api.gitUnstage([c.path]); return 'Unstaged changes.' })}>
           <Icon name="minus" size={14} />
         </button>
       {:else}
-        <button class="icon" title="Stage changes" aria-label="Stage changes" disabled={busy} onclick={() => void run(() => api.gitStage([c.path]))}>
+        <button class="icon" title="Stage changes" aria-label="Stage changes" disabled={busy} onclick={() => void run(async () => { await api.gitStage([c.path]); return 'Staged changes.' })}>
           <Icon name="plus" size={14} />
         </button>
       {/if}
@@ -694,22 +708,11 @@
   }
   .section-toggle {
     flex: 1;
+    width: auto;
     min-width: 0;
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    height: 24px;
-    padding: 0 4px 0 6px;
-    border: none;
-    background: transparent;
-    color: var(--dim);
-    font-size: var(--fs-sm);
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    text-align: left;
+    border-top: none;
+    height: var(--h-control);
   }
-  .section-toggle:hover { color: var(--text); }
   .count { font-weight: 600; letter-spacing: 0; text-transform: none; }
   .file { display: flex; align-items: center; min-height: 22px; padding-right: 6px; }
   .file:hover, .file:focus-within { background: var(--hover); }
@@ -754,17 +757,5 @@
   .commit-row.on, .commit-row.on:hover { background: var(--sel); }
   .commit-row.on, .commit-row.on:hover { border-left-color: var(--accent); }
   .commit-text { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
-  .empty-repo {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 14px;
-    padding: 28px 20px;
-    text-align: center;
-  }
-  .empty-repo p { margin: 0; max-width: 220px; color: var(--dim); font-size: var(--fs-lg); line-height: 1.45; }
-  .note, .good { white-space: pre-wrap; }
-  .good { color: var(--ok); }
+  .note { white-space: pre-wrap; }
 </style>

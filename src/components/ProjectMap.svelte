@@ -35,6 +35,10 @@
   let loading = $state(false)
   let progress = $state('')
   let error = $state('')
+  let attempt = $state(0)
+  /** Attempt number of the layout currently running or last started. Set when a run begins, so an in-flight layout is not restarted. */
+  let startedAttempt = -1
+  let layoutGen = $state(0)
   let pz: ReturnType<typeof PanZoom> | undefined = $state()
   let token = 0
   let shownKey = ''
@@ -48,11 +52,15 @@
     const r = root
     const f = files
     const key = mapCacheKey(r, m, md)
+    const tryNo = attempt
     // A layout already on screen stays up when the graph is unchanged. A layout
     // still running for this key is left alone, but switching back to the key on
     // screen must cancel that run or its result would replace the current one.
-    if (key === pendingKey) return
-    if (key === shownKey && pendingKey === '') return
+    // `startedAttempt` is the run that began, so a retry still in flight is not
+    // launched again. Comparing with the finished attempt missed that window.
+    if (tryNo === startedAttempt && key === pendingKey) return
+    if (tryNo === startedAttempt && key === shownKey && pendingKey === '') return
+    startedAttempt = tryNo
     pendingKey = key
     const t = ++token
     loading = true
@@ -65,6 +73,7 @@
         if (t !== token) return
         layout = l
         shownKey = key
+        layoutGen += 1
       })
       .catch((e) => {
         if (t === token) error = String(e)
@@ -453,6 +462,7 @@
       bind:this={pz}
       contentWidth={layout.width}
       contentHeight={layout.height}
+      fadeKey={layoutGen}
       {fitKey}
     >
       {#snippet children(v)}
@@ -626,7 +636,13 @@
     <div class="spinner-overlay veil" role="status"><div class="spinner"></div>{progress}</div>
   {/if}
   {#if error}
-    <div class="spinner-overlay veil err" role="alert"><Icon name="error" size={18} />Layout failed: {error}</div>
+    <div class="spinner-overlay veil" role="alert">
+      <div class="alert err card">
+        <Icon name="error" size={14} />
+        <span class="msg">Layout failed: {error}</span>
+        <button type="button" class="sm" onclick={() => (attempt += 1)}>Retry</button>
+      </div>
+    </div>
   {/if}
 </div>
 
@@ -639,10 +655,6 @@
   .veil {
     background: color-mix(in srgb, var(--bg-canvas) 70%, transparent);
     font-size: var(--fs-lg);
-  }
-  .veil.err {
-    color: var(--error);
-    flex-direction: row;
   }
   .map-empty {
     position: absolute;

@@ -22,7 +22,9 @@ let reloadTimer: ReturnType<typeof setTimeout> | null = null
 function loadRecent() {
   try {
     const list = JSON.parse(localStorage.getItem(RECENT_KEY) ?? '[]') as string[]
-    app.recent = list.slice(0, settings.maxRecent)
+    // The bundled demo was removed. Its copy in the app data folder still shows up in old lists.
+    const kept = list.filter((p) => !/reninspector[\\/]sample$/i.test(p))
+    app.recent = kept.slice(0, settings.maxRecent)
   } catch {
     app.recent = []
   }

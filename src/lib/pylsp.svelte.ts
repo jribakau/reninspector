@@ -3,6 +3,7 @@ import { api, errorText } from './api'
 import { toVirtual } from './editor/pyvirtual'
 import { app } from './model.svelte'
 import { settings } from './settings.svelte'
+import { notify as toast } from './toast.svelte'
 
 export type PyStatus = 'off' | 'missing' | 'installing' | 'starting' | 'ready' | 'failed'
 
@@ -124,6 +125,7 @@ export async function installPython(force = false) {
     await api.pylspInstall(force)
     py.installed = true
     py.progress = null
+    toast('Python language server installed.', 'ok')
     syncPython(true)
   } catch (e) {
     py.progress = null

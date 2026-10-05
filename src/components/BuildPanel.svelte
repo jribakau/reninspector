@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { buildUi, clearBuildLog, showBuildFolder, stopBuild } from '../lib/build.svelte'
+  import { buildUi, clearBuildLog, openBuildDialog, showBuildFolder, stopBuild } from '../lib/build.svelte'
+  import EmptyState from './EmptyState.svelte'
 
   let box: HTMLDivElement | undefined = $state()
   let near = $state(true)
@@ -40,7 +41,7 @@
   {/if}
   <div class="log" bind:this={box} onscroll={onScroll}>
     {#if !shown.length}
-      <div class="sb-empty">Build output shows up here.</div>
+      <EmptyState icon="archive" title="No build yet" hint="Build output shows up here." action="Build…" onaction={openBuildDialog} />
     {/if}
     {#if hidden > 0}<div class="sb-foot">{hidden} earlier lines are hidden.</div>{/if}
     {#each shown as line, i (hidden + i)}

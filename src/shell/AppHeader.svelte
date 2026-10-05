@@ -418,6 +418,9 @@
       >
         <Icon name="folder" />
         <span class="name">{app.info?.name ?? 'Open project'}</span>
+        {#if app.dirtyFiles.length}
+          <span class="dirty" title="Unsaved changes" aria-label="Unsaved changes"></span>
+        {/if}
         <span class="caret"><Icon name="caret" size={12} /></span>
       </button>
       {#if shell === 'project'}
@@ -587,13 +590,23 @@
   }
   .icon:hover:not(:disabled),
   .chip:hover:not(:disabled),
-  .run button:hover:not(:disabled),
+  .run button:hover:not(:disabled) {
+    background: var(--hover);
+    color: var(--text);
+    border-color: transparent;
+  }
   .icon.on,
   .chip.on,
   .run button.on {
-    background: var(--active);
+    background: var(--sel);
     color: var(--text);
     border-color: transparent;
+  }
+  .icon:active:not(:disabled),
+  .chip:active:not(:disabled),
+  .run button:active:not(:disabled) {
+    background: var(--active);
+    color: var(--text);
   }
   .sync {
     flex: none;
@@ -606,6 +619,13 @@
     display: inline-flex;
     align-items: center;
     gap: 1px;
+  }
+  .dirty {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--warning);
+    flex: none;
   }
   .name {
     overflow: hidden;

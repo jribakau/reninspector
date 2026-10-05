@@ -1,4 +1,5 @@
 <script lang="ts">
+  import EmptyState from './EmptyState.svelte'
   import FilterInput from './FilterInput.svelte'
   import { ROW } from '../lib/view'
   import { api, errorText } from '../lib/api'
@@ -59,9 +60,14 @@
     </VirtualList>
   </div>
   {#if !app.catalog}
-    <div class="sb-empty">Open a project to list its variables.</div>
+    <EmptyState icon="code" title="No project open" hint="Open a project to list its variables." />
   {:else if rows.length === 0}
-    <div class="sb-empty">No variables match.</div>
+    <EmptyState
+      icon="filter"
+      title={filter.trim() ? 'No variables match' : 'No variables'}
+      action={filter.trim() ? 'Clear filter' : undefined}
+      onaction={() => (filter = '')}
+    />
   {/if}
   {#if extra}
     <div class="sb-list extra">

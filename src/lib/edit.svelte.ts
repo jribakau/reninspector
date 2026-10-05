@@ -6,9 +6,10 @@ import { createEntry, deleteEntry, gameTreePath, renameEntry } from './fileops.s
 import { goTo, promoteTab } from './nav.svelte'
 import { pullEditStatus, reloadAll } from './reload.svelte'
 import { stageScriptsReloaded } from './stage.svelte'
+import { notify } from './toast.svelte'
 import type { EditImpact } from './types'
 
-import { registerBufferSave, saveBuffer } from './buffers'
+import { registerBufferSave, saveBuffer, saveNoticesQuiet } from './buffers'
 export { registerBufferSave, saveBuffer }
 
 let saveHandler: (() => void) | null = null
@@ -123,7 +124,7 @@ export async function saveFile(path: string, text: string): Promise<boolean> {
         app.error = errorText(e)
       }
     }
-    app.notice = `Saved ${path}. ${impactSummary(impact)}${extra}`
+    if (!saveNoticesQuiet()) notify(`Saved ${path}. ${impactSummary(impact)}${extra}`, 'ok')
     return true
   } catch (e) {
     app.error = errorText(e)
@@ -146,7 +147,7 @@ export async function revertFile(path: string) {
     setDirty(path, false)
     reloadSeq += 1
     app.reloadFile = { path, seq: reloadSeq }
-    app.notice = `Reverted ${path}. ${impactSummary(impact)}`
+    notify(`Reverted ${path}. ${impactSummary(impact)}`, 'ok')
   } catch (e) {
     app.error = errorText(e)
   } finally {
@@ -167,7 +168,7 @@ export async function revertStartup() {
     await pullEditStatus()
     reloadSeq += 1
     app.reloadFile = { path, seq: reloadSeq }
-    app.notice = `Reverted ${path}. ${impactSummary(impact)}`
+    notify(`Reverted ${path}. ${impactSummary(impact)}`, 'ok')
   } catch (e) {
     app.error = errorText(e)
   } finally {
@@ -260,7 +261,7 @@ export async function applyReplace(changes: { path: string; before: string; text
     if (info) await reloadAll(info)
     app.changedPaths = changes.map((c) => c.path)
     app.changeSeq += 1
-    app.notice = `Replaced text in ${changes.length} file${changes.length === 1 ? '' : 's'}. ${impactSummary(impact)}`
+    notify(`Replaced text in ${changes.length} file${changes.length === 1 ? '' : 's'}. ${impactSummary(impact)}`, 'ok')
   } catch (e) {
     app.error = errorText(e)
   } finally {
@@ -285,7 +286,7 @@ export async function applyRename() {
     app.changedPaths = app.info?.files.map((f) => f.path) ?? []
     app.changeSeq += 1
     app.renamePreview = null
-    app.notice = `Renamed ${preview.oldName} to ${preview.newName}. ${impactSummary(impact)}`
+    notify(`Renamed ${preview.oldName} to ${preview.newName}. ${impactSummary(impact)}`, 'ok')
   } catch (e) {
     app.error = errorText(e)
   } finally {

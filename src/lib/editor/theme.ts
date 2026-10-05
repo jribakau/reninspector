@@ -20,6 +20,14 @@ const shared: Spec = {
     backgroundColor: 'color-mix(in srgb, var(--accent) 30%, transparent) !important',
   },
   '.cm-selectionMatch': { backgroundColor: 'color-mix(in srgb, var(--accent) 16%, transparent)' },
+  '.cm-matchingBracket': {
+    backgroundColor: 'color-mix(in srgb, var(--ok) 28%, transparent)',
+    outline: '1px solid color-mix(in srgb, var(--ok) 55%, transparent)',
+  },
+  '.cm-nonmatchingBracket': {
+    backgroundColor: 'color-mix(in srgb, var(--error) 28%, transparent)',
+    outline: '1px solid color-mix(in srgb, var(--error) 55%, transparent)',
+  },
 
   // Tooltips and completion
   '.cm-tooltip': {
@@ -37,6 +45,7 @@ const shared: Spec = {
   '.cm-tooltip-autocomplete > ul > li[aria-selected]': {
     backgroundColor: 'var(--sel)',
     color: 'var(--text)',
+    boxShadow: 'inset 3px 0 0 var(--accent)',
   },
   '.cm-completionMatchedText': { textDecoration: 'none', color: 'var(--accent)', fontWeight: '600' },
   '.cm-completionDetail': { color: 'var(--dim)', fontStyle: 'normal', marginLeft: '0.8em' },
@@ -156,6 +165,36 @@ export function editorTheme(dark: boolean) {
       '.git-tip button': { fontSize: 'var(--fs-sm)', padding: '3px 8px' },
       '.cm-live-line': { backgroundColor: 'color-mix(in srgb, var(--ok) 18%, transparent)' },
       '.cm-live-gutter': { width: '14px', color: 'var(--ok)' },
+      '.cm-ctrl-link': {
+        cursor: 'pointer',
+        textDecorationLine: 'underline',
+        textDecorationColor: 'var(--accent)',
+        textUnderlineOffset: '2px',
+      },
+      '&.cm-ctrl-held .cm-tooltip-hover': { display: 'none' },
+      '.cm-ctrl-tip': { padding: '6px 0', maxWidth: '420px', fontSize: 'var(--fs-md)' },
+      '.cm-ctrl-tip .head': { padding: '0 8px 4px', fontWeight: '600' },
+      '.cm-ctrl-tip .where': { color: 'var(--dim)', fontSize: 'var(--fs-sm)' },
+      '.cm-ctrl-tip .head + .where': { padding: '0 8px 4px' },
+      '.cm-ctrl-tip button': {
+        display: 'grid',
+        width: '100%',
+        textAlign: 'left',
+        gap: '2px',
+        padding: '3px 8px',
+        border: 'none',
+        borderRadius: '0',
+        background: 'transparent',
+        color: 'var(--text)',
+        font: 'inherit',
+      },
+      '.cm-ctrl-tip button .line': {
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
+      },
+      '.cm-ctrl-tip button:hover': { background: 'var(--hover)', borderColor: 'transparent' },
+      '.cm-ctrl-tip button.more': { color: 'var(--accent)' },
       '.sym-tip': { padding: '6px 8px', maxWidth: '360px', fontSize: 'var(--fs-md)' },
       '.sym-title': { fontWeight: '600', marginBottom: '2px' },
       '.sym-tip img': { display: 'block', marginTop: '6px', maxWidth: '220px', maxHeight: '140px' },

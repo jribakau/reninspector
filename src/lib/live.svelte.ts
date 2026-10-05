@@ -3,6 +3,7 @@ import { fileOfNode, hasFile, labelAt, nodeByName } from './indexes.svelte'
 import { app, emptyLive } from './model.svelte'
 import { goTo, openBottom } from './nav.svelte'
 import { stageScriptsReloaded } from './stage.svelte'
+import { notify } from './toast.svelte'
 import { ensureTrusted } from './trust.svelte'
 import type { LiveState } from './types'
 
@@ -76,11 +77,14 @@ export function followPaused(): boolean {
 export async function runGame() {
   if (!app.info || !(await ensureTrusted())) return
   app.error = ''
+  app.busy = 'Starting game…'
   try {
     const r = await api.launchGame(app.launcher)
-    app.notice = ['Started game.', ...r.notes].join(' ')
+    notify(['Started game.', ...r.notes].join(' '), 'ok')
   } catch (e) {
     app.error = errorText(e)
+  } finally {
+    app.busy = ''
   }
 }
 

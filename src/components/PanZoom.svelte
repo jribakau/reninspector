@@ -12,6 +12,8 @@
     children: Snippet<[ViewRect]>
     hud?: Snippet<[ViewRect]>
     onview?: (rect: ViewRect) => void
+    /** Bumps when the layout is replaced, so the drawing fades in. */
+    fadeKey?: number
   }
 
   let {
@@ -23,6 +25,7 @@
     children,
     hud,
     onview,
+    fadeKey = 0,
   }: Props = $props()
 
   // Zoom bands shared by the project map and label graph. The culling view
@@ -299,11 +302,13 @@
   onkeydown={keyNav}
 >
   <svg width={cw} height={ch}>
-    <g transform={`translate(${frame.tx} ${frame.ty}) scale(${frame.k})`}>
-      {#if cull}
-        {@render children(cull)}
-      {/if}
-    </g>
+    {#key fadeKey}
+      <g class="fade" transform={`translate(${frame.tx} ${frame.ty}) scale(${frame.k})`}>
+        {#if cull}
+          {@render children(cull)}
+        {/if}
+      </g>
+    {/key}
   </svg>
   {#if hud}
     {@render hud(live)}
@@ -319,6 +324,18 @@
     cursor: grab;
     background: var(--bg-canvas);
     touch-action: none;
+  }
+  .panzoom:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: -2px;
+  }
+  .fade {
+    animation: graph-in var(--dur-slow) var(--ease);
+  }
+  @keyframes graph-in {
+    from {
+      opacity: 0.35;
+    }
   }
   .panzoom.panning {
     cursor: grabbing;

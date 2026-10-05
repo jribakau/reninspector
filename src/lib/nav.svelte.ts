@@ -1,9 +1,10 @@
 import { git } from './git.svelte'
-import { saveBuffer } from './buffers'
+import { popQuietSave, pushQuietSave, saveBuffer } from './buffers'
 import { askSaveDiscard } from './dialog.svelte'
 import { fileOfNode, labelAt, nodeByName, nodesInFile } from './indexes.svelte'
 import { visibleProblems } from './problems.svelte'
 import { settings } from './settings.svelte'
+import { notify } from './toast.svelte'
 import {
   bulkTargets,
   leastRecent,
@@ -141,8 +142,7 @@ function trimToLimit(next: EditorTab[], keepId: string) {
   reconcileLoc()
   if (!evicted.length) return
   const text = `Closed ${evicted.map(tabLabel).join(', ')}. The editor keeps ${max} tabs.`
-  app.notice = text
-  app.noticeAction = { text, label: 'Reopen', run: () => void reopenClosedTab() }
+  notify(text, 'info', { action: { label: 'Reopen', run: () => void reopenClosedTab() } })
 }
 
 function tabsFromIds(ids: string[], extra: EditorTab): EditorTab[] {
@@ -752,15 +752,22 @@ export async function saveAll(options: { quiet?: boolean } = {}) {
     if (!options.quiet) app.notice = 'Nothing to save.'
     return
   }
+  pushQuietSave()
   let saved = 0
-  for (const path of files) {
-    if (!(await saveBuffer(path))) break
-    saved += 1
+  try {
+    for (const path of files) {
+      if (!(await saveBuffer(path))) break
+      saved += 1
+    }
+  } finally {
+    popQuietSave()
   }
-  if (!saved || options.quiet) return
-  app.notice = saved === files.length
+  if (!saved) return
+  const text = saved === files.length
     ? `Saved ${saved} file${saved === 1 ? '' : 's'}.`
     : `Saved ${saved} of ${files.length} files.`
+  if (options.quiet) notify('Autosaved.', 'info', { quiet: true })
+  else notify(text, 'ok')
 }
 
 export async function closeEditor(id: string) {

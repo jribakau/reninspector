@@ -196,7 +196,13 @@
       <button class="mini" onclick={openFile}>Open file</button>
     </span>
   </div>
-  {#if errorMsg}<div class="banner-err">{errorMsg}</div>{/if}
+  {#if errorMsg}
+    <div class="alert err" role="alert">
+      <Icon name="error" size={14} />
+      <span class="msg">{errorMsg}</span>
+      <button type="button" class="sm" onclick={() => void load(true)}>Retry</button>
+    </div>
+  {/if}
   <div class="host" bind:this={host}></div>
   {#if identical && !loading && !errorMsg}
     <div class="same empty-state">

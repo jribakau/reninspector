@@ -106,7 +106,7 @@
                     Add Web
                   </button>
                 {/if}
-                <button type="button" onclick={() => void run(() => removeSdk(item))} disabled={sdk.installing}>Remove</button>
+                <button type="button" class="danger" onclick={() => void run(() => removeSdk(item))} disabled={sdk.installing}>Remove</button>
               </span>
             </li>
           {/each}

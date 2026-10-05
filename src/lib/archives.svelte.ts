@@ -2,12 +2,13 @@ import { api, errorText, pickFolder, pickSavePath, pickZipPath } from './api'
 import { askText } from './dialog.svelte'
 import { app } from './model.svelte'
 import { pullEditStatus, reloadAll } from './reload.svelte'
+import { notify } from './toast.svelte'
 
 async function refreshAfterArchive(notice: string) {
   const info = await api.projectInfo()
   if (info) await reloadAll(info)
   await pullEditStatus()
-  app.notice = notice
+  notify(notice, 'ok')
 }
 
 export async function bakePatch(options: { toggles?: boolean } = {}) {
@@ -89,7 +90,7 @@ export async function extractArchive(archive: string, names: string[] | null) {
       }
       throw e
     }
-    app.notice = `Extracted ${files} files to ${dest}.`
+    notify(`Extracted ${files} files to ${dest}.`, 'ok')
   } catch (e) {
     app.error = errorText(e)
   } finally {
@@ -109,7 +110,7 @@ export async function buildArchive() {
     const files = await api.archiveBuild(src, out)
     const info = await api.projectInfo()
     if (info) await reloadAll(info)
-    app.notice = `Wrote ${files} files to ${out}.`
+    notify(`Wrote ${files} files to ${out}.`, 'ok')
   } catch (e) {
     app.error = errorText(e)
   } finally {
@@ -131,7 +132,7 @@ export async function exportMod(layout: 'rpa' | 'loose', includeToggles = false)
   app.busy = 'Exporting mod…'
   try {
     const notice = await api.modExport(dest, layout, includeToggles, notes)
-    app.notice = notice
+    notify(notice, 'ok')
   } catch (e) {
     app.error = errorText(e)
   } finally {

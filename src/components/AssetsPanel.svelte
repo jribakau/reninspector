@@ -1,4 +1,5 @@
 <script lang="ts">
+  import EmptyState from './EmptyState.svelte'
   import FilterInput from './FilterInput.svelte'
   import { ROW } from '../lib/view'
   import { onDestroy } from 'svelte'
@@ -101,11 +102,21 @@
   {#if preview}<img class="preview" src={preview} alt="" />{/if}
   <div class="sb-list virtual">
     {#if !report && !err}
-      <div class="sb-empty">Scanning assets…</div>
+      <div class="sb-empty" role="status">
+        Scanning assets…
+        <div class="skeleton"></div>
+        <div class="skeleton"></div>
+        <div class="skeleton"></div>
+      </div>
     {:else if only === 'missing' && missing.length === 0 && !err}
-      <div class="sb-empty">No missing assets.</div>
+      <EmptyState tone="ok" icon="check" title="No missing assets" hint="Every image and sound the scripts name is in the game folder." />
     {:else if only !== 'missing' && rows.length === 0 && !err}
-      <div class="sb-empty">No assets match.</div>
+      <EmptyState
+        icon="image"
+        title="No assets match"
+        action={filter.trim() || only !== 'all' ? 'Clear filter' : undefined}
+        onaction={() => { filter = ''; only = 'all' }}
+      />
     {:else if only === 'missing'}
       <VirtualList items={missing} rowHeight={ROW.lg}>
         {#snippet row(m)}

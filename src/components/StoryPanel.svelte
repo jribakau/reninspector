@@ -1,4 +1,5 @@
 <script lang="ts">
+  import EmptyState from './EmptyState.svelte'
   import FilterInput from './FilterInput.svelte'
   import { ROW } from '../lib/view'
   import { labelItems, openContextMenu } from '../lib/context.svelte'
@@ -45,9 +46,13 @@
   </div>
   <div class="sb-list virtual">
     {#if !app.map}
-      <div class="sb-empty">Open a project to list its labels.</div>
+      <EmptyState icon="story" title="No project open" hint="Open a project to list its labels." />
     {:else if !labels.length}
-      <div class="sb-empty">No labels match.</div>
+      {#if filter.trim() || labelFilter !== 'all'}
+        <EmptyState icon="filter" title="No labels match" action="Clear filter" onaction={() => { filter = ''; labelFilter = 'all' }} />
+      {:else}
+        <EmptyState icon="story" title="No labels yet" hint="Add a label to a script and it shows up here." />
+      {/if}
     {:else}
     <VirtualList items={labels} rowHeight={ROW.md} reveal={selectedIndex >= 0 ? selectedIndex : null}>
       {#snippet row(n)}
