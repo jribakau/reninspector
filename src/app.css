@@ -768,6 +768,11 @@ button.pal-item:active:not(:disabled) {
   white-space: nowrap;
 }
 
+.pal-hit {
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .pal-key {
   flex: none;
   color: var(--dim);

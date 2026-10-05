@@ -58,6 +58,28 @@ fn sweep_stale_temp() {
     }
 }
 
+/// Stops WebView2 claiming Ctrl+F, F5 and Ctrl+P for its own find, reload and print.
+#[cfg(windows)]
+fn silence_browser_keys(app: &tauri::AppHandle) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings3;
+    use windows_core::Interface;
+
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let _ = window.with_webview(|webview| unsafe {
+        let Ok(core) = webview.controller().CoreWebView2() else {
+            return;
+        };
+        let Ok(settings) = core.Settings() else {
+            return;
+        };
+        if let Ok(settings) = settings.cast::<ICoreWebView2Settings3>() {
+            let _ = settings.SetAreBrowserAcceleratorKeysEnabled(false);
+        }
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     sweep_stale_temp();
@@ -195,6 +217,11 @@ pub fn run() {
             live::live_shot,
             ide::diagnostic_bundle,
         ])
+        .setup(|app| {
+            #[cfg(windows)]
+            silence_browser_keys(app.handle());
+            Ok(())
+        })
         .build(tauri::generate_context!())
         .expect("error while running Ren'Inspector");
     app.run(|app_handle, event| {

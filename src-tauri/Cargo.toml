@@ -48,6 +48,10 @@ flate2 = "1"
 tar = "0.4"
 mimalloc = { version = "0.1", default-features = false }
 
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.39"
+windows-core = "0.62"
+
 [profile.release]
 opt-level = 3
 lto = "thin"

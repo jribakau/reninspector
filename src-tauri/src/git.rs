@@ -1,10 +1,12 @@
 //! Git status, history, and the commands the source control panel uses.
 
 use crate::error::AppError;
+use std::ffi::OsStr;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime};
 
 use serde::Serialize;
@@ -65,7 +67,13 @@ pub struct GitBranch {
 }
 
 const NOT_A_REPO: &str = "This folder is not a git repository.";
+const MISSING_GIT: &str = "Git installation not found.";
 const GIT_TEXT_MAX: usize = 2 * 1024 * 1024;
+/// Windows refuses to start a process once the command line reaches 32767
+/// characters (os error 206). VS Code stays under 30000 for the same reason.
+const MAX_CLI_LENGTH: usize = 30_000;
+
+static GIT_EXE: OnceLock<PathBuf> = OnceLock::new();
 
 const RENPY_IGNORE: &str = "\
 *.rpyc
@@ -81,10 +89,134 @@ traceback.txt
 files.txt
 ";
 
+/// The git executable, resolved once. A later failure to start it keeps the real
+/// error instead of claiming git is missing.
+fn git_exe() -> Result<PathBuf, AppError> {
+    if let Some(path) = GIT_EXE.get() {
+        return Ok(path.clone());
+    }
+    let found = find_git()?;
+    let _ = GIT_EXE.set(found.clone());
+    Ok(GIT_EXE.get().cloned().unwrap_or(found))
+}
+
+/// Known install folders first, then PATH. That is VS Code's order: a normal
+/// Git for Windows install works even when the app was started without it on PATH.
+fn find_git() -> Result<PathBuf, AppError> {
+    for candidate in git_candidates() {
+        if git_accepts(&candidate) {
+            return Ok(candidate);
+        }
+    }
+    Err(AppError::new(MISSING_GIT))
+}
+
+fn git_accepts(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    #[cfg(target_os = "macos")]
+    if macos_git_stub(path) {
+        return false;
+    }
+    match background(path).arg("--version").output() {
+        Ok(out) => {
+            out.status.success()
+                && String::from_utf8_lossy(&out.stdout)
+                    .to_ascii_lowercase()
+                    .contains("git version")
+        }
+        Err(_) => false,
+    }
+}
+
+/// `/usr/bin/git` with no Xcode tools opens an install dialog. `xcode-select -p`
+/// exits 2 in that case, which is the signal VS Code uses to skip the stub.
+#[cfg(target_os = "macos")]
+fn macos_git_stub(path: &Path) -> bool {
+    if path != Path::new("/usr/bin/git") {
+        return false;
+    }
+    match background("xcode-select").arg("-p").status() {
+        Ok(status) => status.code() == Some(2),
+        Err(_) => false,
+    }
+}
+
+fn git_candidates() -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    #[cfg(windows)]
+    found.extend(windows_install_candidates(
+        env_path("ProgramW6432").as_deref(),
+        env_path("ProgramFiles(x86)").as_deref(),
+        env_path("ProgramFiles").as_deref(),
+        env_path("LOCALAPPDATA").as_deref(),
+    ));
+    if let Some(path) = std::env::var_os("PATH") {
+        if let Some(hit) = which_in_path(git_names(), &path) {
+            found.push(hit);
+        }
+    }
+    found
+}
+
+#[cfg(windows)]
+fn env_path(key: &str) -> Option<PathBuf> {
+    let value = std::env::var_os(key)?;
+    if value.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(value))
+    }
+}
+
+#[cfg(windows)]
+fn git_names() -> &'static [&'static str] {
+    &["git.exe"]
+}
+
+#[cfg(not(windows))]
+fn git_names() -> &'static [&'static str] {
+    &["git"]
+}
+
+/// Install folders checked before PATH: 64-bit Program Files, 32-bit Program Files,
+/// Program Files, then the per-user install.
+#[cfg(any(windows, test))]
+fn windows_install_candidates(
+    program_w6432: Option<&Path>,
+    program_files_x86: Option<&Path>,
+    program_files: Option<&Path>,
+    local_app_data: Option<&Path>,
+) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for base in [program_w6432, program_files_x86, program_files] {
+        if let Some(base) = base.filter(|base| !base.as_os_str().is_empty()) {
+            out.push(base.join("Git").join("cmd").join("git.exe"));
+        }
+    }
+    if let Some(local) = local_app_data.filter(|base| !base.as_os_str().is_empty()) {
+        out.push(local.join("Programs").join("Git").join("cmd").join("git.exe"));
+    }
+    out
+}
+
+fn which_in_path(names: &[&str], path_var: &OsStr) -> Option<PathBuf> {
+    for dir in std::env::split_paths(path_var) {
+        for name in names {
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
 /// A git command that never waits for a prompt and speaks English, so the messages
 /// this module recognises read the same on every machine.
-fn git_command(root: &Path, args: &[&str]) -> std::process::Command {
-    let mut cmd = background("git");
+fn git_command(root: &Path, args: &[&str]) -> Result<std::process::Command, AppError> {
+    let mut cmd = background(git_exe()?);
     // `-c` has to precede the subcommand. quotePath keeps names like `scène.rpy` literal.
     cmd.arg("-c")
         .arg("core.quotePath=false")
@@ -93,13 +225,13 @@ fn git_command(root: &Path, args: &[&str]) -> std::process::Command {
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("LANGUAGE", "C")
         .env("LC_MESSAGES", "C");
-    cmd
+    Ok(cmd)
 }
 
 fn git(root: &Path, args: &[&str]) -> Result<Output, AppError> {
-    git_command(root, args)
+    git_command(root, args)?
         .output()
-        .map_err(|_| crate::error::AppError::new("git is not available on PATH."))
+        .map_err(|e| crate::error::AppError::new(format!("Could not run git: {e}")))
 }
 
 const NET_TIMEOUT: Duration = Duration::from_secs(120);
@@ -107,7 +239,7 @@ const NET_TIMEOUT: Duration = Duration::from_secs(120);
 /// Fetch, pull, and push. SSH may not ask for a passphrase, and a stuck server is
 /// stopped after two minutes instead of leaving the panel busy forever.
 fn git_net(root: &Path, args: &[&str]) -> Result<Output, AppError> {
-    let mut cmd = git_command(root, args);
+    let mut cmd = git_command(root, args)?;
     let configured = git(root, &["config", "--get", "core.sshCommand"])
         .map(|out| !String::from_utf8_lossy(&out.stdout).trim().is_empty())
         .unwrap_or(false);
@@ -122,7 +254,7 @@ fn git_net(root: &Path, args: &[&str]) -> Result<Output, AppError> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|_| "git is not available on PATH.".to_string())?;
+        .map_err(|e| format!("Could not run git: {e}"))?;
     let mut out_pipe = child.stdout.take();
     let mut err_pipe = child.stderr.take();
     let out_reader = std::thread::spawn(move || {
@@ -161,12 +293,12 @@ fn git_net(root: &Path, args: &[&str]) -> Result<Output, AppError> {
 }
 
 fn git_stdin(root: &Path, args: &[&str], input: &[u8]) -> Result<Output, AppError> {
-    let mut child = git_command(root, args)
+    let mut child = git_command(root, args)?
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|_| "git is not available on PATH.".to_string())?;
+        .map_err(|e| format!("Could not run git: {e}"))?;
     if let Some(mut stdin) = child.stdin.take() {
         stdin.write_all(input)?;
     }
@@ -899,13 +1031,43 @@ fn checked_paths(paths: &[String]) -> Result<Vec<String>, AppError> {
 }
 
 fn stage_at(root: &Path, paths: &[String]) -> Result<(), AppError> {
-    let rels = checked_paths(paths)?;
-    let mut args = vec!["add", "--"];
-    for rel in &rels {
-        args.push(rel.as_str());
+    git_paths(root, &["add"], &checked_paths(paths)?)
+}
+
+/// Runs one git command per batch of paths. One batch for a normal change list,
+/// more than one when listing every path would make Windows reject the process.
+fn git_paths(root: &Path, prefix: &[&str], paths: &[String]) -> Result<(), AppError> {
+    if paths.is_empty() {
+        return Err("Choose a file first.".into());
     }
-    git_ok(&git(root, &args)?)?;
+    for group in path_groups(MAX_CLI_LENGTH, prefix, paths) {
+        let mut args: Vec<&str> = prefix.to_vec();
+        args.push("--");
+        args.extend(group.iter().map(String::as_str));
+        git_ok(&git(root, &args)?)?;
+    }
     Ok(())
+}
+
+fn path_groups<'a>(limit: usize, prefix: &[&str], paths: &'a [String]) -> Vec<&'a [String]> {
+    let base = prefix.iter().map(|arg| arg.len() + 1).sum::<usize>() + 2;
+    let mut groups = Vec::new();
+    let mut start = 0;
+    let mut used = base;
+    for (i, path) in paths.iter().enumerate() {
+        // A space plus quotes, which a path with spaces needs on the command line.
+        let extra = path.len() + 3;
+        if i > start && used.saturating_add(extra) > limit {
+            groups.push(&paths[start..i]);
+            start = i;
+            used = base;
+        }
+        used = used.saturating_add(extra);
+    }
+    if start < paths.len() {
+        groups.push(&paths[start..]);
+    }
+    groups
 }
 
 /// A second discard of the same path keeps the earlier backup and writes `<name>.<unix-ms>` beside it.
@@ -1057,16 +1219,12 @@ pub fn git_unstage(state: State<'_, AppState>, paths: Vec<String>) -> Result<(),
     let root = git_root(&state)?;
     let rels = checked_paths(&paths)?;
     let head = git(&root, &["rev-parse", "--verify", "HEAD"])?;
-    let mut args = if head.status.success() {
-        vec!["restore", "--staged", "--"]
+    let prefix: &[&str] = if head.status.success() {
+        &["restore", "--staged"]
     } else {
-        vec!["rm", "--cached", "--"]
+        &["rm", "--cached"]
     };
-    for rel in &rels {
-        args.push(rel.as_str());
-    }
-    git_ok(&git(&root, &args)?)?;
-    Ok(())
+    git_paths(&root, prefix, &rels)
 }
 
 #[tauri::command(async)]
@@ -1602,5 +1760,99 @@ mod tests {
             kept.is_some(),
             "second copy was not kept beside the first backup"
         );
+    }
+
+    #[test]
+    fn windows_install_folders_follow_the_usual_order() {
+        let found = windows_install_candidates(
+            Some(Path::new(r"C:\Program Files")),
+            Some(Path::new(r"C:\Program Files (x86)")),
+            Some(Path::new(r"D:\Programs")),
+            Some(Path::new(r"C:\Users\me\AppData\Local")),
+        );
+        assert_eq!(
+            found,
+            vec![
+                PathBuf::from(r"C:\Program Files\Git\cmd\git.exe"),
+                PathBuf::from(r"C:\Program Files (x86)\Git\cmd\git.exe"),
+                PathBuf::from(r"D:\Programs\Git\cmd\git.exe"),
+                PathBuf::from(r"C:\Users\me\AppData\Local\Programs\Git\cmd\git.exe"),
+            ]
+        );
+    }
+
+    #[test]
+    fn windows_git_lookup_skips_empty_folders() {
+        assert!(windows_install_candidates(None, Some(Path::new("")), None, None).is_empty());
+    }
+
+    #[test]
+    fn which_in_path_skips_entries_that_are_files() {
+        let dir = TempDir::new();
+        let exe = dir.0.join("git.exe");
+        fs::write(&exe, b"").unwrap();
+        let nested = dir.0.join("cmd");
+        fs::create_dir_all(&nested).unwrap();
+        let nested_exe = nested.join("git.exe");
+        fs::write(&nested_exe, b"").unwrap();
+        let path_var = std::env::join_paths([&exe, &nested]).unwrap();
+        assert_eq!(
+            which_in_path(&["git.exe"], path_var.as_os_str()).as_deref(),
+            Some(nested_exe.as_path())
+        );
+    }
+
+    #[test]
+    fn find_git_returns_a_program_that_runs() {
+        let path = find_git().expect("git");
+        assert!(path.is_file(), "{}", path.display());
+    }
+
+    #[test]
+    fn path_groups_keep_one_batch_until_the_limit() {
+        let paths = vec!["game/a.rpy".to_string(), "game/b.rpy".to_string()];
+        assert_eq!(path_groups(100, &["add"], &paths).len(), 1);
+    }
+
+    #[test]
+    fn path_groups_split_before_the_command_line_limit() {
+        let paths: Vec<String> = (0..5).map(|i| format!("p{i}{}", "n".repeat(10))).collect();
+        let groups = path_groups(30, &["add"], &paths);
+        assert!(groups.len() > 1);
+        let base = "add".len() + 1 + 2;
+        for group in &groups {
+            if group.len() > 1 {
+                let used = base + group.iter().map(|path| path.len() + 3).sum::<usize>();
+                assert!(used <= 30, "batch of {} used {used}", group.len());
+            }
+        }
+        assert_eq!(groups.iter().map(|group| group.len()).sum::<usize>(), paths.len());
+    }
+
+    #[test]
+    fn path_groups_send_one_oversized_path_alone() {
+        let paths = vec!["n".repeat(80), "short".to_string()];
+        let groups = path_groups(20, &["add"], &paths);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0], &["n".repeat(80)][..]);
+        assert_eq!(groups[1], &["short".to_string()][..]);
+    }
+
+    #[test]
+    fn stage_splits_a_change_list_that_would_overflow_the_command_line() {
+        let dir = TempDir::new();
+        init_at(&dir.0).unwrap();
+        fs::create_dir_all(dir.0.join("game")).unwrap();
+        let paths: Vec<String> = (0..400)
+            .map(|i| {
+                let rel = format!("game/f{i:04}_{}.rpy", "n".repeat(70));
+                fs::write(dir.0.join(&rel), "label start:\n").unwrap();
+                rel
+            })
+            .collect();
+        assert!(path_groups(MAX_CLI_LENGTH, &["add"], &paths).len() > 1);
+        stage_at(&dir.0, &paths).unwrap();
+        let staged = git_ok(&git(&dir.0, &["diff", "--cached", "--name-only"]).unwrap()).unwrap();
+        assert_eq!(staged.lines().count(), paths.len());
     }
 }

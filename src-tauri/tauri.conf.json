@@ -20,7 +20,8 @@
         "resizable": true,
         "center": true,
         "decorations": false,
-        "shadow": true
+        "shadow": true,
+        "devtools": false
       }
     ],
     "security": {

@@ -73,6 +73,9 @@ is distributed under its own licence, linked from its source repository.
   ALT-1.0 and ZiX-12A/B header layouts, key derivation and index handling in
   \`renpy-core/src/rpa\` were reimplemented in Rust from its \`versions/\` modules.
   No unrpa code is included.
+- **Visual Studio Code** (MIT, https://github.com/microsoft/vscode). The quick-open
+  scorer in \`src/lib/fuzzy.ts\` is adapted from \`src/vs/base/common/filters.ts\`
+  and \`src/vs/base/common/fuzzyScorer.ts\`. Copyright (c) Microsoft Corporation.
 
 ## Rust crates
 

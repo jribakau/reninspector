@@ -1,13 +1,20 @@
 <script lang="ts">
   import PaletteShell from './PaletteShell.svelte'
+  import { highlightPieces, rankMatches, scoreFile, scoreLabel, scoreSymbol, symbolLabel } from '../lib/fuzzy'
   import { paletteActions } from '../lib/menus.svelte'
   import { overlayBus, pushOverlay } from '../lib/overlay.svelte'
   import { app, goTo, nodeByName, selectLabel } from '../lib/store.svelte'
   import type { Symbol } from '../lib/types'
 
+  interface Piece {
+    text: string
+    hit: boolean
+  }
+
   interface Item {
     id: string
     label: string
+    pieces: Piece[]
     shortcut?: string
     enabled: boolean
     run: () => void
@@ -23,43 +30,16 @@
   const SYMBOL_KINDS = new Set(['label', 'screen', 'character', 'image', 'transform'])
   const PALETTE_CAP = 80
 
-  function atBoundary(text: string, index: number): boolean {
-    if (index <= 0) return true
-    const prev = text[index - 1]
-    if (prev === '_' || prev === '.' || prev === '/' || prev === ' ') return true
-    const cur = text[index]
-    return prev === prev.toLowerCase() && cur !== cur.toLowerCase()
+  function plain(text: string): Piece[] {
+    return [{ text, hit: false }]
   }
 
-  /** Lower is better. Exact, prefix, boundary, then a plain substring. */
-  function rankIn(text: string, q: string): number | null {
-    const lower = text.toLowerCase()
-    if (lower === q) return 0
-    if (lower.startsWith(q)) return 1
-    let from = 1
-    while (from <= lower.length - q.length) {
-      const at = lower.indexOf(q, from)
-      if (at < 0) break
-      if (atBoundary(text, at)) return 2
-      from = at + 1
-    }
-    if (lower.includes(q)) return 3
-    return null
-  }
-
-  function takeRanked<T>(
-    list: T[],
-    q: string,
-    rank: (item: T) => number | null,
-    tie: (a: T, b: T) => number,
-  ): T[] {
-    const scored: { item: T; rank: number; index: number }[] = []
-    list.forEach((item, index) => {
-      const score = rank(item)
-      if (score !== null) scored.push({ item, rank: score, index })
-    })
-    scored.sort((a, b) => a.rank - b.rank || (q ? tie(a.item, b.item) : a.index - b.index))
-    return scored.slice(0, PALETTE_CAP).map((s) => s.item)
+  /** The open file first, then everything else in catalog order. */
+  function openFirst<T>(list: readonly T[], isOpen: (item: T) => boolean): T[] {
+    const first: T[] = []
+    const rest: T[] = []
+    for (const item of list) (isOpen(item) ? first : rest).push(item)
+    return first.concat(rest).slice(0, PALETTE_CAP)
   }
 
   function byName(a: { name: string; path: string }, b: { name: string; path: string }): number {
@@ -75,44 +55,48 @@
   }
 
   const items = $derived.by(() => {
-    const q = query.trim().toLowerCase()
+    const q = query.trim()
     const openFile = app.loc?.file ?? ''
     if (app.palette === 'files') {
-      return takeRanked(
-        app.info?.files ?? [],
-        q,
-        (f) => {
-          if (!q) return f.path === openFile ? 0 : 1
-          const base = f.path.split('/').pop() ?? f.path
-          return rankIn(base, q) ?? (f.path.toLowerCase().includes(q) ? 4 : null)
-        },
-        (a, b) => {
-          const an = a.path.split('/').pop() ?? a.path
-          const bn = b.path.split('/').pop() ?? b.path
-          return byName({ name: an, path: a.path }, { name: bn, path: b.path })
-        },
-      ).map((f) => ({ id: f.path, label: f.path, shortcut: '', enabled: true, run: () => {} }))
-    }
-    if (app.palette === 'symbols') {
-      return takeRanked(
-        (app.catalog?.symbols ?? []).filter((s) => SYMBOL_KINDS.has(s.kind)),
-        q,
-        (s) => {
-          if (!q) return s.path === openFile ? 0 : 1
-          return rankIn(s.name, q) ?? (s.kind.toLowerCase().includes(q) ? 4 : null)
-        },
-        byName,
-      ).map((s) => ({
-        id: `${s.kind}:${s.name}:${s.path}:${s.line}`,
-        label: `${s.name} · ${s.kind} · ${s.path}`,
-        shortcut: '',
-        enabled: true,
-        run: () => openSymbol(s),
+      const files = app.info?.files ?? []
+      if (!q) {
+        return openFirst(files, (f) => f.path === openFile).map((f) => ({
+          id: f.path, label: f.path, pieces: plain(f.path), shortcut: '', enabled: true, run: () => {},
+        }))
+      }
+      return rankMatches(
+        files,
+        (f) => scoreFile(q, f.path),
+        (a, b) => byName({ name: a.path.split('/').pop() ?? a.path, path: a.path }, { name: b.path.split('/').pop() ?? b.path, path: b.path }),
+        PALETTE_CAP,
+      ).map(({ item, hit }) => ({
+        id: item.path, label: item.path, pieces: highlightPieces(item.path, hit.matches), shortcut: '', enabled: true, run: () => {},
       }))
     }
-    return commands
-      .filter((c) => !q || c.label.toLowerCase().includes(q))
-      .map((c) => ({ id: c.id, label: c.label, shortcut: c.shortcut, enabled: c.enabled, run: c.run }))
+    if (app.palette === 'symbols') {
+      const symbols = (app.catalog?.symbols ?? []).filter((s) => SYMBOL_KINDS.has(s.kind))
+      if (!q) {
+        return openFirst(symbols, (s) => s.path === openFile).map((s) => {
+          const label = symbolLabel(s.name, s.kind, s.path)
+          return { id: `${s.kind}:${s.name}:${s.path}:${s.line}`, label, pieces: plain(label), shortcut: '', enabled: true, run: () => openSymbol(s) }
+        })
+      }
+      return rankMatches(symbols, (s) => scoreSymbol(q, s.name, s.kind, s.path), byName, PALETTE_CAP).map(({ item, hit }) => {
+        const label = symbolLabel(item.name, item.kind, item.path)
+        return {
+          id: `${item.kind}:${item.name}:${item.path}:${item.line}`,
+          label,
+          pieces: highlightPieces(label, hit.matches),
+          shortcut: '',
+          enabled: true,
+          run: () => openSymbol(item),
+        }
+      })
+    }
+    if (!q) return commands.map((c) => ({ id: c.id, label: c.label, pieces: plain(c.label), shortcut: c.shortcut, enabled: c.enabled, run: c.run }))
+    return rankMatches(commands, (c) => scoreLabel(q, c.label), () => 0, PALETTE_CAP).map(({ item, hit }) => ({
+      id: item.id, label: item.label, pieces: highlightPieces(item.label, hit.matches), shortcut: item.shortcut, enabled: item.enabled, run: item.run,
+    }))
   })
 
   const paletteLabel = $derived(
@@ -193,7 +177,11 @@
     <div class="pal-list" bind:this={listEl}>
       {#each items as item, i (item.id)}
         <button class="pal-item" class:on={i === picked} title={item.label} disabled={!item.enabled} onclick={() => choose(i)}>
-          <span class="pal-lab">{item.label}</span>
+          <span class="pal-lab">
+            {#each item.pieces as piece, p (p)}
+              {#if piece.hit}<span class="pal-hit">{piece.text}</span>{:else}{piece.text}{/if}
+            {/each}
+          </span>
           {#if item.shortcut}<span class="pal-key">{item.shortcut}</span>{/if}
         </button>
       {/each}
