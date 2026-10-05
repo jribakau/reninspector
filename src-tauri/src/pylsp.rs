@@ -4,6 +4,7 @@
 //! Python-only copy of each script; this module frames those messages and
 //! answers the `workspace/configuration` request ty sends as soon as it starts.
 
+use crate::error::AppError;
 use std::fs::{self, File};
 use std::io::{self, BufRead, Read, Write};
 use std::path::{Component, Path, PathBuf};
@@ -82,11 +83,8 @@ pub fn stop(state: &AppState) {
     }
 }
 
-fn tools_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?
+fn tools_dir(app: &AppHandle) -> Result<PathBuf, AppError> {
+    Ok(crate::util::data_dir(app)?
         .join("tools")
         .join("ty")
         .join(TY_VERSION))
@@ -96,32 +94,29 @@ fn exe_in(dir: &Path) -> PathBuf {
     dir.join(if cfg!(windows) { "ty.exe" } else { "ty" })
 }
 
-fn installed_exe(app: &AppHandle) -> Result<Option<PathBuf>, String> {
+fn installed_exe(app: &AppHandle) -> Result<Option<PathBuf>, AppError> {
     let path = exe_in(&tools_dir(app)?);
     Ok(path.is_file().then_some(path))
 }
 
 #[tauri::command]
-pub fn pylsp_status(app: AppHandle, state: State<'_, AppState>) -> Result<PyStatus, String> {
+pub fn pylsp_status(app: AppHandle, state: State<'_, AppState>) -> Result<PyStatus, AppError> {
     let exe = installed_exe(&app)?;
-    let running = state
-        .pylsp
-        .lock()
-        .map_err(|e| e.to_string())?
-        .child
-        .is_some();
+    let running = crate::util::lock(&state.pylsp).child.is_some();
     Ok(PyStatus {
         installed: exe.is_some(),
         version: TY_VERSION,
         running,
-        exe: exe.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
+        exe: exe
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default(),
     })
 }
 
-#[tauri::command]
-pub fn pylsp_env(state: State<'_, AppState>) -> Result<PyEnv, String> {
-    let guard = state.project.lock().map_err(|e| e.to_string())?;
-    let project = guard.as_ref().ok_or("No project is open.")?;
+#[tauri::command(async)]
+pub fn pylsp_env(state: State<'_, AppState>) -> Result<PyEnv, AppError> {
+    let guard = crate::util::lock(&state.project);
+    let project = guard.as_ref().ok_or_else(crate::util::no_project)?;
     // The engine that runs the game decides the Python version. Most projects have no script_version.txt.
     let script = project
         .engine_version
@@ -149,7 +144,11 @@ pub fn pylsp_env(state: State<'_, AppState>) -> Result<PyEnv, String> {
 }
 
 #[tauri::command(async)]
-pub fn pylsp_install(app: AppHandle, state: State<'_, AppState>, force: bool) -> Result<(), String> {
+pub fn pylsp_install(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    force: bool,
+) -> Result<(), AppError> {
     if state.pylsp_busy.swap(true, Ordering::SeqCst) {
         return Err("A download is already running.".into());
     }
@@ -164,8 +163,8 @@ pub fn pylsp_cancel(state: State<'_, AppState>) {
     state.pylsp_cancel.store(true, Ordering::SeqCst);
 }
 
-#[tauri::command]
-pub fn pylsp_remove(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+#[tauri::command(async)]
+pub fn pylsp_remove(app: AppHandle, state: State<'_, AppState>) -> Result<(), AppError> {
     stop(&state);
     let dir = tools_dir(&app)?;
     if dir.exists() {
@@ -174,31 +173,35 @@ pub fn pylsp_remove(app: AppHandle, state: State<'_, AppState>) -> Result<(), St
     Ok(())
 }
 
-#[tauri::command]
-pub fn pylsp_start(app: AppHandle, state: State<'_, AppState>, settings: Option<Value>) -> Result<(), String> {
+#[tauri::command(async)]
+pub fn pylsp_start(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    settings: Option<Value>,
+) -> Result<(), AppError> {
     let exe = installed_exe(&app)?.ok_or("The Python language server is not installed.")?;
     {
-        let proc = state.pylsp.lock().map_err(|e| e.to_string())?;
+        let proc = crate::util::lock(&state.pylsp);
         if proc.child.is_some() && !proc.stop {
             return Ok(());
         }
     }
-    launch(&app, &*state, &exe, settings.unwrap_or(Value::Null), true)
+    launch(&app, &state, &exe, settings.unwrap_or(Value::Null), true)
 }
 
 #[tauri::command]
-pub fn pylsp_send(state: State<'_, AppState>, message: Value) -> Result<(), String> {
-    let text = serde_json::to_string(&message).map_err(|e| e.to_string())?;
+pub fn pylsp_send(state: State<'_, AppState>, message: Value) -> Result<(), AppError> {
+    let text = serde_json::to_string(&message)?;
     if text.len() > MAX_FRAME {
         return Err("That message is too large to send.".into());
     }
-    let proc = state.pylsp.lock().map_err(|e| e.to_string())?;
+    let proc = crate::util::lock(&state.pylsp);
     let Some(tx) = proc.tx.as_ref() else {
         return Err("The Python language server is not running.".into());
     };
     // Queued, not written here: a slow ty must not hold the lock or the main thread.
     tx.send(text.into_bytes())
-        .map_err(|_| "The Python language server is not running.".to_string())
+        .map_err(|_| crate::error::AppError::new("The Python language server is not running."))
 }
 
 #[tauri::command]
@@ -206,7 +209,7 @@ pub fn pylsp_stop(state: State<'_, AppState>) {
     stop(&state);
 }
 
-fn install(app: &AppHandle, cancel: &AtomicBool, force: bool) -> Result<(), String> {
+fn install(app: &AppHandle, cancel: &AtomicBool, force: bool) -> Result<(), AppError> {
     let dest = tools_dir(app)?;
     if !force && exe_in(&dest).is_file() {
         return Ok(());
@@ -215,14 +218,24 @@ fn install(app: &AppHandle, cancel: &AtomicBool, force: bool) -> Result<(), Stri
     let url = format!("https://github.com/astral-sh/ty/releases/download/{TY_VERSION}/{asset}");
     let sum_url = format!("{url}.sha256");
     if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        fs::create_dir_all(parent)?;
     }
     // `0.0.84`.with_extension() would treat `84` as the extension, so name the file explicitly.
     let archive = dest.parent().unwrap_or(Path::new(".")).join(format!(
         "{TY_VERSION}.{}",
-        if asset.ends_with(".zip") { "zip" } else { "tar.gz" }
+        if asset.ends_with(".zip") {
+            "zip"
+        } else {
+            "tar.gz"
+        }
     ));
-    emit(app, "download", 0, 0, &format!("Downloading ty {TY_VERSION}"));
+    emit(
+        app,
+        "download",
+        0,
+        0,
+        &format!("Downloading ty {TY_VERSION}"),
+    );
     download(app, cancel, &url, &archive)?;
     emit(app, "check", 0, 0, "Checking the download");
     let sums = http_text(&sum_url)?;
@@ -234,7 +247,7 @@ fn install(app: &AppHandle, cancel: &AtomicBool, force: bool) -> Result<(), Stri
     }
     let staging = dest.with_file_name(format!(".{TY_VERSION}.partial"));
     let _ = fs::remove_dir_all(&staging);
-    fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
+    fs::create_dir_all(&staging)?;
     emit(app, "extract", 0, 0, "Unpacking ty");
     let extracted = if asset.ends_with(".zip") {
         extract_zip(&archive, &staging)
@@ -249,7 +262,7 @@ fn install(app: &AppHandle, cancel: &AtomicBool, force: bool) -> Result<(), Stri
     let found = find_binary(&staging).ok_or("The archive did not contain ty.")?;
     let final_exe = exe_in(&staging);
     if found != final_exe {
-        fs::rename(&found, &final_exe).map_err(|e| e.to_string())?;
+        fs::rename(&found, &final_exe)?;
     }
     #[cfg(unix)]
     {
@@ -257,7 +270,7 @@ fn install(app: &AppHandle, cancel: &AtomicBool, force: bool) -> Result<(), Stri
         let _ = fs::set_permissions(&final_exe, fs::Permissions::from_mode(0o755));
     }
     if dest.exists() {
-        fs::remove_dir_all(&dest).map_err(|e| e.to_string())?;
+        fs::remove_dir_all(&dest)?;
     }
     fs::rename(&staging, &dest).map_err(|e| format!("Could not install ty: {e}"))?;
     let _ = fs::remove_file(&archive);
@@ -271,20 +284,22 @@ fn launch(
     exe: &Path,
     settings: Value,
     reset_crashes: bool,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     let mut cmd = process::background(exe);
     cmd.arg("server")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = cmd.spawn().map_err(|e| format!("Could not start ty: {e}"))?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Could not start ty: {e}"))?;
     let stdout = child.stdout.take().ok_or("ty returned no output.")?;
     let stdin = child.stdin.take().ok_or("ty took no input.")?;
     if let Some(err) = child.stderr.take() {
         thread::spawn(move || drain_stderr(err));
     }
     let generation = {
-        let mut proc = state.pylsp.lock().map_err(|e| e.to_string())?;
+        let mut proc = crate::util::lock(&state.pylsp);
         proc.stop = false;
         proc.exe = exe.to_path_buf();
         proc.settings = Some(settings);
@@ -439,7 +454,7 @@ fn on_exit(app: &AppHandle, generation: u64) {
         };
         proc.settings.clone().unwrap_or(Value::Null)
     };
-    if launch(app, &*state, &exe, settings, false).is_err() {
+    if launch(app, &state, &exe, settings, false).is_err() {
         let _ = app.emit(
             "pylsp:status",
             json!({ "state": "failed", "detail": "The language server could not be restarted." }),
@@ -476,12 +491,12 @@ fn emit(app: &AppHandle, phase: &str, done: u64, total: u64, label: &str) {
     );
 }
 
-fn download(app: &AppHandle, cancel: &AtomicBool, url: &str, dest: &Path) -> Result<(), String> {
+fn download(app: &AppHandle, cancel: &AtomicBool, url: &str, dest: &Path) -> Result<(), AppError> {
     if cancel.load(Ordering::Relaxed) {
         return Err("Download cancelled.".into());
     }
     if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        fs::create_dir_all(parent)?;
     }
     let response = http()
         .get(url)
@@ -493,7 +508,7 @@ fn download(app: &AppHandle, cancel: &AtomicBool, url: &str, dest: &Path) -> Res
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(0);
     let mut reader = response.into_reader();
-    let mut file = File::create(dest).map_err(|e| e.to_string())?;
+    let mut file = File::create(dest)?;
     let mut buf = [0u8; 64 * 1024];
     let mut done = 0u64;
     let mut next = 0u64;
@@ -510,14 +525,20 @@ fn download(app: &AppHandle, cancel: &AtomicBool, url: &str, dest: &Path) -> Res
         if n == 0 {
             break;
         }
-        file.write_all(&buf[..n]).map_err(|e| e.to_string())?;
+        file.write_all(&buf[..n])?;
         done += n as u64;
         if done >= next {
-            emit(app, "download", done, total, &format!("Downloading ty {TY_VERSION}"));
+            emit(
+                app,
+                "download",
+                done,
+                total,
+                &format!("Downloading ty {TY_VERSION}"),
+            );
             next = done.saturating_add(512 * 1024);
         }
     }
-    file.flush().map_err(|e| e.to_string())?;
+    file.flush()?;
     Ok(())
 }
 
@@ -528,22 +549,22 @@ fn http() -> ureq::Agent {
         .build()
 }
 
-fn http_text(url: &str) -> Result<String, String> {
+fn http_text(url: &str) -> Result<String, AppError> {
     http()
         .get(url)
         .set("User-Agent", USER_AGENT)
         .call()
         .map_err(|e| format!("Could not reach {url}: {e}"))?
         .into_string()
-        .map_err(|e| e.to_string())
+        .map_err(crate::error::AppError::from)
 }
 
-fn sha256_file(path: &Path) -> Result<String, String> {
-    let mut file = File::open(path).map_err(|e| e.to_string())?;
+fn sha256_file(path: &Path) -> Result<String, AppError> {
+    let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 64 * 1024];
     loop {
-        let n = file.read(&mut buf).map_err(|e| e.to_string())?;
+        let n = file.read(&mut buf)?;
         if n == 0 {
             break;
         }
@@ -588,7 +609,7 @@ pub fn asset_name(os: &str, arch: &str) -> Option<&'static str> {
     }
 }
 
-fn host_asset() -> Result<&'static str, String> {
+fn host_asset() -> Result<&'static str, AppError> {
     let os = if cfg!(windows) {
         "windows"
     } else if cfg!(target_os = "linux") {
@@ -605,58 +626,61 @@ fn host_asset() -> Result<&'static str, String> {
     } else {
         "other"
     };
-    asset_name(os, arch).ok_or_else(|| format!("There is no ty build for {os} ({arch})."))
+    asset_name(os, arch).ok_or_else(|| {
+        crate::error::AppError::new(format!("There is no ty build for {os} ({arch})."))
+    })
 }
 
 /// Join `name` onto `root`, refusing absolute paths and `..`.
-pub fn safe_join(root: &Path, name: &str) -> Result<PathBuf, String> {
+pub fn safe_join(root: &Path, name: &str) -> Result<PathBuf, AppError> {
     let rel = Path::new(name);
-    if name.contains('\0') || rel.is_absolute() || rel.components().any(|c| matches!(c, Component::ParentDir)) {
-        return Err(format!("The archive contains an unsafe path `{name}`."));
+    if name.contains('\0')
+        || rel.is_absolute()
+        || rel.components().any(|c| matches!(c, Component::ParentDir))
+    {
+        return Err(format!("The archive contains an unsafe path `{name}`.").into());
     }
     Ok(root.join(rel))
 }
 
-pub fn extract_zip(archive: &Path, dest: &Path) -> Result<(), String> {
-    let file = File::open(archive).map_err(|e| e.to_string())?;
+pub fn extract_zip(archive: &Path, dest: &Path) -> Result<(), AppError> {
+    let file = File::open(archive)?;
     let mut zip = zip::ZipArchive::new(file).map_err(|e| format!("Could not read the zip: {e}"))?;
     for i in 0..zip.len() {
-        let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
+        let mut entry = zip.by_index(i)?;
         let name = entry.name().to_string();
         if name.ends_with('/') || entry.is_dir() {
             continue;
         }
         let path = safe_join(dest, &name)?;
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            fs::create_dir_all(parent)?;
         }
-        let mut out = File::create(&path).map_err(|e| e.to_string())?;
-        io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
+        let mut out = File::create(&path)?;
+        io::copy(&mut entry, &mut out)?;
     }
     Ok(())
 }
 
-pub fn extract_tar_gz(archive: &Path, dest: &Path) -> Result<(), String> {
-    let file = File::open(archive).map_err(|e| e.to_string())?;
+pub fn extract_tar_gz(archive: &Path, dest: &Path) -> Result<(), AppError> {
+    let file = File::open(archive)?;
     let gz = flate2::read::GzDecoder::new(file);
     let mut tar = tar::Archive::new(gz);
-    let entries = tar.entries().map_err(|e| format!("Could not read the archive: {e}"))?;
+    let entries = tar
+        .entries()
+        .map_err(|e| format!("Could not read the archive: {e}"))?;
     for entry in entries {
-        let mut entry = entry.map_err(|e| e.to_string())?;
+        let mut entry = entry?;
         if !entry.header().entry_type().is_file() {
             continue;
         }
-        let owned = entry
-            .path()
-            .map_err(|e| e.to_string())?
-            .to_string_lossy()
-            .into_owned();
+        let owned = entry.path()?.to_string_lossy().into_owned();
         let path = safe_join(dest, &owned)?;
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            fs::create_dir_all(parent)?;
         }
-        let mut out = File::create(&path).map_err(|e| e.to_string())?;
-        io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
+        let mut out = File::create(&path)?;
+        io::copy(&mut entry, &mut out)?;
     }
     Ok(())
 }
@@ -669,7 +693,9 @@ fn find_binary(dir: &Path) -> Option<PathBuf> {
     let name = if cfg!(windows) { "ty.exe" } else { "ty" };
     let mut stack = vec![dir.to_path_buf()];
     while let Some(next) = stack.pop() {
-        let Ok(rd) = fs::read_dir(&next) else { continue };
+        let Ok(rd) = fs::read_dir(&next) else {
+            continue;
+        };
         for entry in rd.flatten() {
             let path = entry.path();
             if path.is_dir() {
@@ -689,7 +715,7 @@ pub struct FrameBuf {
 }
 
 impl FrameBuf {
-    pub fn push(&mut self, chunk: &[u8]) -> Result<Vec<String>, String> {
+    pub fn push(&mut self, chunk: &[u8]) -> Result<Vec<String>, AppError> {
         self.buf.extend_from_slice(chunk);
         let mut out = Vec::new();
         loop {
@@ -707,7 +733,10 @@ impl FrameBuf {
             }
             let body = self.buf[body_at..body_at + len].to_vec();
             self.buf.drain(..body_at + len);
-            out.push(String::from_utf8(body).map_err(|_| "ty sent a message that was not UTF-8.".to_string())?);
+            out.push(
+                String::from_utf8(body)
+                    .map_err(|_| "ty sent a message that was not UTF-8.".to_string())?,
+            );
         }
         Ok(out)
     }
@@ -717,7 +746,7 @@ fn find_sep(buf: &[u8]) -> Option<usize> {
     buf.windows(4).position(|w| w == b"\r\n\r\n")
 }
 
-fn content_length(header: &str) -> Result<usize, String> {
+fn content_length(header: &str) -> Result<usize, AppError> {
     let line = header
         .lines()
         .find(|l| l.to_ascii_lowercase().starts_with("content-length:"))

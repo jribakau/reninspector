@@ -87,11 +87,7 @@ pub struct IndexPair {
 
 /// Protocol-2 pickle of `{name: [(offset, len), ...]}`.
 pub fn dump_index<S: AsRef<str>>(entries: &[(S, Vec<IndexPair>)]) -> Vec<u8> {
-    let mut out = Vec::new();
-    out.push(PROTO);
-    out.push(2);
-    out.push(EMPTY_DICT);
-    out.push(MARK);
+    let mut out = vec![PROTO, 2, EMPTY_DICT, MARK];
     for (name, pairs) in entries {
         write_binunicode(&mut out, name.as_ref());
         out.push(EMPTY_LIST);

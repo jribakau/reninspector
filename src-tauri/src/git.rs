@@ -1,5 +1,6 @@
 //! Git status, history, and the commands the source control panel uses.
 
+use crate::error::AppError;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -80,10 +81,6 @@ traceback.txt
 files.txt
 ";
 
-fn no_project() -> String {
-    "No project is open.".into()
-}
-
 /// A git command that never waits for a prompt and speaks English, so the messages
 /// this module recognises read the same on every machine.
 fn git_command(root: &Path, args: &[&str]) -> std::process::Command {
@@ -99,17 +96,17 @@ fn git_command(root: &Path, args: &[&str]) -> std::process::Command {
     cmd
 }
 
-fn git(root: &Path, args: &[&str]) -> Result<Output, String> {
+fn git(root: &Path, args: &[&str]) -> Result<Output, AppError> {
     git_command(root, args)
         .output()
-        .map_err(|_| "git is not available on PATH.".to_string())
+        .map_err(|_| crate::error::AppError::new("git is not available on PATH."))
 }
 
 const NET_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Fetch, pull, and push. SSH may not ask for a passphrase, and a stuck server is
 /// stopped after two minutes instead of leaving the panel busy forever.
-fn git_net(root: &Path, args: &[&str]) -> Result<Output, String> {
+fn git_net(root: &Path, args: &[&str]) -> Result<Output, AppError> {
     let mut cmd = git_command(root, args);
     let configured = git(root, &["config", "--get", "core.sshCommand"])
         .map(|out| !String::from_utf8_lossy(&out.stdout).trim().is_empty())
@@ -153,7 +150,7 @@ fn git_net(root: &Path, args: &[&str]) -> Result<Output, String> {
                 return Err("git took longer than two minutes and was stopped.".into());
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(100)),
-            Err(e) => return Err(e.to_string()),
+            Err(e) => return Err(e.to_string().into()),
         }
     };
     Ok(Output {
@@ -163,7 +160,7 @@ fn git_net(root: &Path, args: &[&str]) -> Result<Output, String> {
     })
 }
 
-fn git_stdin(root: &Path, args: &[&str], input: &[u8]) -> Result<Output, String> {
+fn git_stdin(root: &Path, args: &[&str], input: &[u8]) -> Result<Output, AppError> {
     let mut child = git_command(root, args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -171,19 +168,21 @@ fn git_stdin(root: &Path, args: &[&str], input: &[u8]) -> Result<Output, String>
         .spawn()
         .map_err(|_| "git is not available on PATH.".to_string())?;
     if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(input).map_err(|e| e.to_string())?;
+        stdin.write_all(input)?;
     }
-    child.wait_with_output().map_err(|e| e.to_string())
+    child
+        .wait_with_output()
+        .map_err(crate::error::AppError::from)
 }
 
-fn git_ok(output: &Output) -> Result<String, String> {
+fn git_ok(output: &Output) -> Result<String, AppError> {
     if !output.status.success() {
         let text = format!(
             "{}{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
-        return Err(text.trim().to_string());
+        return Err(text.trim().to_string().into());
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
@@ -198,12 +197,16 @@ fn command_text(output: &Output) -> String {
     .to_string()
 }
 
-fn git_root(state: &State<'_, AppState>) -> Result<PathBuf, String> {
-    let guard = state.project.lock().map_err(|e| e.to_string())?;
-    Ok(guard.as_ref().ok_or_else(no_project)?.root.clone())
+fn git_root(state: &State<'_, AppState>) -> Result<PathBuf, AppError> {
+    let guard = crate::util::lock(&state.project);
+    Ok(guard
+        .as_ref()
+        .ok_or_else(crate::util::no_project)?
+        .root
+        .clone())
 }
 
-fn inside_work_tree(root: &Path) -> Result<bool, String> {
+fn inside_work_tree(root: &Path) -> Result<bool, AppError> {
     Ok(git(root, &["rev-parse", "--is-inside-work-tree"])?
         .status
         .success())
@@ -237,7 +240,7 @@ fn porcelain_path(raw: &str) -> String {
     path.replace('\\', "/")
 }
 
-fn git_path(path: &str) -> Result<String, String> {
+fn git_path(path: &str) -> Result<String, AppError> {
     let path = porcelain_path(path);
     if path.is_empty()
         || path.starts_with('/')
@@ -251,7 +254,7 @@ fn git_path(path: &str) -> Result<String, String> {
     Ok(path)
 }
 
-fn git_rev(rev: &str) -> Result<String, String> {
+fn git_rev(rev: &str) -> Result<String, AppError> {
     let rev = rev.trim();
     if rev.is_empty()
         || rev.starts_with('-')
@@ -472,7 +475,7 @@ fn head_is_pushed(root: &Path, upstream: Option<&str>) -> bool {
     .unwrap_or(false)
 }
 
-fn status_at(root: &Path) -> Result<GitStatus, String> {
+fn status_at(root: &Path) -> Result<GitStatus, AppError> {
     if !inside_work_tree(root)? {
         return Err(NOT_A_REPO.into());
     }
@@ -487,7 +490,7 @@ fn status_at(root: &Path) -> Result<GitStatus, String> {
         ],
     )?;
     if !output.status.success() {
-        return Err(command_text(&output));
+        return Err(command_text(&output).into());
     }
     let text = String::from_utf8_lossy(&output.stdout);
     let prefix = repo_prefix(root);
@@ -507,22 +510,23 @@ fn status_at(root: &Path) -> Result<GitStatus, String> {
     })
 }
 
-fn write_ignore_file(root: &Path) -> Result<(), String> {
+fn write_ignore_file(root: &Path) -> Result<(), AppError> {
     let path = root.join(".gitignore");
     if path.exists() {
         return Err("A .gitignore is already in this folder.".into());
     }
-    fs::write(&path, RENPY_IGNORE).map_err(|e| format!("Could not write .gitignore: {e}"))
+    fs::write(&path, RENPY_IGNORE)
+        .map_err(|e| crate::error::AppError::new(format!("Could not write .gitignore: {e}")))
 }
 
-fn ensure_ignore(root: &Path) -> Result<(), String> {
+fn ensure_ignore(root: &Path) -> Result<(), AppError> {
     if root.join(".gitignore").exists() {
         return Ok(());
     }
     write_ignore_file(root)
 }
 
-fn ignore_line(root: &Path, path: &str) -> Result<(), String> {
+fn ignore_line(root: &Path, path: &str) -> Result<(), AppError> {
     let rel = git_path(path)?;
     if rel.chars().any(|c| c.is_control() || c == '#') {
         return Err("That path cannot be added to .gitignore.".into());
@@ -541,10 +545,11 @@ fn ignore_line(root: &Path, path: &str) -> Result<(), String> {
     }
     text.push_str(&rel);
     text.push('\n');
-    fs::write(&file, text).map_err(|e| format!("Could not write .gitignore: {e}"))
+    fs::write(&file, text)
+        .map_err(|e| crate::error::AppError::new(format!("Could not write .gitignore: {e}")))
 }
 
-fn init_at(root: &Path) -> Result<String, String> {
+fn init_at(root: &Path) -> Result<String, AppError> {
     if inside_work_tree(root)? {
         return Err("This folder is already in a git repository.".into());
     }
@@ -553,7 +558,7 @@ fn init_at(root: &Path) -> Result<String, String> {
     Ok(text.trim().to_string())
 }
 
-fn check_branch(root: &Path, name: &str) -> Result<String, String> {
+fn check_branch(root: &Path, name: &str) -> Result<String, AppError> {
     let name = name.trim();
     if name.is_empty() || name.chars().any(|c| c.is_control()) {
         return Err("That branch name is not valid.".into());
@@ -576,14 +581,14 @@ fn ref_exists(root: &Path, spec: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn switch_named(root: &Path, switch_args: &[&str], checkout_args: &[&str]) -> Result<(), String> {
+fn switch_named(root: &Path, switch_args: &[&str], checkout_args: &[&str]) -> Result<(), AppError> {
     let out = git(root, switch_args)?;
     if out.status.success() {
         return Ok(());
     }
     let err = command_text(&out);
     if !switch_failed_without_switch(&err) {
-        return Err(err);
+        return Err(err.into());
     }
     git_ok(&git(root, checkout_args)?)?;
     Ok(())
@@ -604,7 +609,7 @@ fn local_branch_for_remote(name: &str, remotes: &[String]) -> Option<String> {
     None
 }
 
-fn switch_at(root: &Path, name: &str) -> Result<(), String> {
+fn switch_at(root: &Path, name: &str) -> Result<(), AppError> {
     let name = check_branch(root, name)?;
     let local = ref_exists(root, &format!("refs/heads/{name}"));
     let remote = ref_exists(root, &format!("refs/remotes/{name}"));
@@ -623,7 +628,7 @@ fn switch_at(root: &Path, name: &str) -> Result<(), String> {
     switch_named(root, &["switch", &name], &["checkout", &name])
 }
 
-fn create_branch_at(root: &Path, name: &str) -> Result<(), String> {
+fn create_branch_at(root: &Path, name: &str) -> Result<(), AppError> {
     let name = check_branch(root, name)?;
     let out = git(root, &["switch", "-c", &name])?;
     if out.status.success() {
@@ -631,13 +636,13 @@ fn create_branch_at(root: &Path, name: &str) -> Result<(), String> {
     }
     let err = command_text(&out);
     if !switch_failed_without_switch(&err) {
-        return Err(err);
+        return Err(err.into());
     }
     git_ok(&git(root, &["checkout", "-b", &name])?)?;
     Ok(())
 }
 
-fn branches_at(root: &Path) -> Result<Vec<GitBranch>, String> {
+fn branches_at(root: &Path) -> Result<Vec<GitBranch>, AppError> {
     if !inside_work_tree(root)? {
         return Err(NOT_A_REPO.into());
     }
@@ -673,7 +678,7 @@ fn branches_at(root: &Path) -> Result<Vec<GitBranch>, String> {
     Ok(branches)
 }
 
-fn push_at(root: &Path) -> Result<String, String> {
+fn push_at(root: &Path) -> Result<String, AppError> {
     let status = status_at(root)?;
     if !status.has_remote {
         return Err("This repository has no remote. Add one before pushing.".into());
@@ -692,7 +697,7 @@ fn push_at(root: &Path) -> Result<String, String> {
     Ok(text.trim().to_string())
 }
 
-fn add_remote_at(root: &Path, url: &str) -> Result<(), String> {
+fn add_remote_at(root: &Path, url: &str) -> Result<(), AppError> {
     let url = url.trim();
     let lower = url.to_ascii_lowercase();
     if url.is_empty()
@@ -708,10 +713,10 @@ fn add_remote_at(root: &Path, url: &str) -> Result<(), String> {
 }
 
 /// Staged paths that sit outside the project folder, relative to the repository root.
-fn outside_staged(root: &Path) -> Result<Vec<String>, String> {
+fn outside_staged(root: &Path) -> Result<Vec<String>, AppError> {
     let output = git(root, &["diff", "--cached", "--name-only", "-z"])?;
     if !output.status.success() {
-        return Err(command_text(&output));
+        return Err(command_text(&output).into());
     }
     let prefix = repo_prefix(root);
     let text = String::from_utf8_lossy(&output.stdout);
@@ -738,7 +743,7 @@ fn outside_staged_error(paths: &[String]) -> String {
     )
 }
 
-fn commit_at(root: &Path, message: &str, amend: bool) -> Result<String, String> {
+fn commit_at(root: &Path, message: &str, amend: bool) -> Result<String, AppError> {
     let message = message.trim();
     if message.is_empty() && !amend {
         return Err("Write a commit message first.".into());
@@ -746,18 +751,18 @@ fn commit_at(root: &Path, message: &str, amend: bool) -> Result<String, String> 
     if !amend {
         let staged = git(root, &["diff", "--cached", "--name-only"])?;
         if !staged.status.success() {
-            return Err(command_text(&staged));
+            return Err(command_text(&staged).into());
         }
         if String::from_utf8_lossy(&staged.stdout).trim().is_empty() {
             let add = git(root, &["add", "--", "game"])?;
             if !add.status.success() {
-                return Err(command_text(&add));
+                return Err(command_text(&add).into());
             }
         }
     }
     let outside = outside_staged(root)?;
     if !outside.is_empty() {
-        return Err(outside_staged_error(&outside));
+        return Err(outside_staged_error(&outside).into());
     }
     let commit = if amend && message.is_empty() {
         git(root, &["commit", "--amend", "--no-edit"])?
@@ -767,12 +772,12 @@ fn commit_at(root: &Path, message: &str, amend: bool) -> Result<String, String> 
         git(root, &["commit", "-m", message])?
     };
     if !commit.status.success() {
-        return Err(command_text(&commit));
+        return Err(command_text(&commit).into());
     }
     Ok(command_text(&commit))
 }
 
-fn undo_at(root: &Path) -> Result<String, String> {
+fn undo_at(root: &Path) -> Result<String, AppError> {
     let head = git(root, &["rev-parse", "--verify", "HEAD"])?;
     if !head.status.success() {
         return Err("There is no commit to undo.".into());
@@ -798,21 +803,22 @@ fn show_missing(err: &str) -> bool {
         || err.contains("invalid object name 'head'")
 }
 
-fn read_worktree(root: &Path, rel: &str) -> Result<String, String> {
+fn read_worktree(root: &Path, rel: &str) -> Result<String, AppError> {
     let abs = root.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
     match fs::read(&abs) {
         Ok(bytes) => {
             if bytes.len() > GIT_TEXT_MAX {
                 return Err("That file is too large to show.".into());
             }
-            String::from_utf8(bytes).map_err(|_| "That file is not text.".to_string())
+            String::from_utf8(bytes)
+                .map_err(|_| crate::error::AppError::new("That file is not text."))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
-        Err(e) => Err(format!("Could not read {rel}: {e}")),
+        Err(e) => Err(format!("Could not read {rel}: {e}").into()),
     }
 }
 
-fn show_at(root: &Path, rev: &str, path: &str) -> Result<String, String> {
+fn show_at(root: &Path, rev: &str, path: &str) -> Result<String, AppError> {
     let rel = git_path(path)?;
     if rev == "WORKTREE" {
         return read_worktree(root, &rel);
@@ -829,12 +835,13 @@ fn show_at(root: &Path, rev: &str, path: &str) -> Result<String, String> {
         if show_missing(&err) {
             return Ok(String::new());
         }
-        return Err(err);
+        return Err(err.into());
     }
     if output.stdout.len() > GIT_TEXT_MAX {
         return Err("That file is too large to show.".into());
     }
-    String::from_utf8(output.stdout).map_err(|_| "That file is not text.".to_string())
+    String::from_utf8(output.stdout)
+        .map_err(|_| crate::error::AppError::new("That file is not text."))
 }
 
 fn index_mode(root: &Path, rel: &str) -> String {
@@ -853,7 +860,7 @@ fn index_mode(root: &Path, rel: &str) -> String {
     }
 }
 
-fn stage_text_at(root: &Path, path: &str, text: &str) -> Result<(), String> {
+fn stage_text_at(root: &Path, path: &str, text: &str) -> Result<(), AppError> {
     let rel = git_path(path)?;
     if text.len() > GIT_TEXT_MAX {
         return Err("That file is too large to stage.".into());
@@ -884,14 +891,14 @@ fn stage_text_at(root: &Path, path: &str, text: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn checked_paths(paths: &[String]) -> Result<Vec<String>, String> {
+fn checked_paths(paths: &[String]) -> Result<Vec<String>, AppError> {
     if paths.is_empty() {
         return Err("Choose a file first.".into());
     }
     paths.iter().map(|p| git_path(p)).collect()
 }
 
-fn stage_at(root: &Path, paths: &[String]) -> Result<(), String> {
+fn stage_at(root: &Path, paths: &[String]) -> Result<(), AppError> {
     let rels = checked_paths(paths)?;
     let mut args = vec!["add", "--"];
     for rel in &rels {
@@ -923,13 +930,13 @@ fn spare_backup(backup: &Path) -> PathBuf {
     target
 }
 
-fn discard_untracked_file(abs: &Path, backup: &Path, rel: &str) -> Result<(), String> {
+fn discard_untracked_file(abs: &Path, backup: &Path, rel: &str) -> Result<(), AppError> {
     if !abs.is_file() {
         return Err("That untracked path is not a single file.".into());
     }
     let target = spare_backup(backup);
     if let Some(parent) = target.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        fs::create_dir_all(parent)?;
     }
     fs::copy(abs, &target).map_err(|e| format!("Could not back up {rel}: {e}"))?;
     fs::remove_file(abs).map_err(|e| format!("Could not discard {rel}: {e}"))?;
@@ -966,42 +973,42 @@ fn parse_commit_files(text: &str) -> Vec<GitCommitFile> {
 }
 
 #[tauri::command(async)]
-pub fn git_status(state: State<'_, AppState>) -> Result<GitStatus, String> {
+pub fn git_status(state: State<'_, AppState>) -> Result<GitStatus, AppError> {
     status_at(&git_root(&state)?)
 }
 
 #[tauri::command(async)]
-pub fn git_init(state: State<'_, AppState>) -> Result<String, String> {
+pub fn git_init(state: State<'_, AppState>) -> Result<String, AppError> {
     init_at(&git_root(&state)?)
 }
 
 #[tauri::command(async)]
-pub fn git_write_ignore(state: State<'_, AppState>) -> Result<(), String> {
+pub fn git_write_ignore(state: State<'_, AppState>) -> Result<(), AppError> {
     write_ignore_file(&git_root(&state)?)
 }
 
 #[tauri::command(async)]
-pub fn git_ignore(state: State<'_, AppState>, path: String) -> Result<(), String> {
+pub fn git_ignore(state: State<'_, AppState>, path: String) -> Result<(), AppError> {
     ignore_line(&git_root(&state)?, &path)
 }
 
 #[tauri::command(async)]
-pub fn git_branches(state: State<'_, AppState>) -> Result<Vec<GitBranch>, String> {
+pub fn git_branches(state: State<'_, AppState>) -> Result<Vec<GitBranch>, AppError> {
     branches_at(&git_root(&state)?)
 }
 
 #[tauri::command(async)]
-pub fn git_switch(state: State<'_, AppState>, name: String) -> Result<(), String> {
+pub fn git_switch(state: State<'_, AppState>, name: String) -> Result<(), AppError> {
     switch_at(&git_root(&state)?, &name)
 }
 
 #[tauri::command(async)]
-pub fn git_create_branch(state: State<'_, AppState>, name: String) -> Result<(), String> {
+pub fn git_create_branch(state: State<'_, AppState>, name: String) -> Result<(), AppError> {
     create_branch_at(&git_root(&state)?, &name)
 }
 
 #[tauri::command(async)]
-pub fn git_fetch(state: State<'_, AppState>) -> Result<String, String> {
+pub fn git_fetch(state: State<'_, AppState>) -> Result<String, AppError> {
     let root = git_root(&state)?;
     Ok(git_ok(&git_net(&root, &["fetch", "--prune"])?)?
         .trim()
@@ -1009,7 +1016,7 @@ pub fn git_fetch(state: State<'_, AppState>) -> Result<String, String> {
 }
 
 #[tauri::command(async)]
-pub fn git_pull(state: State<'_, AppState>) -> Result<String, String> {
+pub fn git_pull(state: State<'_, AppState>) -> Result<String, AppError> {
     let root = git_root(&state)?;
     Ok(git_ok(&git_net(&root, &["pull", "--ff-only"])?)?
         .trim()
@@ -1017,12 +1024,12 @@ pub fn git_pull(state: State<'_, AppState>) -> Result<String, String> {
 }
 
 #[tauri::command(async)]
-pub fn git_push(state: State<'_, AppState>) -> Result<String, String> {
+pub fn git_push(state: State<'_, AppState>) -> Result<String, AppError> {
     push_at(&git_root(&state)?)
 }
 
 #[tauri::command(async)]
-pub fn git_add_remote(state: State<'_, AppState>, url: String) -> Result<(), String> {
+pub fn git_add_remote(state: State<'_, AppState>, url: String) -> Result<(), AppError> {
     add_remote_at(&git_root(&state)?, &url)
 }
 
@@ -1031,22 +1038,22 @@ pub fn git_commit(
     state: State<'_, AppState>,
     message: String,
     amend: bool,
-) -> Result<String, String> {
+) -> Result<String, AppError> {
     commit_at(&git_root(&state)?, &message, amend)
 }
 
 #[tauri::command(async)]
-pub fn git_undo_commit(state: State<'_, AppState>) -> Result<String, String> {
+pub fn git_undo_commit(state: State<'_, AppState>) -> Result<String, AppError> {
     undo_at(&git_root(&state)?)
 }
 
 #[tauri::command(async)]
-pub fn git_stage(state: State<'_, AppState>, paths: Vec<String>) -> Result<(), String> {
+pub fn git_stage(state: State<'_, AppState>, paths: Vec<String>) -> Result<(), AppError> {
     stage_at(&git_root(&state)?, &paths)
 }
 
 #[tauri::command(async)]
-pub fn git_unstage(state: State<'_, AppState>, paths: Vec<String>) -> Result<(), String> {
+pub fn git_unstage(state: State<'_, AppState>, paths: Vec<String>) -> Result<(), AppError> {
     let root = git_root(&state)?;
     let rels = checked_paths(&paths)?;
     let head = git(&root, &["rev-parse", "--verify", "HEAD"])?;
@@ -1063,7 +1070,11 @@ pub fn git_unstage(state: State<'_, AppState>, paths: Vec<String>) -> Result<(),
 }
 
 #[tauri::command(async)]
-pub fn git_discard(app: AppHandle, state: State<'_, AppState>, path: String) -> Result<(), String> {
+pub fn git_discard(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<(), AppError> {
     let rel = git_path(&path)?;
     let root = git_root(&state)?;
     let status = git(
@@ -1071,7 +1082,7 @@ pub fn git_discard(app: AppHandle, state: State<'_, AppState>, path: String) -> 
         &["status", "--porcelain", "--untracked-files=all", "--", &rel],
     )?;
     if !status.status.success() {
-        return Err(command_text(&status));
+        return Err(command_text(&status).into());
     }
     let line = String::from_utf8_lossy(&status.stdout);
     let untracked = line.lines().any(|row| row.starts_with("??"));
@@ -1087,7 +1098,7 @@ pub fn git_discard(app: AppHandle, state: State<'_, AppState>, path: String) -> 
 }
 
 #[tauri::command(async)]
-pub fn git_show(state: State<'_, AppState>, rev: String, path: String) -> Result<String, String> {
+pub fn git_show(state: State<'_, AppState>, rev: String, path: String) -> Result<String, AppError> {
     show_at(&git_root(&state)?, &rev, &path)
 }
 
@@ -1096,7 +1107,7 @@ pub fn git_stage_text(
     state: State<'_, AppState>,
     path: String,
     text: String,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     stage_text_at(&git_root(&state)?, &path, &text)
 }
 
@@ -1105,7 +1116,7 @@ pub fn git_log(
     state: State<'_, AppState>,
     path: Option<String>,
     limit: u32,
-) -> Result<Vec<GitCommit>, String> {
+) -> Result<Vec<GitCommit>, AppError> {
     let root = git_root(&state)?;
     let limit = limit.clamp(1, 100);
     let n = limit.to_string();
@@ -1150,7 +1161,7 @@ pub fn git_log(
 pub fn git_commit_files(
     state: State<'_, AppState>,
     rev: String,
-) -> Result<Vec<GitCommitFile>, String> {
+) -> Result<Vec<GitCommitFile>, AppError> {
     let root = git_root(&state)?;
     let rev = git_rev(&rev)?;
     let text = git_ok(&git(

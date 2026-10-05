@@ -1,12 +1,13 @@
 //! Reads and writes a settings file the user picked in the Settings dialog.
 
+use crate::error::AppError;
 use std::fs;
 use std::path::Path;
 
 /// Settings files are a few hundred bytes. Refuse anything large so a wrong pick cannot fill memory.
 const MAX_BYTES: u64 = 1024 * 1024;
 
-fn json_path(path: &str) -> Result<&Path, String> {
+fn json_path(path: &str) -> Result<&Path, AppError> {
     let path = Path::new(path);
     let is_json = path
         .extension()
@@ -20,13 +21,14 @@ fn json_path(path: &str) -> Result<&Path, String> {
 }
 
 #[tauri::command(async)]
-pub fn settings_export(path: String, text: String) -> Result<(), String> {
+pub fn settings_export(path: String, text: String) -> Result<(), AppError> {
     let path = json_path(&path)?;
-    fs::write(path, text).map_err(|e| format!("Could not write the settings file: {e}"))
+    fs::write(path, text)
+        .map_err(|e| crate::error::AppError::new(format!("Could not write the settings file: {e}")))
 }
 
 #[tauri::command(async)]
-pub fn settings_import(path: String) -> Result<String, String> {
+pub fn settings_import(path: String) -> Result<String, AppError> {
     let path = json_path(&path)?;
     let size = fs::metadata(path)
         .map_err(|e| format!("Could not read the settings file: {e}"))?
@@ -34,7 +36,8 @@ pub fn settings_import(path: String) -> Result<String, String> {
     if size > MAX_BYTES {
         return Err("That file is too large to be a settings file.".into());
     }
-    fs::read_to_string(path).map_err(|e| format!("Could not read the settings file: {e}"))
+    fs::read_to_string(path)
+        .map_err(|e| crate::error::AppError::new(format!("Could not read the settings file: {e}")))
 }
 
 #[cfg(test)]

@@ -97,10 +97,7 @@ pub fn within_roots(path: &Path, roots: &[PathBuf]) -> bool {
 }
 
 pub fn inspect_save(path: &Path, deep: bool) -> Result<SaveDetail, String> {
-    let name = path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("save");
+    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("save");
     if name == "persistent" {
         return inspect_persistent(path, deep);
     }
@@ -160,7 +157,10 @@ fn inspect_persistent(path: &Path, deep: bool) -> Result<SaveDetail, String> {
     let (tree, note) = if deep {
         match loads_inert(&decoded) {
             Ok(value) => (Some(node_of("persistent", &value, 0)), None),
-            Err(e) => (None, Some(format!("Persistent data could not be read: {e}"))),
+            Err(e) => (
+                None,
+                Some(format!("Persistent data could not be read: {e}")),
+            ),
         }
     } else {
         (None, None)
@@ -214,7 +214,9 @@ fn walk(dir: &Path, depth: u32, out: &mut Vec<SaveSlot>) {
 }
 
 fn slot_zip(path: &Path, fallback: &str) -> SaveSlot {
-    let opened = File::open(path).ok().and_then(|file| ZipArchive::new(file).ok());
+    let opened = File::open(path)
+        .ok()
+        .and_then(|file| ZipArchive::new(file).ok());
     let (name, extra, version) = if let Some(mut zip) = opened {
         let json = named(&mut zip, "json")
             .map(|b| String::from_utf8_lossy(&b).to_string())
@@ -227,7 +229,11 @@ fn slot_zip(path: &Path, fallback: &str) -> SaveSlot {
             .unwrap_or_default();
         (save_name(&json, fallback), extra, version)
     } else {
-        (fallback.to_string(), "Could not read this save.".into(), String::new())
+        (
+            fallback.to_string(),
+            "Could not read this save.".into(),
+            String::new(),
+        )
     };
     SaveSlot {
         path: path.display().to_string(),
@@ -312,7 +318,10 @@ fn node_of(name: &str, value: &Value, depth: usize) -> SaveNode {
             name,
             "dict",
             &format!("{} keys", items.len()),
-            items.iter().take(40).map(|(k, v)| node_of(&short_value(k), v, depth + 1)),
+            items
+                .iter()
+                .take(40)
+                .map(|(k, v)| node_of(&short_value(k), v, depth + 1)),
         ),
         Value::Object { class, args, state } => {
             let mut children: Vec<SaveNode> = args
@@ -347,12 +356,7 @@ fn seq_node(name: &str, kind: &str, items: &[Value], depth: usize) -> SaveNode {
     )
 }
 
-fn kids(
-    name: &str,
-    kind: &str,
-    repr: &str,
-    children: impl Iterator<Item = SaveNode>,
-) -> SaveNode {
+fn kids(name: &str, kind: &str, repr: &str, children: impl Iterator<Item = SaveNode>) -> SaveNode {
     SaveNode {
         name: name.into(),
         kind: kind.into(),

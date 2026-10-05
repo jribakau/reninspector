@@ -34,9 +34,9 @@ pub fn key_from_code(code: &str) -> Result<u64, RpaError> {
     let n: u128 = if digits.is_empty() {
         0
     } else {
-        digits.parse().map_err(|_| {
-            RpaError::named("ZiX", "ZiX verification code has too many digits")
-        })?
+        digits
+            .parse()
+            .map_err(|_| RpaError::named("ZiX", "ZiX verification code has too many digits"))?
     };
     let a = n.saturating_add(KEY_BIAS) as f64;
     let rounded = round_half_even(a.cbrt());
@@ -163,9 +163,7 @@ fn round_half_even(x: f64) -> f64 {
     let frac = x - floor;
     if frac > 0.5 {
         floor + 1.0
-    } else if frac < 0.5 {
-        floor
-    } else if (floor as i64) % 2 == 0 {
+    } else if frac < 0.5 || (floor as i64) % 2 == 0 {
         floor
     } else {
         floor + 1.0

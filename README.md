@@ -60,7 +60,7 @@ npm run tauri:dev
 
 ## Licence
 
-GPL-3.0-or-later. See [LICENSE](LICENSE).
+GPL-3.0-or-later. See [LICENSE](LICENSE). The one additional permission, for shipping elkjs, is in [LICENSE-EXCEPTION](LICENSE-EXCEPTION).
 
 Hover text for Ren'Py statements and functions is written for this project and links to the [Ren'Py documentation](https://www.renpy.org/doc/html/). Most of Ren'Py, including that documentation, is under the MIT licence. The documentation pages themselves are not included.
 

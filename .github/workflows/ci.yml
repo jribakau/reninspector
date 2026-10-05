@@ -43,11 +43,11 @@ jobs:
           node-version: 22
           cache: npm
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
       - uses: swatinem/rust-cache@v2
         with:
-          workspaces: |
-            src-tauri
-            src-tauri/renpy-core
+          workspaces: src-tauri
       - name: Install Linux libraries for Tauri
         if: matrix.os == 'ubuntu-latest'
         run: |
@@ -57,6 +57,12 @@ jobs:
       - run: npm ci
       # The app crate embeds the built frontend, so build it first.
       - run: npm run build
+      - name: Format
+        working-directory: src-tauri
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        working-directory: src-tauri
+        run: cargo clippy --workspace --all-targets -- -D warnings
       - name: renpy-core tests
         working-directory: src-tauri/renpy-core
         shell: bash

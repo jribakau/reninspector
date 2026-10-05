@@ -139,7 +139,7 @@ fn scan_logical(phys: &[&str], start: usize, single: bool) -> Scan {
                 }
                 if c == q {
                     if triple {
-                        if k + 2 < bytes.len() + 0 && bytes[k + 1] == q && bytes[k + 2] == q {
+                        if k + 2 < bytes.len() && bytes[k + 1] == q && bytes[k + 2] == q {
                             out.extend_from_slice(&[q, q, q]);
                             k += 3;
                             in_str = None;
@@ -159,7 +159,7 @@ fn scan_logical(phys: &[&str], start: usize, single: bool) -> Scan {
             match c {
                 b'#' => break,
                 b'"' | b'\'' => {
-                    if k + 2 < bytes.len() + 0 && bytes[k + 1] == c && bytes[k + 2] == c {
+                    if k + 2 < bytes.len() && bytes[k + 1] == c && bytes[k + 2] == c {
                         out.extend_from_slice(&[c, c, c]);
                         k += 3;
                         in_str = Some((c, true));

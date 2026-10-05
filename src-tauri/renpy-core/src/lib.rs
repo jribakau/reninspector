@@ -1,6 +1,10 @@
 //! Ren'Py project reader: discovery, lexer, parser, control-flow graphs and diagnostics.
 //! Pure Rust with no Tauri dependency so it can be tested quickly.
 
+// The recursive walkers pass their context as separate arguments. Bundling it
+// into a struct would only move the list.
+#![allow(clippy::too_many_arguments)]
+
 pub mod analysis;
 pub mod ast;
 pub mod catalog;

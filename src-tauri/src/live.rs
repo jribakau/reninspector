@@ -11,6 +11,7 @@
 //! is not on every build. When it is missing the script writes `restart.json` and
 //! quits, and the watcher starts the game again.
 
+use crate::error::AppError;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -1006,10 +1007,6 @@ struct RestartReq {
     reason: String,
 }
 
-fn no_project() -> String {
-    "No project is open.".into()
-}
-
 fn clean_watch(names: &[String]) -> Vec<String> {
     let mut out = Vec::new();
     for name in names {
@@ -1031,13 +1028,14 @@ fn clean_watch(names: &[String]) -> Vec<String> {
     out
 }
 
-fn write_json(dir: &Path, name: &str, value: &impl Serialize) -> Result<(), String> {
-    let bytes = serde_json::to_vec(value).map_err(|e| e.to_string())?;
+fn write_json(dir: &Path, name: &str, value: &impl Serialize) -> Result<(), AppError> {
+    let bytes = serde_json::to_vec(value)?;
     let dest = dir.join(name);
     let tmp = dir.join(format!("{name}.tmp"));
     fs::write(&tmp, bytes).map_err(|e| format!("Could not write {name}: {e}"))?;
     let _ = fs::remove_file(&dest);
-    fs::rename(&tmp, &dest).map_err(|e| format!("Could not write {name}: {e}"))
+    fs::rename(&tmp, &dest)
+        .map_err(|e| crate::error::AppError::new(format!("Could not write {name}: {e}")))
 }
 
 fn norm_script(file: &str) -> String {
@@ -1070,7 +1068,7 @@ pub fn enclosing_label(project: &Project, file: &str, line: u32) -> Option<Strin
     best.map(|n| n.id.clone())
 }
 
-fn resolve_exe(project: &Project, launcher: &Option<String>) -> Result<PathBuf, String> {
+fn resolve_exe(project: &Project, launcher: &Option<String>) -> Result<PathBuf, AppError> {
     if let Some(path) = launcher.as_ref().filter(|s| !s.trim().is_empty()) {
         return Ok(PathBuf::from(path));
     }
@@ -1079,9 +1077,10 @@ fn resolve_exe(project: &Project, launcher: &Option<String>) -> Result<PathBuf, 
         .as_ref()
         .map(|l| l.exe.clone())
         .ok_or_else(|| {
-            "No launcher found next to the project (looked for a game .exe and an SDK renpy.exe). \
-             Choose one with \"Set launcher\"."
-                .into()
+            AppError::new(
+                "No launcher found next to the project (looked for a game .exe and an SDK renpy.exe). \
+                 Choose one with \"Set launcher\".",
+            )
         })
 }
 
@@ -1091,7 +1090,7 @@ fn exe_name(path: &Path) -> String {
         .unwrap_or_default()
 }
 
-fn live_dir() -> Result<PathBuf, String> {
+fn live_dir() -> Result<PathBuf, AppError> {
     static N: AtomicU64 = AtomicU64::new(1);
     let n = N.fetch_add(1, Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!("vnide-live-{}-{n}", std::process::id()));
@@ -1119,13 +1118,7 @@ fn wait_for_exit(exe: &str, wait: Duration) {
 /// Ask the running game to quit, then delete the one-launch scripts.
 pub fn stop_session(app: &AppHandle, wait: Duration) {
     let state = app.state::<AppState>();
-    let session = {
-        let mut slot = match state.live.lock() {
-            Ok(guard) => guard,
-            Err(poison) => poison.into_inner(),
-        };
-        slot.take()
-    };
+    let session = crate::util::lock(&state.live).take();
     let Some(session) = session else {
         return;
     };
@@ -1162,9 +1155,7 @@ pub fn on_exit(app: &AppHandle) {
 }
 
 fn cancel_replay(state: &State<'_, AppState>) {
-    let Ok(mut slot) = state.live.lock() else {
-        return;
-    };
+    let mut slot = crate::util::lock(&state.live);
     let Some(session) = slot.as_mut() else {
         return;
     };
@@ -1178,23 +1169,23 @@ fn send_cmd(
     spec: Option<String>,
     name: Option<String>,
     label: Option<String>,
-) -> Result<(), String> {
-    let (dir, id) = {
-        let mut slot = state.live.lock().map_err(|e| e.to_string())?;
-        let session = slot
-            .as_mut()
-            .ok_or_else(|| "Live preview is not running.".to_string())?;
-        if session.stop.load(Ordering::SeqCst) {
-            return Err("Live preview is stopping.".into());
-        }
-        session.cmd_id += 1;
-        (session.dir.clone(), session.cmd_id)
-    };
+) -> Result<(), AppError> {
+    // The write stays under the lock. Commands run on the blocking pool, so two
+    // callers could otherwise land their files out of id order, and the game drops
+    // a command whose id it has already passed.
+    let mut slot = crate::util::lock(&state.live);
+    let session = slot
+        .as_mut()
+        .ok_or_else(|| "Live preview is not running.".to_string())?;
+    if session.stop.load(Ordering::SeqCst) {
+        return Err("Live preview is stopping.".into());
+    }
+    session.cmd_id += 1;
     write_json(
-        &dir,
+        &session.dir,
         "cmd.json",
         &LiveCmd {
-            id,
+            id: session.cmd_id,
             op,
             spec,
             name,
@@ -1213,8 +1204,8 @@ fn split_warp(spec: &str) -> Option<(String, u32)> {
     Some((file, line))
 }
 
-fn session_still_live(state: &AppState, id: u64, dir: &Path) -> Result<(), String> {
-    let slot = state.live.lock().map_err(|e| e.to_string())?;
+fn session_still_live(state: &AppState, id: u64, dir: &Path) -> Result<(), AppError> {
+    let slot = crate::util::lock(&state.live);
     match slot.as_ref() {
         Some(session)
             if session.id == id
@@ -1228,15 +1219,15 @@ fn session_still_live(state: &AppState, id: u64, dir: &Path) -> Result<(), Strin
     }
 }
 
-fn relaunch(app: &AppHandle, spec: &str, reason: &str) -> Result<(), String> {
+fn relaunch(app: &AppHandle, spec: &str, reason: &str) -> Result<(), AppError> {
     let state = app.state::<AppState>();
     let (source, loaded_key) = {
-        let guard = state.project.lock().map_err(|e| e.to_string())?;
-        let project = guard.as_ref().ok_or_else(no_project)?;
+        let guard = crate::util::lock(&state.project);
+        let project = guard.as_ref().ok_or_else(crate::util::no_project)?;
         (launch::LaunchSource::capture(project), project.init_key())
     };
     let (id, dir, launcher, stop, replaying) = {
-        let slot = state.live.lock().map_err(|e| e.to_string())?;
+        let slot = crate::util::lock(&state.live);
         let session = slot
             .as_ref()
             .ok_or_else(|| "Live preview is not running.".to_string())?;
@@ -1308,10 +1299,8 @@ fn relaunch(app: &AppHandle, spec: &str, reason: &str) -> Result<(), String> {
 }
 
 fn stamp_loaded_key(state: &AppState, key: &str) {
-    if let Ok(mut slot) = state.live.lock() {
-        if let Some(session) = slot.as_mut() {
-            session.loaded_key = key.to_string();
-        }
+    if let Some(session) = crate::util::lock(&state.live).as_mut() {
+        session.loaded_key = key.to_string();
     }
 }
 
@@ -1352,11 +1341,11 @@ fn read_capped(path: &Path, max: u64) -> Option<Vec<u8>> {
     }
 }
 
-fn store_live_images(app: &AppHandle, text: &str, session_id: u64) -> Result<(), String> {
+fn store_live_images(app: &AppHandle, text: &str, session_id: u64) -> Result<(), AppError> {
     let dump = renpy_core::engine::parse_image_dump(text)?;
     let state = app.state::<AppState>();
     let key = {
-        let slot = state.live.lock().map_err(|e| e.to_string())?;
+        let slot = crate::util::lock(&state.live);
         let session = slot
             .as_ref()
             .ok_or_else(|| "Live preview is not running.".to_string())?;
@@ -1365,10 +1354,8 @@ fn store_live_images(app: &AppHandle, text: &str, session_id: u64) -> Result<(),
         }
         session.loaded_key.clone()
     };
-    let mut guard = state.project.lock().map_err(|e| e.to_string())?;
-    let project = guard
-        .as_mut()
-        .ok_or_else(|| "No project is open.".to_string())?;
+    let mut guard = crate::util::lock(&state.project);
+    let project = guard.as_mut().ok_or_else(crate::util::no_project)?;
     let root = project.root.clone();
     let run = renpy_core::engine::ImageRun {
         dump,
@@ -1381,8 +1368,7 @@ fn store_live_images(app: &AppHandle, text: &str, session_id: u64) -> Result<(),
     let info = project.info();
     drop(guard);
     crate::commands::save_cached_images(app, &root, &run);
-    app.emit(STAGE_IMAGES_EVENT, &info)
-        .map_err(|e| e.to_string())?;
+    app.emit(STAGE_IMAGES_EVENT, &info)?;
     Ok(())
 }
 
@@ -1417,11 +1403,11 @@ fn watch_session(
                         &app,
                         &LiveState {
                             running: false,
-                            note: e.clone(),
+                            note: e.to_string(),
                             ..LiveState::default()
                         },
                     );
-                    finish_stopped(&app, id, &e);
+                    finish_stopped(&app, id, e.message());
                     break;
                 }
                 saw_process = false;
@@ -1440,22 +1426,21 @@ fn watch_session(
                 if let Ok(mut body) = serde_json::from_str::<LiveState>(&text) {
                     body.running = true;
                     body.file = norm_script(&body.file);
-                    if let Ok(guard) = app.state::<AppState>().project.lock() {
-                        if let Some(project) = guard.as_ref() {
-                            if let Some((file, line)) = project.ide_line(&body.file, body.line) {
-                                body.file = file;
-                                body.line = line;
-                            }
+                    if let Some(project) =
+                        crate::util::lock(&app.state::<AppState>().project).as_ref()
+                    {
+                        if let Some((file, line)) = project.ide_line(&body.file, body.line) {
+                            body.file = file;
+                            body.line = line;
                         }
                     }
                     body.note.clear();
-                    if let Ok(mut slot) = app.state::<AppState>().live.lock() {
-                        if let Some(session) = slot.as_mut() {
-                            if session.id == id {
-                                session.heard = true;
-                                session.can_warp = body.can_warp;
-                                session.can_reload = body.can_reload;
-                            }
+                    if let Some(session) = crate::util::lock(&app.state::<AppState>().live).as_mut()
+                    {
+                        if session.id == id {
+                            session.heard = true;
+                            session.can_warp = body.can_warp;
+                            session.can_reload = body.can_reload;
                         }
                     }
                     let pos = (body.file.clone(), body.line);
@@ -1499,12 +1484,12 @@ fn watch_session(
                 last_shot = text.clone();
                 if let Ok(mut shot) = serde_json::from_str::<LiveShot>(&text) {
                     shot.file = norm_script(&shot.file);
-                    if let Ok(guard) = app.state::<AppState>().project.lock() {
-                        if let Some(project) = guard.as_ref() {
-                            if let Some((file, line)) = project.ide_line(&shot.file, shot.line) {
-                                shot.file = file;
-                                shot.line = line;
-                            }
+                    if let Some(project) =
+                        crate::util::lock(&app.state::<AppState>().project).as_ref()
+                    {
+                        if let Some((file, line)) = project.ide_line(&shot.file, shot.line) {
+                            shot.file = file;
+                            shot.line = line;
                         }
                     }
                     let _ = app.emit(LIVE_SHOT_EVENT, &shot);
@@ -1550,10 +1535,7 @@ fn watch_session(
 fn finish_stopped(app: &AppHandle, id: u64, note: &str) {
     let state = app.state::<AppState>();
     let session = {
-        let mut slot = match state.live.lock() {
-            Ok(guard) => guard,
-            Err(poison) => poison.into_inner(),
-        };
+        let mut slot = crate::util::lock(&state.live);
         if slot.as_ref().map(|s| s.id) != Some(id) {
             return;
         }
@@ -1594,23 +1576,17 @@ pub fn live_start(
     file: Option<String>,
     line: Option<u32>,
     watch: Vec<String>,
-) -> Result<LiveReport, String> {
+) -> Result<LiveReport, AppError> {
     let _gate = start_gate();
     stop_session(&app, Duration::from_millis(1200));
     let watched = clean_watch(&watch);
     let dir = live_dir()?;
     write_json(&dir, "watch.json", &watched)?;
 
-    let guard = match state.project.lock() {
-        Ok(guard) => guard,
-        Err(e) => {
-            let _ = fs::remove_dir_all(&dir);
-            return Err(e.to_string());
-        }
-    };
+    let guard = crate::util::lock(&state.project);
     let Some(project) = guard.as_ref() else {
         let _ = fs::remove_dir_all(&dir);
-        return Err(no_project());
+        return Err(crate::util::no_project());
     };
     let exe = match resolve_exe(project, &launcher) {
         Ok(exe) => exe,
@@ -1632,7 +1608,7 @@ pub fn live_start(
     ) {
         if project.file_index(&file).is_none() {
             let _ = fs::remove_dir_all(&dir);
-            return Err(format!("`{file}` is not a script of this project."));
+            return Err(format!("`{file}` is not a script of this project.").into());
         }
         let (engine_file, engine_line) = project.engine_spec(&file, line);
         warp_label = enclosing_label(project, &file, line);
@@ -1671,7 +1647,7 @@ pub fn live_start(
     let id = SESSION_IDS.fetch_add(1, Ordering::Relaxed);
     let stop = Arc::new(AtomicBool::new(false));
     {
-        let mut slot = state.live.lock().map_err(|e| e.to_string())?;
+        let mut slot = crate::util::lock(&state.live);
         *slot = Some(Session {
             id,
             dir: dir.clone(),
@@ -1714,20 +1690,20 @@ pub fn live_replay(
     file: String,
     line: u32,
     watch: Vec<String>,
-) -> Result<LiveReport, String> {
+) -> Result<LiveReport, AppError> {
     if line == 0 {
         return Err("Pick a line in the script first.".into());
     }
     let _gate = start_gate();
     let plan = {
-        let guard = state.project.lock().map_err(|e| e.to_string())?;
-        let project = guard.as_ref().ok_or_else(no_project)?;
+        let guard = crate::util::lock(&state.project);
+        let project = guard.as_ref().ok_or_else(crate::util::no_project)?;
         renpy_core::replay::plan(project, &file, line)?
     };
     stop_session(&app, Duration::from_millis(1200));
     let watched = clean_watch(&watch);
     let dir = live_dir()?;
-    let fail = |dir: PathBuf, e: String| {
+    let fail = |dir: PathBuf, e: AppError| {
         let _ = fs::remove_dir_all(&dir);
         e
     };
@@ -1738,12 +1714,9 @@ pub fn live_replay(
         return Err(fail(dir, e));
     }
 
-    let guard = match state.project.lock() {
-        Ok(guard) => guard,
-        Err(e) => return Err(fail(dir, e.to_string())),
-    };
+    let guard = crate::util::lock(&state.project);
     let Some(project) = guard.as_ref() else {
-        return Err(fail(dir, no_project()));
+        return Err(fail(dir, crate::util::no_project()));
     };
     let exe = match resolve_exe(project, &launcher) {
         Ok(exe) => exe,
@@ -1796,7 +1769,7 @@ pub fn live_replay(
     let id = SESSION_IDS.fetch_add(1, Ordering::Relaxed);
     let stop = Arc::new(AtomicBool::new(false));
     {
-        let mut slot = state.live.lock().map_err(|e| e.to_string())?;
+        let mut slot = crate::util::lock(&state.live);
         *slot = Some(Session {
             id,
             dir: dir.clone(),
@@ -1832,19 +1805,19 @@ pub fn live_replay(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn live_jump(
     state: State<'_, AppState>,
     file: String,
     line: u32,
-) -> Result<LiveReport, String> {
+) -> Result<LiveReport, AppError> {
     if line == 0 {
         return Err("Pick a line in the script first.".into());
     }
-    let guard = state.project.lock().map_err(|e| e.to_string())?;
-    let project = guard.as_ref().ok_or_else(no_project)?;
+    let guard = crate::util::lock(&state.project);
+    let project = guard.as_ref().ok_or_else(crate::util::no_project)?;
     if project.file_index(&file).is_none() {
-        return Err(format!("`{file}` is not a script of this project."));
+        return Err(format!("`{file}` is not a script of this project.").into());
     }
     let (engine_file, engine_line) = project.engine_spec(&file, line);
     let label = enclosing_label(project, &file, line);
@@ -1866,8 +1839,8 @@ pub fn live_jump(
     })
 }
 
-#[tauri::command]
-pub fn live_jump_label(state: State<'_, AppState>, name: String) -> Result<LiveReport, String> {
+#[tauri::command(async)]
+pub fn live_jump_label(state: State<'_, AppState>, name: String) -> Result<LiveReport, AppError> {
     let name = name.trim().to_string();
     if name.is_empty() || name.contains(['\n', '\r']) {
         return Err("That is not a label name.".into());
@@ -1882,20 +1855,20 @@ pub fn live_jump_label(state: State<'_, AppState>, name: String) -> Result<LiveR
     })
 }
 
-#[tauri::command]
-pub fn live_reload(state: State<'_, AppState>) -> Result<String, String> {
+#[tauri::command(async)]
+pub fn live_reload(state: State<'_, AppState>) -> Result<String, AppError> {
     let older = {
-        let slot = state.live.lock().map_err(|e| e.to_string())?;
+        let slot = crate::util::lock(&state.live);
         slot.as_ref()
             .map(|s| s.heard && !s.can_reload)
             .unwrap_or(false)
     };
     send_cmd(&state, "reload", None, None, None)?;
-    if let Ok(guard) = state.project.lock() {
-        if let Some(key) = guard.as_ref().map(|p| p.init_key()) {
-            drop(guard);
-            stamp_loaded_key(&state, &key);
-        }
+    let key = crate::util::lock(&state.project)
+        .as_ref()
+        .map(|p| p.init_key());
+    if let Some(key) = key {
+        stamp_loaded_key(&state, &key);
     }
     if older {
         Ok(
@@ -1908,14 +1881,14 @@ pub fn live_reload(state: State<'_, AppState>) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn live_images(state: State<'_, AppState>) -> Result<(), String> {
+pub fn live_images(state: State<'_, AppState>) -> Result<(), AppError> {
     let current = {
-        let guard = state.project.lock().map_err(|e| e.to_string())?;
-        let project = guard.as_ref().ok_or_else(no_project)?;
+        let guard = crate::util::lock(&state.project);
+        let project = guard.as_ref().ok_or_else(crate::util::no_project)?;
         project.init_key()
     };
     {
-        let slot = state.live.lock().map_err(|e| e.to_string())?;
+        let slot = crate::util::lock(&state.live);
         let session = slot
             .as_ref()
             .ok_or_else(|| "Live preview is not running.".to_string())?;
@@ -1933,33 +1906,34 @@ pub fn live_images(state: State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-pub fn live_stop(app: AppHandle) -> Result<(), String> {
+#[tauri::command(async)]
+pub fn live_stop(app: AppHandle) -> Result<(), AppError> {
     stop_session(&app, Duration::from_millis(1200));
     Ok(())
 }
 
-#[tauri::command]
-pub fn live_shots(state: State<'_, AppState>, on: bool) -> Result<(), String> {
+#[tauri::command(async)]
+pub fn live_shots(state: State<'_, AppState>, on: bool) -> Result<(), AppError> {
     let path = {
-        let slot = state.live.lock().map_err(|e| e.to_string())?;
+        let slot = crate::util::lock(&state.live);
         let Some(session) = slot.as_ref() else {
             return Ok(());
         };
         session.dir.join("shots.on")
     };
     if on {
-        fs::write(&path, b"1").map_err(|e| format!("Could not enable screenshots: {e}"))
+        fs::write(&path, b"1")
+            .map_err(|e| crate::error::AppError::new(format!("Could not enable screenshots: {e}")))
     } else {
         let _ = fs::remove_file(path);
         Ok(())
     }
 }
 
-#[tauri::command]
-pub fn live_shot(state: State<'_, AppState>) -> Result<tauri::ipc::Response, String> {
+#[tauri::command(async)]
+pub fn live_shot(state: State<'_, AppState>) -> Result<tauri::ipc::Response, AppError> {
     let path = {
-        let slot = state.live.lock().map_err(|e| e.to_string())?;
+        let slot = crate::util::lock(&state.live);
         let Some(session) = slot.as_ref() else {
             return Err("The game is not running.".into());
         };
@@ -1972,11 +1946,11 @@ pub fn live_shot(state: State<'_, AppState>) -> Result<tauri::ipc::Response, Str
     Ok(tauri::ipc::Response::new(bytes))
 }
 
-#[tauri::command]
-pub fn live_set_watch(state: State<'_, AppState>, names: Vec<String>) -> Result<(), String> {
+#[tauri::command(async)]
+pub fn live_set_watch(state: State<'_, AppState>, names: Vec<String>) -> Result<(), AppError> {
     let names = clean_watch(&names);
     let dir = {
-        let slot = state.live.lock().map_err(|e| e.to_string())?;
+        let slot = crate::util::lock(&state.live);
         let Some(session) = slot.as_ref() else {
             return Ok(());
         };

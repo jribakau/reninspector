@@ -1,6 +1,7 @@
 //! Installed Ren'Py SDKs: where they live, how they are downloaded, and how a
 //! launcher command is run with live output.
 
+use crate::error::AppError;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -11,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, State};
 
 use crate::commands::AppState;
 use crate::process::background;
@@ -69,15 +70,11 @@ struct Registry {
     unverified: Vec<String>,
 }
 
-fn data_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    app.path().app_data_dir().map_err(|e| e.to_string())
-}
-
 fn registry_path(data: &Path) -> PathBuf {
     data.join("sdks.json")
 }
 
-fn load_registry(data: &Path) -> Result<Registry, String> {
+fn load_registry(data: &Path) -> Result<Registry, AppError> {
     let default_folder = data.join("sdks");
     let path = registry_path(data);
     if !path.is_file() {
@@ -85,12 +82,14 @@ fn load_registry(data: &Path) -> Result<Registry, String> {
     }
     let text =
         fs::read_to_string(&path).map_err(|e| format!("Could not read {}: {e}", path.display()))?;
-    parse_registry(&text, default_folder).map_err(|_| {
-        format!(
-            "{} is damaged, so the SDK list could not be read. The file was left unchanged.",
-            path.display()
-        )
-    })
+    parse_registry(&text, default_folder)
+        .map_err(|_| {
+            format!(
+                "{} is damaged, so the SDK list could not be read. The file was left unchanged.",
+                path.display()
+            )
+        })
+        .map_err(crate::error::AppError::from)
 }
 
 fn empty_registry(folder: PathBuf) -> Registry {
@@ -114,9 +113,9 @@ fn parse_registry(text: &str, default_folder: PathBuf) -> Result<Registry, ()> {
     })
 }
 
-fn save_registry(data: &Path, reg: &Registry) -> Result<(), String> {
+fn save_registry(data: &Path, reg: &Registry) -> Result<(), AppError> {
     if let Some(parent) = registry_path(data).parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        fs::create_dir_all(parent)?;
     }
     let file = RegistryFile {
         folder: Some(reg.folder.to_string_lossy().into_owned()),
@@ -127,8 +126,8 @@ fn save_registry(data: &Path, reg: &Registry) -> Result<(), String> {
             .collect(),
         unverified: reg.unverified.clone(),
     };
-    let text = serde_json::to_string_pretty(&file).map_err(|e| e.to_string())?;
-    fs::write(registry_path(data), text).map_err(|e| e.to_string())
+    let text = serde_json::to_string_pretty(&file)?;
+    fs::write(registry_path(data), text).map_err(crate::error::AppError::from)
 }
 
 /// `renpy.exe` on Windows, `renpy.sh` everywhere else.
@@ -235,7 +234,7 @@ fn scan(reg: &Registry) -> Vec<SdkInfo> {
     items
 }
 
-fn resolve_sdk(path: &str) -> Result<(PathBuf, PathBuf), String> {
+fn resolve_sdk(path: &str) -> Result<(PathBuf, PathBuf), AppError> {
     let given = PathBuf::from(path.trim());
     let root = if is_sdk_dir(&given) {
         given
@@ -249,14 +248,14 @@ fn resolve_sdk(path: &str) -> Result<(PathBuf, PathBuf), String> {
     };
     let exe = sdk_executable(&root);
     if !exe.is_file() {
-        return Err(format!("No launcher executable in {}.", root.display()));
+        return Err(format!("No launcher executable in {}.", root.display()).into());
     }
     Ok((root, exe))
 }
 
-#[tauri::command]
-pub fn sdk_list(app: AppHandle) -> Result<SdkList, String> {
-    let data = data_dir(&app)?;
+#[tauri::command(async)]
+pub fn sdk_list(app: AppHandle) -> Result<SdkList, AppError> {
+    let data = crate::util::data_dir(&app)?;
     let reg = load_registry(&data)?;
     let folder = reg.folder.to_string_lossy().into_owned();
     Ok(SdkList {
@@ -265,14 +264,14 @@ pub fn sdk_list(app: AppHandle) -> Result<SdkList, String> {
     })
 }
 
-#[tauri::command]
-pub fn sdk_set_folder(app: AppHandle, folder: String) -> Result<SdkList, String> {
+#[tauri::command(async)]
+pub fn sdk_set_folder(app: AppHandle, folder: String) -> Result<SdkList, AppError> {
     let folder = PathBuf::from(folder.trim());
     if folder.as_os_str().is_empty() {
         return Err("Choose a folder for the SDKs.".into());
     }
     fs::create_dir_all(&folder).map_err(|e| format!("Could not use that folder: {e}"))?;
-    let data = data_dir(&app)?;
+    let data = crate::util::data_dir(&app)?;
     let mut reg = load_registry(&data)?;
     reg.folder = folder;
     save_registry(&data, &reg)?;
@@ -283,10 +282,10 @@ pub fn sdk_set_folder(app: AppHandle, folder: String) -> Result<SdkList, String>
     })
 }
 
-#[tauri::command]
-pub fn sdk_add(app: AppHandle, path: String) -> Result<SdkInfo, String> {
+#[tauri::command(async)]
+pub fn sdk_add(app: AppHandle, path: String) -> Result<SdkInfo, AppError> {
     let (root, _) = resolve_sdk(&path)?;
-    let data = data_dir(&app)?;
+    let data = crate::util::data_dir(&app)?;
     let mut reg = load_registry(&data)?;
     if !inside(&reg.folder, &root) && !reg.extra.iter().any(|p| same_path(p, &root)) {
         reg.extra.push(root.clone());
@@ -301,13 +300,13 @@ pub fn sdk_add(app: AppHandle, path: String) -> Result<SdkInfo, String> {
         },
         &reg.unverified,
     )
-    .ok_or_else(|| format!("{} is not a Ren'Py SDK.", root.display()))
+    .ok_or_else(|| crate::error::AppError::new(format!("{} is not a Ren'Py SDK.", root.display())))
 }
 
-#[tauri::command]
-pub fn sdk_remove(app: AppHandle, path: String, delete_files: bool) -> Result<SdkList, String> {
+#[tauri::command(async)]
+pub fn sdk_remove(app: AppHandle, path: String, delete_files: bool) -> Result<SdkList, AppError> {
     let (root, _) = resolve_sdk(&path)?;
-    let data = data_dir(&app)?;
+    let data = crate::util::data_dir(&app)?;
     let mut reg = load_registry(&data)?;
     let in_folder = inside(&reg.folder, &root);
     if delete_files {
@@ -335,8 +334,8 @@ pub fn sdk_remove(app: AppHandle, path: String, delete_files: bool) -> Result<Sd
 static CATALOG: Mutex<Option<Vec<String>>> = Mutex::new(None);
 
 #[tauri::command(async)]
-pub fn sdk_catalog() -> Result<Vec<String>, String> {
-    if let Some(cached) = CATALOG.lock().map_err(|e| e.to_string())?.clone() {
+pub fn sdk_catalog() -> Result<Vec<String>, AppError> {
+    if let Some(cached) = crate::util::lock(&CATALOG).clone() {
         return Ok(cached);
     }
     let html = http_text(RELEASE_LIST)?;
@@ -344,7 +343,7 @@ pub fn sdk_catalog() -> Result<Vec<String>, String> {
     if versions.is_empty() {
         return Err("The Ren'Py release list did not contain any versions.".into());
     }
-    *CATALOG.lock().map_err(|e| e.to_string())? = Some(versions.clone());
+    *crate::util::lock(&CATALOG) = Some(versions.clone());
     Ok(versions)
 }
 
@@ -358,10 +357,10 @@ pub async fn sdk_install(
     app: AppHandle,
     state: State<'_, AppState>,
     version: String,
-) -> Result<SdkInfo, String> {
+) -> Result<SdkInfo, AppError> {
     let version = version.trim().to_string();
     if !valid_version(&version) {
-        return Err(format!("{version} is not a Ren'Py version."));
+        return Err(format!("{version} is not a Ren'Py version.").into());
     }
     if state.sdk_busy.swap(true, Ordering::AcqRel) {
         return Err("An SDK download is already running.".into());
@@ -370,7 +369,7 @@ pub async fn sdk_install(
     cancel.store(false, Ordering::Relaxed);
     let result = tauri::async_runtime::spawn_blocking(move || install_sdk(&app, &cancel, &version))
         .await
-        .map_err(|e| e.to_string());
+        .map_err(crate::error::AppError::from);
     state.sdk_busy.store(false, Ordering::Release);
     result?
 }
@@ -380,7 +379,7 @@ pub async fn sdk_install_web(
     app: AppHandle,
     state: State<'_, AppState>,
     path: String,
-) -> Result<SdkInfo, String> {
+) -> Result<SdkInfo, AppError> {
     let (root, _) = resolve_sdk(&path)?;
     let version = renpy_core::project::read_engine_version(&root)
         .ok_or_else(|| format!("Could not read the Ren'Py version in {}.", root.display()))?;
@@ -392,21 +391,21 @@ pub async fn sdk_install_web(
     let result =
         tauri::async_runtime::spawn_blocking(move || install_web(&app, &cancel, &root, &version))
             .await
-            .map_err(|e| e.to_string());
+            .map_err(crate::error::AppError::from);
     state.sdk_busy.store(false, Ordering::Release);
     result?
 }
 
-fn install_sdk(app: &AppHandle, cancel: &AtomicBool, version: &str) -> Result<SdkInfo, String> {
-    let data = data_dir(app)?;
+fn install_sdk(app: &AppHandle, cancel: &AtomicBool, version: &str) -> Result<SdkInfo, AppError> {
+    let data = crate::util::data_dir(app)?;
     let reg = load_registry(&data)?;
-    fs::create_dir_all(&reg.folder).map_err(|e| e.to_string())?;
+    fs::create_dir_all(&reg.folder)?;
     let dest = reg.folder.join(format!("renpy-{version}-sdk"));
     if is_sdk_dir(&dest) {
-        return Err(format!("Ren'Py {version} is already installed."));
+        return Err(format!("Ren'Py {version} is already installed.").into());
     }
     let partial = reg.folder.join(".partial");
-    fs::create_dir_all(&partial).map_err(|e| e.to_string())?;
+    fs::create_dir_all(&partial)?;
     let zip_path = partial.join(format!("renpy-{version}-sdk.zip"));
     let filename = format!("renpy-{version}-sdk.zip");
     let unverified = download_checked(
@@ -437,8 +436,11 @@ fn install_sdk(app: &AppHandle, cancel: &AtomicBool, version: &str) -> Result<Sd
         }
         unverified_paths.push(text);
     }
-    describe(&dest, "downloaded", &unverified_paths)
-        .ok_or_else(|| format!("The archive for Ren'Py {version} did not contain an SDK."))
+    describe(&dest, "downloaded", &unverified_paths).ok_or_else(|| {
+        crate::error::AppError::new(format!(
+            "The archive for Ren'Py {version} did not contain an SDK."
+        ))
+    })
 }
 
 fn install_web(
@@ -446,11 +448,11 @@ fn install_web(
     cancel: &AtomicBool,
     root: &Path,
     version: &str,
-) -> Result<SdkInfo, String> {
-    let data = data_dir(app)?;
+) -> Result<SdkInfo, AppError> {
+    let data = crate::util::data_dir(app)?;
     let reg = load_registry(&data)?;
     let partial = reg.folder.join(".partial");
-    fs::create_dir_all(&partial).map_err(|e| e.to_string())?;
+    fs::create_dir_all(&partial)?;
     let zip_path = partial.join(format!("renpy-{version}-web.zip"));
     let filename = format!("renpy-{version}-web.zip");
     let unverified = download_checked(
@@ -464,11 +466,11 @@ fn install_web(
     )?;
     emit_progress(app, version, "extract", 0, 0, "Extracting Web support");
     let staging = partial.join(format!("web-{version}"));
-    let extracted: Result<(), String> = (|| {
+    let extracted: Result<(), AppError> = (|| {
         if staging.exists() {
-            fs::remove_dir_all(&staging).map_err(|e| e.to_string())?;
+            fs::remove_dir_all(&staging)?;
         }
-        fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
+        fs::create_dir_all(&staging)?;
         extract_zip(&zip_path, &staging, cancel)?;
         merge_tree(&strip_renpy_root(&staging), root)?;
         Ok(())
@@ -489,8 +491,9 @@ fn install_web(
     } else {
         "added"
     };
-    describe(root, source, &reg.unverified)
-        .ok_or_else(|| format!("{} is not a Ren'Py SDK.", root.display()))
+    describe(root, source, &reg.unverified).ok_or_else(|| {
+        crate::error::AppError::new(format!("{} is not a Ren'Py SDK.", root.display()))
+    })
 }
 
 fn download_checked(
@@ -501,7 +504,7 @@ fn download_checked(
     sums_url: &str,
     filename: &str,
     dest: &Path,
-) -> Result<bool, String> {
+) -> Result<bool, AppError> {
     if cancel.load(Ordering::Relaxed) {
         return Err("Download cancelled.".into());
     }
@@ -527,7 +530,8 @@ fn download_checked(
             let _ = fs::remove_file(dest);
             return Err(format!(
                 "Could not check {filename} against its published checksum ({e}). Try again later."
-            ));
+            )
+            .into());
         }
     };
     match sha256_in_checksums(&sums, filename) {
@@ -537,7 +541,8 @@ fn download_checked(
                 let _ = fs::remove_file(dest);
                 return Err(format!(
                     "The download of {filename} did not match its published checksum."
-                ));
+                )
+                .into());
             }
             Ok(false)
         }
@@ -551,9 +556,9 @@ fn download_file(
     version: &str,
     url: &str,
     dest: &Path,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        fs::create_dir_all(parent)?;
     }
     let response = http()
         .get(url)
@@ -565,7 +570,7 @@ fn download_file(
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(0);
     let mut reader = response.into_reader();
-    let mut file = File::create(dest).map_err(|e| e.to_string())?;
+    let mut file = File::create(dest)?;
     let mut buf = [0u8; 64 * 1024];
     let mut done = 0u64;
     let mut next_emit = 0u64;
@@ -582,7 +587,7 @@ fn download_file(
         if n == 0 {
             break;
         }
-        file.write_all(&buf[..n]).map_err(|e| e.to_string())?;
+        file.write_all(&buf[..n])?;
         done += n as u64;
         if done >= next_emit {
             emit_progress(
@@ -596,7 +601,7 @@ fn download_file(
             next_emit = done.saturating_add(512 * 1024);
         }
     }
-    file.flush().map_err(|e| e.to_string())?;
+    file.flush()?;
     emit_progress(
         app,
         version,
@@ -628,14 +633,14 @@ fn http() -> ureq::Agent {
         .build()
 }
 
-fn http_text(url: &str) -> Result<String, String> {
+fn http_text(url: &str) -> Result<String, AppError> {
     http()
         .get(url)
         .set("User-Agent", USER_AGENT)
         .call()
         .map_err(|e| format!("Could not reach {url}: {e}"))?
         .into_string()
-        .map_err(|e| e.to_string())
+        .map_err(crate::error::AppError::from)
 }
 
 fn sdk_zip_url(version: &str) -> String {
@@ -657,14 +662,14 @@ fn install_zip_at(
     staging: &Path,
     dest: &Path,
     cancel: &AtomicBool,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     if dest.exists() {
-        return Err(format!("{} already exists.", dest.display()));
+        return Err(format!("{} already exists.", dest.display()).into());
     }
     if staging.exists() {
-        fs::remove_dir_all(staging).map_err(|e| e.to_string())?;
+        fs::remove_dir_all(staging)?;
     }
-    fs::create_dir_all(staging).map_err(|e| e.to_string())?;
+    fs::create_dir_all(staging)?;
     let extracted =
         extract_zip(zip_path, staging, cancel).and_then(|_| place_extracted_sdk(staging, dest));
     if staging.exists() {
@@ -673,7 +678,7 @@ fn install_zip_at(
     extracted
 }
 
-fn extract_zip(zip_path: &Path, dest: &Path, cancel: &AtomicBool) -> Result<(), String> {
+fn extract_zip(zip_path: &Path, dest: &Path, cancel: &AtomicBool) -> Result<(), AppError> {
     let file =
         File::open(zip_path).map_err(|e| format!("Could not open {}: {e}", zip_path.display()))?;
     let mut archive =
@@ -690,15 +695,15 @@ fn extract_zip(zip_path: &Path, dest: &Path, cancel: &AtomicBool) -> Result<(), 
         };
         let out = dest.join(&rel);
         if entry.is_dir() {
-            fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+            fs::create_dir_all(&out)?;
             continue;
         }
         let mode = entry.unix_mode();
         if let Some(parent) = out.parent() {
-            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            fs::create_dir_all(parent)?;
         }
-        let mut written = File::create(&out).map_err(|e| e.to_string())?;
-        std::io::copy(&mut entry, &mut written).map_err(|e| e.to_string())?;
+        let mut written = File::create(&out)?;
+        std::io::copy(&mut entry, &mut written)?;
         drop(written);
         apply_unix_mode(&out, mode);
     }
@@ -720,11 +725,11 @@ fn apply_unix_mode(path: &Path, mode: Option<u32>) {
     }
 }
 
-fn place_extracted_sdk(staging: &Path, dest: &Path) -> Result<(), String> {
+fn place_extracted_sdk(staging: &Path, dest: &Path) -> Result<(), AppError> {
     let found = find_sdk(staging)
         .ok_or_else(|| "The archive does not contain a Ren'Py SDK.".to_string())?;
     if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        fs::create_dir_all(parent)?;
     }
     if same_path(&found, staging) {
         fs::rename(staging, dest).map_err(|e| format!("Could not finish the install: {e}"))?;
@@ -782,16 +787,16 @@ fn strip_renpy_root(staging: &Path) -> PathBuf {
     staging.to_path_buf()
 }
 
-fn merge_tree(from: &Path, into: &Path) -> Result<(), String> {
-    fs::create_dir_all(into).map_err(|e| e.to_string())?;
-    for entry in fs::read_dir(from).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
+fn merge_tree(from: &Path, into: &Path) -> Result<(), AppError> {
+    fs::create_dir_all(into)?;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
         let target = into.join(entry.file_name());
         if entry.path().is_dir() {
             merge_tree(&entry.path(), &target)?;
         } else {
             if let Some(parent) = target.parent() {
-                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                fs::create_dir_all(parent)?;
             }
             fs::copy(entry.path(), &target)
                 .map_err(|e| format!("Could not write {}: {e}", target.display()))?;
@@ -800,12 +805,12 @@ fn merge_tree(from: &Path, into: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn sha256_file(path: &Path) -> Result<String, String> {
-    let mut file = File::open(path).map_err(|e| e.to_string())?;
+fn sha256_file(path: &Path) -> Result<String, AppError> {
+    let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 64 * 1024];
     loop {
-        let n = file.read(&mut buf).map_err(|e| e.to_string())?;
+        let n = file.read(&mut buf)?;
         if n == 0 {
             break;
         }
@@ -902,7 +907,7 @@ fn version_key(version: &str) -> Vec<u32> {
 
 const PC_PACKAGES: &[&str] = &["pc", "mac", "linux"];
 
-fn normalize_packages(packages: &[String]) -> Result<Vec<String>, String> {
+fn normalize_packages(packages: &[String]) -> Result<Vec<String>, AppError> {
     if packages.is_empty() {
         return Err("Choose a package to build.".into());
     }
@@ -910,7 +915,7 @@ fn normalize_packages(packages: &[String]) -> Result<Vec<String>, String> {
     for name in packages {
         let name = name.trim();
         if !PC_PACKAGES.contains(&name) {
-            return Err(format!("Unknown package `{name}`."));
+            return Err(format!("Unknown package `{name}`.").into());
         }
         if !out.iter().any(|e: &String| e == name) {
             out.push(name.to_string());
@@ -926,7 +931,7 @@ pub async fn build_pc(
     sdk: String,
     dest: Option<String>,
     packages: Vec<String>,
-) -> Result<String, String> {
+) -> Result<String, AppError> {
     let (sdk_root, exe) = resolve_sdk(&sdk)?;
     let packages = normalize_packages(&packages)?;
     let (root, aside) = build_project(&state)?;
@@ -954,8 +959,7 @@ pub async fn build_pc(
             None,
         )
     })
-    .await
-    .map_err(|e| e.to_string())?
+    .await?
 }
 
 #[tauri::command]
@@ -965,7 +969,7 @@ pub async fn build_web(
     sdk: String,
     dest: Option<String>,
     launch: bool,
-) -> Result<String, String> {
+) -> Result<String, AppError> {
     let (sdk_root, exe) = resolve_sdk(&sdk)?;
     if !sdk_root.join("web").is_dir() {
         return Err("This SDK has no Web support yet. Install it and build again.".into());
@@ -994,8 +998,7 @@ pub async fn build_web(
             None,
         )
     })
-    .await
-    .map_err(|e| e.to_string())?
+    .await?
 }
 
 #[tauri::command]
@@ -1009,31 +1012,16 @@ pub fn build_cancel(state: State<'_, AppState>) {
 }
 
 #[tauri::command]
-pub fn reveal_path(path: String) -> Result<(), String> {
+pub fn reveal_path(path: String) -> Result<(), AppError> {
     let path = PathBuf::from(path.trim());
     if !path.exists() {
-        return Err(format!("{} does not exist yet.", path.display()));
+        return Err(format!("{} does not exist yet.", path.display()).into());
     }
-    // explorer, open and xdg-open run a file instead of showing it.
+    // Opening a file would run it. Reveal only folders.
     if !path.is_dir() {
-        return Err(format!("{} is not a folder.", path.display()));
+        return Err(format!("{} is not a folder.", path.display()).into());
     }
-    let mut cmd = if cfg!(windows) {
-        let mut cmd = std::process::Command::new("explorer");
-        cmd.arg(&path);
-        cmd
-    } else if cfg!(target_os = "macos") {
-        let mut cmd = std::process::Command::new("open");
-        cmd.arg(&path);
-        cmd
-    } else {
-        let mut cmd = std::process::Command::new("xdg-open");
-        cmd.arg(&path);
-        cmd
-    };
-    cmd.spawn()
-        .map_err(|e| format!("Could not open {}: {e}", path.display()))?;
-    Ok(())
+    crate::process::reveal(&path)
 }
 
 /// The project root for a build, with nothing the IDE wrote into `game/` left
@@ -1041,11 +1029,9 @@ pub fn reveal_path(path: String) -> Result<(), String> {
 /// scripts there for the whole session.
 fn build_project(
     state: &State<'_, AppState>,
-) -> Result<(PathBuf, crate::ide::AutoreloadAside), String> {
-    let guard = state.project.lock().map_err(|e| e.to_string())?;
-    let project = guard
-        .as_ref()
-        .ok_or_else(|| "No project is open.".to_string())?;
+) -> Result<(PathBuf, crate::ide::AutoreloadAside), AppError> {
+    let guard = crate::util::lock(&state.project);
+    let project = guard.as_ref().ok_or_else(crate::util::no_project)?;
     crate::commands::ensure_game_closed(project)
         .map_err(|_| "Close the game before building.".to_string())?;
     crate::launch::remove_one_launch_shims(&project.game_dir);
@@ -1055,6 +1041,8 @@ fn build_project(
 
 /// Runs `<exe> <sdk>/launcher <command> ...`. Stdout and stderr are emitted as
 /// `build:line`. The child is stored so `build_cancel` can kill it.
+// One argument over clippy's limit; bundling them would only move the list.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_launcher(
     app: Option<&AppHandle>,
     slot: Arc<Mutex<Option<Child>>>,
@@ -1064,7 +1052,7 @@ pub(crate) fn run_launcher(
     command: &str,
     args: &[String],
     timeout: Option<Duration>,
-) -> Result<String, String> {
+) -> Result<String, AppError> {
     run_renpy(
         app,
         slot,
@@ -1093,12 +1081,12 @@ pub(crate) fn run_renpy(
     args: &[String],
     env: &[(&str, &str)],
     timeout: Option<Duration>,
-) -> Result<String, String> {
+) -> Result<String, AppError> {
     if !exe.is_file() {
-        return Err(format!("Launcher {} does not exist.", exe.display()));
+        return Err(format!("Launcher {} does not exist.", exe.display()).into());
     }
     {
-        let guard = slot.lock().map_err(|e| e.to_string())?;
+        let guard = crate::util::lock(&slot);
         if guard.is_some() {
             return Err("A build is already running.".into());
         }
@@ -1118,7 +1106,7 @@ pub(crate) fn run_renpy(
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     {
-        let mut guard = slot.lock().map_err(|e| e.to_string())?;
+        let mut guard = crate::util::lock(&slot);
         if guard.is_some() {
             let _ = child.kill();
             let _ = child.wait();
@@ -1153,9 +1141,9 @@ pub(crate) fn run_renpy(
             }
         }
         let waited = {
-            let mut guard = slot.lock().map_err(|e| e.to_string())?;
+            let mut guard = crate::util::lock(&slot);
             match guard.as_mut() {
-                Some(child) => child.try_wait().map_err(|e| e.to_string())?,
+                Some(child) => child.try_wait()?,
                 None => None,
             }
         };
@@ -1224,7 +1212,7 @@ fn reap(slot: &Mutex<Option<Child>>) {
     }
 }
 
-fn finish_status(status: ExitStatus, text: &str) -> Result<String, String> {
+fn finish_status(status: ExitStatus, text: &str) -> Result<String, AppError> {
     if status.success() {
         Ok(if text.trim().is_empty() {
             "Finished.".into()
@@ -1232,7 +1220,7 @@ fn finish_status(status: ExitStatus, text: &str) -> Result<String, String> {
             text.to_string()
         })
     } else {
-        Err(format!("Build failed.\n{text}"))
+        Err(format!("Build failed.\n{text}").into())
     }
 }
 
@@ -1243,7 +1231,7 @@ pub(crate) fn generate_from_sdk(
     cancel: Option<Arc<AtomicBool>>,
     exe: &Path,
     root: &Path,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     let sdk = sdk_root(exe).filter(|_| exe.is_file()).ok_or_else(|| {
         format!(
             "{} is not inside a Ren'Py SDK (no launcher and gui folders next to it).",

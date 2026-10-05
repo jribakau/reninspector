@@ -3,6 +3,7 @@
 //! Paths are relative to the project folder and use `/`. Every operation stays inside
 //! the project, refuses `game/` itself, and tells the script index what it touched.
 
+use crate::error::AppError;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -16,17 +17,13 @@ use crate::ide::hidden_listing;
 /// Upper bound on files reported to the project index for one operation.
 const MAX_TOUCHED: usize = 20_000;
 
-fn no_project() -> String {
-    "No project is open.".into()
-}
-
 const RESERVED: [&str; 22] = [
     "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
     "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
 ];
 
 /// One path segment of a new or renamed entry.
-pub(crate) fn check_name(name: &str, dir: bool) -> Result<(), String> {
+pub(crate) fn check_name(name: &str, dir: bool) -> Result<(), AppError> {
     if name.is_empty() {
         return Err("Type a name.".into());
     }
@@ -36,7 +33,10 @@ pub(crate) fn check_name(name: &str, dir: bool) -> Result<(), String> {
     if name.len() > 255 {
         return Err("That name is too long.".into());
     }
-    if name.chars().any(|c| c.is_control() || "<>:\"/\\|?*".contains(c)) {
+    if name
+        .chars()
+        .any(|c| c.is_control() || "<>:\"/\\|?*".contains(c))
+    {
         return Err("A name cannot contain < > : \" / \\ | ? * .".into());
     }
     if name.ends_with('.') {
@@ -47,29 +47,33 @@ pub(crate) fn check_name(name: &str, dir: bool) -> Result<(), String> {
     }
     let stem = name.split('.').next().unwrap_or(name).to_ascii_uppercase();
     if RESERVED.contains(&stem.as_str()) {
-        return Err(format!("`{name}` is a reserved name on Windows."));
+        return Err(format!("`{name}` is a reserved name on Windows.").into());
     }
     if hidden_listing(name, dir) {
-        return Err(format!("`{name}` is reserved by the IDE and hidden in the explorer."));
+        return Err(format!("`{name}` is reserved by the IDE and hidden in the explorer.").into());
     }
     Ok(())
 }
 
 /// An existing path inside the project: no `..`, drive letters or empty parts.
-pub(crate) fn clean_rel(rel: &str) -> Result<String, String> {
+pub(crate) fn clean_rel(rel: &str) -> Result<String, AppError> {
     let rel = rel.trim().replace('\\', "/");
     let rel = rel.trim_matches('/');
     if rel.is_empty() {
         return Err("That path is the project folder.".into());
     }
-    if rel.contains(':') || rel.split('/').any(|p| p.is_empty() || p == "." || p == "..") {
+    if rel.contains(':')
+        || rel
+            .split('/')
+            .any(|p| p.is_empty() || p == "." || p == "..")
+    {
         return Err("That path is not inside the project.".into());
     }
     Ok(rel.to_string())
 }
 
 /// A path that may not exist yet: every segment must be a valid name.
-fn clean_new(rel: &str, last_is_dir: bool) -> Result<String, String> {
+fn clean_new(rel: &str, last_is_dir: bool) -> Result<String, AppError> {
     let rel = clean_rel(rel)?;
     let parts: Vec<&str> = rel.split('/').collect();
     for (i, part) in parts.iter().enumerate() {
@@ -86,13 +90,15 @@ fn abs_of(root: &Path, rel: &str) -> PathBuf {
 }
 
 /// Resolve links on the nearest existing ancestor so a symlink cannot lead out of the project.
-fn ensure_inside(root: &Path, abs: &Path) -> Result<(), String> {
+fn ensure_inside(root: &Path, abs: &Path) -> Result<(), AppError> {
     let mut probe = abs;
     while !probe.exists() {
-        probe = probe.parent().ok_or("That path is not inside the project.")?;
+        probe = probe
+            .parent()
+            .ok_or("That path is not inside the project.")?;
     }
-    let real = probe.canonicalize().map_err(|e| e.to_string())?;
-    let base = root.canonicalize().map_err(|e| e.to_string())?;
+    let real = probe.canonicalize()?;
+    let base = root.canonicalize()?;
     if real.starts_with(&base) {
         Ok(())
     } else {
@@ -146,54 +152,58 @@ fn remapped(old_files: &[PathBuf], old: &Path, new: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-fn copy_tree(src: &Path, dst: &Path) -> Result<(), String> {
-    let meta = fs::symlink_metadata(src).map_err(|e| e.to_string())?;
+fn copy_tree(src: &Path, dst: &Path) -> Result<(), AppError> {
+    let meta = fs::symlink_metadata(src)?;
     if meta.is_dir() {
-        fs::create_dir_all(dst).map_err(|e| e.to_string())?;
-        for entry in fs::read_dir(src).map_err(|e| e.to_string())?.flatten() {
+        fs::create_dir_all(dst)?;
+        for entry in fs::read_dir(src)?.flatten() {
             copy_tree(&entry.path(), &dst.join(entry.file_name()))?;
         }
     } else if meta.is_file() {
-        fs::copy(src, dst).map_err(|e| e.to_string())?;
+        fs::copy(src, dst)?;
     }
     Ok(())
 }
 
 /// Rename, falling back to copy-and-remove when the target is on another volume.
-fn relocate(src: &Path, dst: &Path) -> Result<(), String> {
+fn relocate(src: &Path, dst: &Path) -> Result<(), AppError> {
     if fs::rename(src, dst).is_ok() {
         return Ok(());
     }
     if let Err(e) = copy_tree(src, dst) {
-        let _ = if dst.is_dir() { fs::remove_dir_all(dst) } else { fs::remove_file(dst) };
-        return Err(format!("Could not move {}: {e}", src.display()));
+        let _ = if dst.is_dir() {
+            fs::remove_dir_all(dst)
+        } else {
+            fs::remove_file(dst)
+        };
+        return Err(format!("Could not move {}: {e}", src.display()).into());
     }
     if src.is_dir() {
         fs::remove_dir_all(src)
     } else {
         fs::remove_file(src)
     }
-    .map_err(|e| format!("Could not remove {}: {e}", src.display()))
+    .map_err(|e| crate::error::AppError::new(format!("Could not remove {}: {e}", src.display())))
 }
 
-fn require_loose(abs: &Path, rel: &str) -> Result<(), String> {
+fn require_loose(abs: &Path, rel: &str) -> Result<(), AppError> {
     if abs.exists() {
         Ok(())
     } else {
         Err(format!(
             "`{rel}` is not a loose file. Archived entries cannot be changed here; save a copy first."
-        ))
+        ).into())
     }
 }
 
-pub(crate) fn do_create(root: &Path, rel: &str, dir: bool) -> Result<Vec<PathBuf>, String> {
+pub(crate) fn do_create(root: &Path, rel: &str, dir: bool) -> Result<Vec<PathBuf>, AppError> {
     let rel = clean_new(rel, dir)?;
     let abs = abs_of(root, &rel);
     ensure_inside(root, &abs)?;
     let name = rel.rsplit('/').next().unwrap_or(&rel);
     if let Some(parent) = abs.parent() {
         if name_taken(parent, name, None) {
-            return Err(format!("`{name}` already exists here."));
+            return Err(format!("`{name}` already exists here.").into());
         }
         fs::create_dir_all(parent).map_err(|e| format!("Could not create the folder: {e}"))?;
     }
@@ -209,7 +219,7 @@ pub(crate) fn do_create(root: &Path, rel: &str, dir: bool) -> Result<Vec<PathBuf
     Ok(vec![abs])
 }
 
-pub(crate) fn do_rename(root: &Path, from: &str, to: &str) -> Result<Vec<PathBuf>, String> {
+pub(crate) fn do_rename(root: &Path, from: &str, to: &str) -> Result<Vec<PathBuf>, AppError> {
     let from = clean_rel(from)?;
     let src = abs_of(root, &from);
     require_loose(&src, &from)?;
@@ -219,7 +229,11 @@ pub(crate) fn do_rename(root: &Path, from: &str, to: &str) -> Result<Vec<PathBuf
     if to == from {
         return Ok(Vec::new());
     }
-    if is_dir && to.to_lowercase().starts_with(&format!("{}/", from.to_lowercase())) {
+    if is_dir
+        && to
+            .to_lowercase()
+            .starts_with(&format!("{}/", from.to_lowercase()))
+    {
         return Err("A folder cannot be moved into itself.".into());
     }
     let dst = abs_of(root, &to);
@@ -230,7 +244,7 @@ pub(crate) fn do_rename(root: &Path, from: &str, to: &str) -> Result<Vec<PathBuf
     }
     let name = to.rsplit('/').next().unwrap_or(&to);
     if name_taken(parent, name, Some(&src)) {
-        return Err(format!("`{name}` already exists there."));
+        return Err(format!("`{name}` already exists there.").into());
     }
     let mut old_files = Vec::new();
     files_under(&src, &mut old_files);
@@ -245,7 +259,7 @@ pub(crate) fn do_move(
     root: &Path,
     sources: &[String],
     dest_dir: &str,
-) -> Result<(Vec<PathBuf>, Vec<String>), String> {
+) -> Result<(Vec<PathBuf>, Vec<String>), AppError> {
     let dest_rel = if dest_dir.trim().trim_matches('/').is_empty() {
         String::new()
     } else {
@@ -264,21 +278,27 @@ pub(crate) fn do_move(
         require_loose(&src, &from)?;
         ensure_inside(root, &src)?;
         let name = from.rsplit('/').next().unwrap_or(&from).to_string();
-        let to = if dest_rel.is_empty() { name.clone() } else { format!("{dest_rel}/{name}") };
+        let to = if dest_rel.is_empty() {
+            name.clone()
+        } else {
+            format!("{dest_rel}/{name}")
+        };
         if to.eq_ignore_ascii_case(&from) {
             continue;
         }
         if src.is_dir()
             && (dest_rel.eq_ignore_ascii_case(&from)
-                || dest_rel.to_lowercase().starts_with(&format!("{}/", from.to_lowercase())))
+                || dest_rel
+                    .to_lowercase()
+                    .starts_with(&format!("{}/", from.to_lowercase())))
         {
             return Err("A folder cannot be moved into itself.".into());
         }
         if !names.insert(name.to_lowercase()) {
-            return Err(format!("More than one `{name}` is being moved to the same place."));
+            return Err(format!("More than one `{name}` is being moved to the same place.").into());
         }
         if name_taken(&dest_abs, &name, None) {
-            return Err(format!("`{name}` already exists in the destination."));
+            return Err(format!("`{name}` already exists in the destination.").into());
         }
         plan.push((from, src, dest_abs.join(&name), to));
     }
@@ -296,7 +316,7 @@ pub(crate) fn do_move(
 }
 
 /// Move the entry into the IDE backup folder, so a delete can be undone by hand.
-pub(crate) fn do_delete(root: &Path, rel: &str, backup: &Path) -> Result<Vec<PathBuf>, String> {
+pub(crate) fn do_delete(root: &Path, rel: &str, backup: &Path) -> Result<Vec<PathBuf>, AppError> {
     let rel = clean_rel(rel)?;
     let src = abs_of(root, &rel);
     require_loose(&src, &rel)?;
@@ -326,7 +346,7 @@ fn game_rel(project: &Project) -> String {
         .unwrap_or_default()
 }
 
-fn guard_game_folder(project: &Project, rel: &str) -> Result<(), String> {
+fn guard_game_folder(project: &Project, rel: &str) -> Result<(), AppError> {
     let game = game_rel(project);
     let rel = rel.trim().replace('\\', "/");
     let rel = rel.trim_matches('/');
@@ -337,29 +357,33 @@ fn guard_game_folder(project: &Project, rel: &str) -> Result<(), String> {
 }
 
 #[tauri::command(async)]
-pub fn fs_create(state: State<'_, AppState>, path: String, dir: bool) -> Result<String, String> {
+pub fn fs_create(state: State<'_, AppState>, path: String, dir: bool) -> Result<String, AppError> {
     let rel = clean_new(&path, dir)?;
-    let mut guard = state.project.lock().map_err(|e| e.to_string())?;
-    let project = guard.as_mut().ok_or_else(no_project)?;
-    commands::ensure_game_closed(project)?;
-    let touched = do_create(&project.root, &rel, dir)?;
-    if !touched.is_empty() {
-        project.refresh_paths(&touched);
-    }
-    Ok(rel)
+    crate::util::with_project_mut(&state, |project| {
+        commands::ensure_game_closed(project)?;
+        let touched = do_create(&project.root, &rel, dir)?;
+        if !touched.is_empty() {
+            project.refresh_paths(&touched);
+        }
+        Ok(rel)
+    })
 }
 
 #[tauri::command(async)]
-pub fn fs_rename(state: State<'_, AppState>, path: String, new_path: String) -> Result<(), String> {
-    let mut guard = state.project.lock().map_err(|e| e.to_string())?;
-    let project = guard.as_mut().ok_or_else(no_project)?;
-    commands::ensure_game_closed(project)?;
-    guard_game_folder(project, &path)?;
-    let touched = do_rename(&project.root, &path, &new_path)?;
-    if !touched.is_empty() {
-        project.refresh_paths(&touched);
-    }
-    Ok(())
+pub fn fs_rename(
+    state: State<'_, AppState>,
+    path: String,
+    new_path: String,
+) -> Result<(), AppError> {
+    crate::util::with_project_mut(&state, |project| {
+        commands::ensure_game_closed(project)?;
+        guard_game_folder(project, &path)?;
+        let touched = do_rename(&project.root, &path, &new_path)?;
+        if !touched.is_empty() {
+            project.refresh_paths(&touched);
+        }
+        Ok(())
+    })
 }
 
 #[tauri::command(async)]
@@ -367,69 +391,56 @@ pub fn fs_move(
     state: State<'_, AppState>,
     paths: Vec<String>,
     dest_dir: String,
-) -> Result<Vec<String>, String> {
-    let mut guard = state.project.lock().map_err(|e| e.to_string())?;
-    let project = guard.as_mut().ok_or_else(no_project)?;
-    commands::ensure_game_closed(project)?;
-    for path in &paths {
-        guard_game_folder(project, path)?;
-    }
-    let (touched, moved) = do_move(&project.root, &paths, &dest_dir)?;
-    if !touched.is_empty() {
-        project.refresh_paths(&touched);
-    }
-    Ok(moved)
+) -> Result<Vec<String>, AppError> {
+    crate::util::with_project_mut(&state, |project| {
+        commands::ensure_game_closed(project)?;
+        for path in &paths {
+            guard_game_folder(project, path)?;
+        }
+        let (touched, moved) = do_move(&project.root, &paths, &dest_dir)?;
+        if !touched.is_empty() {
+            project.refresh_paths(&touched);
+        }
+        Ok(moved)
+    })
 }
 
 #[tauri::command(async)]
-pub fn fs_delete(app: AppHandle, state: State<'_, AppState>, path: String) -> Result<(), String> {
-    let mut guard = state.project.lock().map_err(|e| e.to_string())?;
-    let project = guard.as_mut().ok_or_else(no_project)?;
-    commands::ensure_game_closed(project)?;
-    guard_game_folder(project, &path)?;
-    let backup = commands::backup_dir(&app, &project.root)?;
-    let touched = do_delete(&project.root, &path, &backup)?;
-    if !touched.is_empty() {
-        project.refresh_paths(&touched);
-    }
-    Ok(())
+pub fn fs_delete(app: AppHandle, state: State<'_, AppState>, path: String) -> Result<(), AppError> {
+    crate::util::with_project_mut(&state, |project| {
+        commands::ensure_game_closed(project)?;
+        guard_game_folder(project, &path)?;
+        let backup = commands::backup_dir(&app, &project.root)?;
+        let touched = do_delete(&project.root, &path, &backup)?;
+        if !touched.is_empty() {
+            project.refresh_paths(&touched);
+        }
+        Ok(())
+    })
 }
 
 /// Show the entry in the OS file manager, selected when the platform supports it.
 #[tauri::command(async)]
-pub fn fs_reveal(state: State<'_, AppState>, path: String) -> Result<(), String> {
+pub fn fs_reveal(state: State<'_, AppState>, path: String) -> Result<(), AppError> {
     let root = {
-        let guard = state.project.lock().map_err(|e| e.to_string())?;
-        guard.as_ref().ok_or_else(no_project)?.root.clone()
+        let guard = crate::util::lock(&state.project);
+        guard
+            .as_ref()
+            .ok_or_else(crate::util::no_project)?
+            .root
+            .clone()
     };
-    let rel = if path.trim().trim_matches('/').is_empty() { String::new() } else { clean_rel(&path)? };
+    let rel = if path.trim().trim_matches('/').is_empty() {
+        String::new()
+    } else {
+        clean_rel(&path)?
+    };
     let abs = abs_of(&root, &rel);
     ensure_inside(&root, &abs)?;
     if !abs.exists() {
-        return Err(format!("`{rel}` is not a loose file, so there is nothing to show."));
+        return Err(format!("`{rel}` is not a loose file, so there is nothing to show.").into());
     }
-    let mut cmd;
-    if cfg!(windows) {
-        cmd = std::process::Command::new("explorer");
-        let native = abs.to_string_lossy().replace('/', "\\");
-        if abs.is_dir() {
-            cmd.arg(native);
-        } else {
-            cmd.arg(format!("/select,{native}"));
-        }
-    } else if cfg!(target_os = "macos") {
-        cmd = std::process::Command::new("open");
-        if abs.is_dir() {
-            cmd.arg(&abs);
-        } else {
-            cmd.arg("-R").arg(&abs);
-        }
-    } else {
-        cmd = std::process::Command::new("xdg-open");
-        cmd.arg(if abs.is_dir() { abs.as_path() } else { abs.parent().unwrap_or(&root) });
-    }
-    cmd.spawn().map_err(|e| format!("Could not open the file manager: {e}"))?;
-    Ok(())
+    crate::process::reveal(&abs)
 }
 
 #[cfg(test)]
@@ -491,8 +502,12 @@ mod tests {
         let touched = do_rename(&root, "game/a", "game/b").unwrap();
         assert!(root.join("game/b/one.rpy").is_file());
         assert!(!root.join("game/a").exists());
-        assert!(touched.iter().any(|p| p.ends_with("b/one.rpy") || p.ends_with("b\\one.rpy")));
-        assert!(touched.iter().any(|p| p.ends_with("a/one.rpy") || p.ends_with("a\\one.rpy")));
+        assert!(touched
+            .iter()
+            .any(|p| p.ends_with("b/one.rpy") || p.ends_with("b\\one.rpy")));
+        assert!(touched
+            .iter()
+            .any(|p| p.ends_with("a/one.rpy") || p.ends_with("a\\one.rpy")));
         assert!(do_rename(&root, "game/b", "game/b/inner").is_err());
         assert!(do_rename(&root, "game/missing", "game/x").is_err());
         let _ = fs::remove_dir_all(&root);
@@ -539,9 +554,9 @@ mod tests {
         assert!(!root.join("game/gone").exists());
         let mut found = Vec::new();
         files_under(&backup, &mut found);
-        assert!(found
-            .iter()
-            .any(|p| fs::read_to_string(p).map(|t| t == "keep me").unwrap_or(false)));
+        assert!(found.iter().any(|p| fs::read_to_string(p)
+            .map(|t| t == "keep me")
+            .unwrap_or(false)));
         assert!(do_delete(&root, "game/gone", &backup).is_err());
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&backup);

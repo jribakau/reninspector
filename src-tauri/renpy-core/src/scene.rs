@@ -319,12 +319,7 @@ pub fn image_statement(name: &str, file: &str) -> Result<String, String> {
     Ok(format!("image {name} = {}", renpy_string(file)))
 }
 
-fn add_choice(
-    src: &str,
-    anchor: u32,
-    text: &str,
-    target: &str,
-) -> Result<(String, u32), String> {
+fn add_choice(src: &str, anchor: u32, text: &str, target: &str) -> Result<(String, u32), String> {
     if text.is_empty() {
         return Err("Write the choice first.".into());
     }
@@ -336,6 +331,7 @@ fn add_choice(
         .ok_or_else(|| "That line is not in the file.".to_string())?;
     let host = lines[idx].clone();
     let code = code_part(&host);
+    #[allow(clippy::needless_late_init)]
     let focus;
     if is_menu_header(code) || is_choice_header(code) {
         let choice_indent = if is_menu_header(code) {
@@ -553,7 +549,7 @@ fn join_lines(lines: &[String], ended: bool) -> String {
     out
 }
 
-fn line_mut<'a>(lines: &'a [String], line: u32) -> Result<&'a String, String> {
+fn line_mut(lines: &[String], line: u32) -> Result<&String, String> {
     lines
         .get((line as usize).wrapping_sub(1))
         .ok_or_else(|| "That line is not in the file.".to_string())
@@ -936,9 +932,7 @@ fn group_end(lines: &[String], idx: usize) -> usize {
         while j < lines.len() && !is_content(&lines[j]) {
             j += 1;
         }
-        if j < lines.len()
-            && indent_width(&lines[j]) == ind
-            && is_branch_tail(code_part(&lines[j]))
+        if j < lines.len() && indent_width(&lines[j]) == ind && is_branch_tail(code_part(&lines[j]))
         {
             end = stmt_end(lines, j);
         } else {
@@ -1009,7 +1003,10 @@ fn is_branch_tail(code: &str) -> bool {
 }
 
 fn is_exit(code: &str) -> bool {
-    matches!(code.split_whitespace().next(), Some("return") | Some("jump"))
+    matches!(
+        code.split_whitespace().next(),
+        Some("return") | Some("jump")
+    )
 }
 
 /// True when the statement on this line carries on past it (an open string or bracket).
@@ -1415,7 +1412,7 @@ pub fn check_label(name: &str) -> Result<(), String> {
     if name.is_empty() || name.starts_with('.') || name.ends_with('.') || name.contains("..") {
         return Err("Name the scene with letters, numbers, and dots.".into());
     }
-    if name.split('.').all(|part| is_ident(part)) {
+    if name.split('.').all(is_ident) {
         Ok(())
     } else {
         Err("Name the scene with letters, numbers, and dots.".into())
@@ -1900,7 +1897,8 @@ mod tests {
 
     #[test]
     fn move_stmt_swaps_siblings_only() {
-        let src = "label a:\n    e \"one\"\n    menu:\n        \"X\":\n            jump x\n    return\n";
+        let src =
+            "label a:\n    e \"one\"\n    menu:\n        \"X\":\n            jump x\n    return\n";
         let (next, focus) = run(src, SceneOp::MoveStmt { line: 2, dir: 1 });
         assert_eq!(
             next,
@@ -1998,11 +1996,27 @@ mod tests {
 
     #[test]
     fn link_scene_jump_replaces_the_ending() {
-        let (next, focus) = link("label a:\n    \"x\"\n    return\n\nlabel b:\n    return\n", LinkKind::Jump, "b", "");
-        assert_eq!(next, "label a:\n    \"x\"\n    jump b\n\nlabel b:\n    return\n");
+        let (next, focus) = link(
+            "label a:\n    \"x\"\n    return\n\nlabel b:\n    return\n",
+            LinkKind::Jump,
+            "b",
+            "",
+        );
+        assert_eq!(
+            next,
+            "label a:\n    \"x\"\n    jump b\n\nlabel b:\n    return\n"
+        );
         assert_eq!(focus, 3);
-        let (next, focus) = link("label a:\n    \"x\"\n\nlabel b:\n    return\n", LinkKind::Jump, "b", "");
-        assert_eq!(next, "label a:\n    \"x\"\n    jump b\n\nlabel b:\n    return\n");
+        let (next, focus) = link(
+            "label a:\n    \"x\"\n\nlabel b:\n    return\n",
+            LinkKind::Jump,
+            "b",
+            "",
+        );
+        assert_eq!(
+            next,
+            "label a:\n    \"x\"\n    jump b\n\nlabel b:\n    return\n"
+        );
         assert_eq!(focus, 3);
     }
 
@@ -2027,7 +2041,12 @@ mod tests {
             next,
             "label a:\n    menu:\n        \"A\":\n            jump a\n        \"B\":\n            jump b\n"
         );
-        let (next, focus) = link("label a:\n    \"x\"\n    return\n", LinkKind::Choice, "b", "Go");
+        let (next, focus) = link(
+            "label a:\n    \"x\"\n    return\n",
+            LinkKind::Choice,
+            "b",
+            "Go",
+        );
         assert_eq!(
             next,
             "label a:\n    \"x\"\n    menu:\n        \"Go\":\n            jump b\n    return\n"

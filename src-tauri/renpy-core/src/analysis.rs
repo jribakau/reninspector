@@ -107,8 +107,11 @@ pub struct EngineDiff {
     /// Engine labels in a file we parsed but did not find there.
     pub engine_only: Vec<(String, String, u32)>,
     /// Labels at a different place: (name, parser file+line, engine file+line).
-    pub moved: Vec<(String, (String, u32), (String, u32))>,
+    pub moved: Vec<MovedLabel>,
 }
+
+/// Label name, parser (file, line), engine (file, line).
+pub type MovedLabel = (String, (String, u32), (String, u32));
 
 impl EngineDiff {
     pub fn is_empty(&self) -> bool {

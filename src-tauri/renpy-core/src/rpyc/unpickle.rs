@@ -1119,7 +1119,7 @@ mod tests {
     #[test]
     fn oversized_long_is_rejected() {
         let mut p = vec![0x80, 2, LONG1, (MAX_LONG as u8) + 1];
-        p.extend(std::iter::repeat(0u8).take(MAX_LONG + 1));
+        p.extend(std::iter::repeat_n(0u8, MAX_LONG + 1));
         p.push(b'.');
         let err = loads(&p).unwrap_err();
         assert!(err.0.contains("integer is too big"), "{err}");
@@ -1173,9 +1173,7 @@ mod tests {
     #[test]
     fn deep_tuples_hit_the_nesting_limit() {
         let mut p = vec![0x80, 2, NONE_OP];
-        for _ in 0..=MAX_DEPTH {
-            p.push(TUPLE1);
-        }
+        p.extend(std::iter::repeat_n(TUPLE1, MAX_DEPTH + 1));
         p.push(STOP);
         let err = loads(&p).unwrap_err();
         assert!(err.0.contains("too deep"), "{err}");

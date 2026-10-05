@@ -407,7 +407,7 @@ fn xorshift(state: &mut u32) -> u32 {
 #[test]
 fn patch_stem_orders_after_real_names() {
     let name = patch_stem(["archive", "scripts", "zz_sounds"]);
-    let mut all = vec![
+    let mut all = [
         "archive".to_string(),
         "scripts".into(),
         "zz_sounds".into(),

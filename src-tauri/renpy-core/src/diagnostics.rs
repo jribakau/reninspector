@@ -300,11 +300,9 @@ pub fn build(
                     e.1 += 1;
                 }
             }
-            Kind::Say { who: Some(w), .. } if is_ident(w) => {
-                if !speakers.contains(w) {
-                    let e = undefined_speakers.entry(w.clone()).or_insert((s.line, 0));
-                    e.1 += 1;
-                }
+            Kind::Say { who: Some(w), .. } if is_ident(w) && !speakers.contains(w) => {
+                let e = undefined_speakers.entry(w.clone()).or_insert((s.line, 0));
+                e.1 += 1;
             }
             _ => {}
         });

@@ -5,9 +5,11 @@
 //! loose file still beats it. Bake copies the previous patch and the loose
 //! files aside first, so undo can put them back.
 
+use crate::error::AppError;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use renpy_core::rpa::{self, Archive, ArchiveWriter, PatchEntry, PatchManifest};
@@ -45,14 +47,14 @@ pub fn undo_root(app_data: &Path, project_root: &Path) -> PathBuf {
         )
 }
 
-fn safe_join(root: &Path, rel: &str) -> Result<PathBuf, String> {
+fn safe_join(root: &Path, rel: &str) -> Result<PathBuf, AppError> {
     if rel.is_empty()
         || rel.contains('\0')
         || rel
             .split('/')
             .any(|p| p.is_empty() || p == "." || p == "..")
     {
-        return Err(format!("unsafe path `{rel}`"));
+        return Err(format!("unsafe path `{rel}`").into());
     }
     let mut path = root.to_path_buf();
     for part in rel.split('/') {
@@ -80,8 +82,8 @@ fn patch_rel(project: &Project) -> String {
 }
 
 fn sidecar_rel(rel: &str) -> String {
-    if rel.ends_with(".rpym") {
-        format!("{}.rpymc", &rel[..rel.len() - 5])
+    if let Some(stem) = rel.strip_suffix(".rpym") {
+        format!("{stem}.rpymc")
     } else if let Some(stem) = rel.strip_suffix(".rpy") {
         format!("{stem}.rpyc")
     } else {
@@ -102,7 +104,7 @@ fn sidecar_is_stale(project: &Project, file: &renpy_core::project::SourceFile) -
 fn compile_overrides(
     project: &Project,
     overrides: &[&renpy_core::project::SourceFile],
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     if !overrides.iter().any(|file| sidecar_is_stale(project, file)) {
         return Ok(());
     }
@@ -130,7 +132,7 @@ fn modified_at(path: &Path) -> Option<SystemTime> {
 pub fn compile_target(
     project: &Project,
     backup_root: &Path,
-) -> Result<Option<(std::path::PathBuf, std::path::PathBuf, renpy_core::Launcher)>, String> {
+) -> Result<Option<(std::path::PathBuf, std::path::PathBuf, renpy_core::Launcher)>, AppError> {
     let overrides: Vec<&renpy_core::project::SourceFile> = project
         .files
         .iter()
@@ -155,7 +157,7 @@ pub fn compile_target(
 pub const TOGGLES_NAME: &str = "vnide_toggles.rpy";
 pub const TOGGLES_COMPILED: &str = "vnide_toggles.rpyc";
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ModToggles {
     #[serde(default)]
@@ -168,18 +170,6 @@ pub struct ModToggles {
     pub skip_unseen: bool,
     #[serde(default)]
     pub rollback: bool,
-}
-
-impl Default for ModToggles {
-    fn default() -> Self {
-        Self {
-            console: false,
-            developer: false,
-            quick_save_keys: false,
-            skip_unseen: false,
-            rollback: false,
-        }
-    }
 }
 
 impl ModToggles {
@@ -234,13 +224,13 @@ pub fn save_toggles(
     app_data: &Path,
     project_root: &Path,
     toggles: &ModToggles,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     let path = toggles_path(app_data, project_root);
     if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        fs::create_dir_all(dir)?;
     }
-    let text = serde_json::to_string_pretty(toggles).map_err(|e| e.to_string())?;
-    fs::write(path, text).map_err(|e| e.to_string())
+    let text = serde_json::to_string_pretty(toggles)?;
+    fs::write(path, text).map_err(crate::error::AppError::from)
 }
 
 /// Rebuild the patch from every loose override plus the entries already in it.
@@ -249,7 +239,7 @@ pub fn bake(
     undo_dir: &Path,
     backup_root: &Path,
     toggles: &ModToggles,
-) -> Result<PatchReport, String> {
+) -> Result<PatchReport, AppError> {
     let overrides: Vec<&renpy_core::project::SourceFile> = project
         .files
         .iter()
@@ -284,8 +274,8 @@ pub fn bake(
     let mut carried: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     let mut old_manifest: Option<PatchManifest> = None;
     if had_previous {
-        let archive = Archive::open(&patch_abs).map_err(|e| e.to_string())?;
-        old_manifest = rpa::read_manifest(&archive).map_err(|e| e.to_string())?;
+        let archive = Archive::open(&patch_abs)?;
+        old_manifest = rpa::read_manifest(&archive)?;
         for name in archive.entries.keys() {
             if name == rpa::MANIFEST_NAME {
                 continue;
@@ -324,7 +314,7 @@ pub fn bake(
                 .join("markers")
                 .join(marker.strip_prefix(backup_root).unwrap_or(marker.as_path()));
             if let Some(parent) = saved.parent() {
-                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                fs::create_dir_all(parent)?;
             }
             fs::copy(&marker, &saved)
                 .map_err(|e| format!("Could not back up the edit record for {}: {e}", file.rel))?;
@@ -410,30 +400,25 @@ pub fn bake(
 
     apply_toggles(&mut carried, &mut manifest, toggles, &project.game_dir)?;
 
-    let manifest_bytes = manifest.to_bytes().map_err(|e| e.to_string())?;
+    let manifest_bytes = manifest.to_bytes()?;
     let op = UndoOp {
         kind: "bake".into(),
         patch_rel: rel.clone(),
         had_previous,
         files: undo_files,
     };
-    fs::write(
-        undo_dir.join("op.json"),
-        serde_json::to_vec(&op).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| format!("Could not write the undo record: {e}"))?;
+    fs::write(undo_dir.join("op.json"), serde_json::to_vec(&op)?)
+        .map_err(|e| format!("Could not write the undo record: {e}"))?;
 
     let count = carried.len() as u32;
-    let mut writer = ArchiveWriter::create(&patch_abs).map_err(|e| e.to_string())?;
+    let mut writer = ArchiveWriter::create(&patch_abs)?;
     for (name, bytes) in &carried {
-        writer.add_bytes(name, bytes).map_err(|e| e.to_string())?;
+        writer.add_bytes(name, bytes)?;
     }
-    writer
-        .add_bytes(rpa::MANIFEST_NAME, &manifest_bytes)
-        .map_err(|e| e.to_string())?;
+    writer.add_bytes(rpa::MANIFEST_NAME, &manifest_bytes)?;
     if let Err(e) = writer.finish() {
         let _ = fs::remove_dir_all(undo_dir);
-        return Err(e.to_string());
+        return Err(e.to_string().into());
     }
 
     for file in &overrides {
@@ -459,33 +444,38 @@ pub fn bake(
     })
 }
 
-fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
-    for entry in fs::read_dir(from).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
+fn copy_tree(from: &Path, to: &Path) -> Result<(), AppError> {
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
         let dest = to.join(entry.file_name());
         if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-            fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
+            fs::create_dir_all(&dest)?;
             copy_tree(&entry.path(), &dest)?;
         } else {
             if let Some(parent) = dest.parent() {
-                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                fs::create_dir_all(parent)?;
             }
-            fs::copy(entry.path(), &dest).map_err(|e| e.to_string())?;
+            fs::copy(entry.path(), &dest)?;
         }
     }
     Ok(())
 }
 
-fn copy_aside(files_dir: &Path, rel: &str, bytes: &[u8]) -> Result<(), String> {
+fn copy_aside(files_dir: &Path, rel: &str, bytes: &[u8]) -> Result<(), AppError> {
     let dest = safe_join(files_dir, rel)?;
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)
             .map_err(|e| format!("Could not create {}: {e}", parent.display()))?;
     }
-    fs::write(&dest, bytes).map_err(|e| format!("Could not back up {rel}: {e}"))
+    fs::write(&dest, bytes)
+        .map_err(|e| crate::error::AppError::new(format!("Could not back up {rel}: {e}")))
 }
 
-pub fn undo(project: &Project, undo_dir: &Path, backup_root: &Path) -> Result<PatchReport, String> {
+pub fn undo(
+    project: &Project,
+    undo_dir: &Path,
+    backup_root: &Path,
+) -> Result<PatchReport, AppError> {
     let text = fs::read_to_string(undo_dir.join("op.json"))
         .map_err(|_| "Nothing to undo. Bake or remove a patch first.".to_string())?;
     let op: UndoOp =
@@ -507,7 +497,7 @@ pub fn undo(project: &Project, undo_dir: &Path, backup_root: &Path) -> Result<Pa
             continue;
         }
         if let Some(parent) = dest.parent() {
-            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            fs::create_dir_all(parent)?;
         }
         fs::copy(&src, &dest).map_err(|e| format!("Could not restore {rel}: {e}"))?;
     }
@@ -523,7 +513,7 @@ pub fn undo(project: &Project, undo_dir: &Path, backup_root: &Path) -> Result<Pa
     })
 }
 
-pub fn remove(project: &Project, undo_dir: &Path) -> Result<PatchReport, String> {
+pub fn remove(project: &Project, undo_dir: &Path) -> Result<PatchReport, AppError> {
     let rel = project
         .archives
         .iter()
@@ -532,10 +522,10 @@ pub fn remove(project: &Project, undo_dir: &Path) -> Result<PatchReport, String>
         .ok_or_else(|| "There is no patch archive to remove.".to_string())?;
     let patch_abs = safe_join(&project.game_dir, &rel)?;
     if !patch_abs.is_file() {
-        return Err(format!("`{rel}` is not in the game folder."));
+        return Err(format!("`{rel}` is not in the game folder.").into());
     }
     let _ = fs::remove_dir_all(undo_dir);
-    fs::create_dir_all(undo_dir).map_err(|e| e.to_string())?;
+    fs::create_dir_all(undo_dir)?;
     fs::copy(&patch_abs, undo_dir.join("previous.rpa"))
         .map_err(|e| format!("Could not back up the patch: {e}"))?;
     let op = UndoOp {
@@ -544,11 +534,7 @@ pub fn remove(project: &Project, undo_dir: &Path) -> Result<PatchReport, String>
         had_previous: true,
         files: Vec::new(),
     };
-    fs::write(
-        undo_dir.join("op.json"),
-        serde_json::to_vec(&op).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())?;
+    fs::write(undo_dir.join("op.json"), serde_json::to_vec(&op)?)?;
     fs::remove_file(&patch_abs).map_err(|e| format!("Could not remove {rel}: {e}"))?;
     Ok(PatchReport {
         patch: rel,
@@ -586,10 +572,16 @@ fn capture_archived(project: &Project, archive: &str, rel: &str) -> CapturedBase
 fn capture_loose(project: &Project, rel: &str) -> CapturedBase {
     let side = sidecar_rel(rel);
     let Ok(path) = safe_join(&project.game_dir, &side) else {
-        return CapturedBase { crc: None, text: None };
+        return CapturedBase {
+            crc: None,
+            text: None,
+        };
     };
     let Ok(bytes) = fs::read(path) else {
-        return CapturedBase { crc: None, text: None };
+        return CapturedBase {
+            crc: None,
+            text: None,
+        };
     };
     let text = renpy_core::rpyc::decompile(&bytes).ok().map(|got| got.text);
     CapturedBase {
@@ -605,6 +597,10 @@ fn archived_text(project: &Project, archive: &str, rel: &str) -> Option<String> 
         .find(|item| item.info.path == archive)?
         .archive
         .as_ref()?;
+    text_in(loaded, rel)
+}
+
+fn text_in(loaded: &Archive, rel: &str) -> Option<String> {
     if rel.ends_with(".rpy") || rel.ends_with(".rpym") {
         if let Ok(bytes) = loaded.read_entry(rel, rpa::SCRIPT_MAX) {
             if let Ok(text) = String::from_utf8(bytes) {
@@ -624,15 +620,15 @@ pub fn base_snapshot_path(backup_root: &Path, crc: u32, rel: &str) -> PathBuf {
         .join(rel)
 }
 
-fn write_base(backup_root: &Path, crc: u32, rel: &str, text: &str) -> Result<(), String> {
+fn write_base(backup_root: &Path, crc: u32, rel: &str, text: &str) -> Result<(), AppError> {
     if rel.is_empty() || rel.contains("..") || rel.contains('\0') {
-        return Err(format!("Refusing to store a base snapshot for `{rel}`."));
+        return Err(format!("Refusing to store a base snapshot for `{rel}`.").into());
     }
     let path = base_snapshot_path(backup_root, crc, rel);
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        fs::create_dir_all(parent)?;
     }
-    fs::write(path, text).map_err(|e| e.to_string())
+    fs::write(path, text).map_err(crate::error::AppError::from)
 }
 
 fn read_base(backup_root: &Path, crc: u32, rel: &str) -> Option<String> {
@@ -641,10 +637,7 @@ fn read_base(backup_root: &Path, crc: u32, rel: &str) -> Option<String> {
 
 /// Where the toggles script is staged, loose, while the engine compiles it.
 pub fn toggles_loose_paths(game_dir: &Path) -> (PathBuf, PathBuf) {
-    (
-        game_dir.join(TOGGLES_NAME),
-        game_dir.join(TOGGLES_COMPILED),
-    )
+    (game_dir.join(TOGGLES_NAME), game_dir.join(TOGGLES_COMPILED))
 }
 
 /// The game ignores a `.rpy` that lives only in an archive and runs the `.rpyc`.
@@ -655,7 +648,7 @@ pub fn compile_toggles(
     game_dir: &Path,
     launcher: Option<&renpy_core::Launcher>,
     toggles: &ModToggles,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     let script = toggles.script();
     if script.is_empty() {
         return Ok(());
@@ -669,14 +662,16 @@ pub fn compile_toggles(
     if rpy.exists() || rpyc.exists() {
         return Err(format!(
             "`{TOGGLES_NAME}` or `{TOGGLES_COMPILED}` already exists in game/. Move it before baking the toggles."
-        ));
+        ).into());
     }
     let outcome = (|| {
         fs::write(&rpy, script).map_err(|e| format!("Could not stage the toggles script: {e}"))?;
         renpy_core::engine::run_json_dump(project_root, game_dir, launcher, "bake".into())
             .map_err(|e| format!("Ren'Py could not compile the toggles: {e}"))?;
         if !rpyc.is_file() {
-            return Err("Ren'Py ran, but it did not compile the toggles script.".to_string());
+            return Err("Ren'Py ran, but it did not compile the toggles script."
+                .to_string()
+                .into());
         }
         Ok(())
     })();
@@ -698,7 +693,7 @@ fn apply_toggles(
     manifest: &mut PatchManifest,
     toggles: &ModToggles,
     game_dir: &Path,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     carried.remove(TOGGLES_NAME);
     carried.remove(TOGGLES_COMPILED);
     manifest.entries.remove(TOGGLES_NAME);
@@ -735,25 +730,67 @@ pub struct RebaseResult {
     pub base_missing: bool,
 }
 
-pub fn rebase(project: &Project, backup_root: &Path, rel: &str) -> Result<RebaseResult, String> {
-    if rel.is_empty() || rel.contains("..") || rel.contains('\0') {
-        return Err("That path is not a script in this game.".into());
-    }
-    let loaded = project
+/// What a rebase needs, copied out so it can run after the project lock is dropped.
+///
+/// The patch manifest and the one entry are read now: an `Archive` reopens its file on
+/// every read, so a handle would see a half-changed file if the patch were baked again
+/// in the meantime. The base game archives are never rewritten, so handles do for them.
+pub struct RebaseSources {
+    pub game_dir: PathBuf,
+    pub manifest: PatchManifest,
+    pub patch_entry: Option<Vec<u8>>,
+    pub by_path: Vec<(String, Arc<Archive>)>,
+}
+
+pub fn rebase_sources(project: &Project, rel: &str) -> Result<RebaseSources, AppError> {
+    let patch = project
         .archives
         .iter()
         .find(|item| item.info.is_patch)
         .and_then(|item| item.archive.as_ref())
-        .ok_or_else(|| "There is no patch to rebase.".to_string())?;
-    let manifest = rpa::read_manifest(loaded)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "The patch has no manifest.".to_string())?;
-    let entry = manifest
+        .ok_or_else(|| AppError::new("There is no patch to rebase."))?;
+    let manifest =
+        rpa::read_manifest(patch)?.ok_or_else(|| AppError::new("The patch has no manifest."))?;
+    let patch_entry = match patch.entries.contains_key(rel) {
+        true => Some(
+            patch
+                .read_entry(rel, rpa::SCRIPT_MAX)
+                .map_err(|e| format!("Could not read `{rel}` from the patch: {e}"))?,
+        ),
+        false => None,
+    };
+    let by_path = project
+        .archives
+        .iter()
+        .filter_map(|item| {
+            item.archive
+                .as_ref()
+                .map(|archive| (item.info.path.clone(), Arc::clone(archive)))
+        })
+        .collect();
+    Ok(RebaseSources {
+        game_dir: project.game_dir.clone(),
+        manifest,
+        patch_entry,
+        by_path,
+    })
+}
+
+pub fn rebase_with(
+    sources: &RebaseSources,
+    backup_root: &Path,
+    rel: &str,
+) -> Result<RebaseResult, AppError> {
+    if rel.is_empty() || rel.contains("..") || rel.contains('\0') {
+        return Err("That path is not a script in this game.".into());
+    }
+    let entry = sources
+        .manifest
         .entries
         .get(rel)
         .ok_or_else(|| format!("`{rel}` is not in the patch."))?;
-    let mine = mine_text(project, loaded, rel)?;
-    let upstream = upstream_text(project, entry, rel);
+    let mine = mine_text(&sources.game_dir, sources.patch_entry.as_deref(), rel)?;
+    let upstream = upstream_text(sources, entry, rel);
     let base = entry
         .base_crc32
         .and_then(|crc| read_base(backup_root, crc, rel));
@@ -772,27 +809,29 @@ pub fn rebase(project: &Project, backup_root: &Path, rel: &str) -> Result<Rebase
     })
 }
 
-fn mine_text(project: &Project, patch: &Archive, rel: &str) -> Result<String, String> {
-    if let Ok(path) = safe_join(&project.game_dir, rel) {
+fn mine_text(game_dir: &Path, in_patch: Option<&[u8]>, rel: &str) -> Result<String, AppError> {
+    if let Ok(path) = safe_join(game_dir, rel) {
         if path.is_file() {
-            return fs::read_to_string(path)
-                .map_err(|e| format!("Could not read the loose copy of {rel}: {e}"));
+            return fs::read_to_string(path).map_err(|e| {
+                crate::error::AppError::new(format!("Could not read the loose copy of {rel}: {e}"))
+            });
         }
     }
-    let bytes = patch
-        .read_entry(rel, rpa::SCRIPT_MAX)
-        .map_err(|e| format!("Could not read `{rel}` from the patch: {e}"))?;
-    String::from_utf8(bytes).map_err(|_| format!("`{rel}` in the patch is not text."))
+    let bytes = in_patch.ok_or_else(|| format!("`{rel}` is not in the patch."))?;
+    String::from_utf8(bytes.to_vec())
+        .map_err(|_| crate::error::AppError::new(format!("`{rel}` in the patch is not text.")))
 }
 
-fn upstream_text(project: &Project, entry: &PatchEntry, rel: &str) -> String {
+fn upstream_text(sources: &RebaseSources, entry: &PatchEntry, rel: &str) -> String {
     if let Some(archive) = entry.source.as_deref() {
-        if let Some(text) = archived_text(project, archive, rel) {
-            return text;
+        if let Some((_, loaded)) = sources.by_path.iter().find(|(path, _)| path == archive) {
+            if let Some(text) = text_in(loaded, rel) {
+                return text;
+            }
         }
     }
     let side = sidecar_rel(rel);
-    let Ok(path) = safe_join(&project.game_dir, &side) else {
+    let Ok(path) = safe_join(&sources.game_dir, &side) else {
         return String::new();
     };
     let Ok(bytes) = fs::read(path) else {
@@ -844,8 +883,10 @@ mod tests {
         let project = Project::open(&root).unwrap();
         let backups = root.join("backups");
         let undo = root.join("undo");
-        let mut on = ModToggles::default();
-        on.console = true;
+        let on = ModToggles {
+            console: true,
+            ..Default::default()
+        };
 
         // The engine has not compiled the script, so there is nothing to fold in.
         let err = bake(&project, &undo, &backups, &on).unwrap_err();
@@ -853,9 +894,15 @@ mod tests {
 
         fs::write(game.join(TOGGLES_COMPILED), b"compiled").unwrap();
         let report = bake(&project, &undo, &backups, &on).unwrap();
-        assert!(!game.join(TOGGLES_COMPILED).exists(), "the loose rpyc is folded in");
+        assert!(
+            !game.join(TOGGLES_COMPILED).exists(),
+            "the loose rpyc is folded in"
+        );
         let patch = Archive::open(&game.join(&report.patch)).unwrap();
-        assert_eq!(patch.read_entry(TOGGLES_COMPILED, 1024).unwrap(), b"compiled");
+        assert_eq!(
+            patch.read_entry(TOGGLES_COMPILED, 1024).unwrap(),
+            b"compiled"
+        );
         let text = String::from_utf8(patch.read_entry(TOGGLES_NAME, 1024).unwrap()).unwrap();
         assert!(text.contains("config.console = True"));
         let manifest = rpa::read_manifest(&patch).unwrap().unwrap();
@@ -968,8 +1015,11 @@ mod tests {
     }
 
     fn toggles_engine_check(sdk: &Path, which: &str) {
-        let work = std::env::temp_dir()
-            .join(format!("vn-ide-toggles-engine-{}-{}", which, std::process::id()));
+        let work = std::env::temp_dir().join(format!(
+            "vn-ide-toggles-engine-{}-{}",
+            which,
+            std::process::id()
+        ));
         let _guard = Stage::create(&work);
         let sdk_copy = work.join("sdk");
         stage_runtime(sdk, &sdk_copy).unwrap_or_else(|e| panic!("{which}: {e}"));
@@ -991,21 +1041,26 @@ mod tests {
             prefix_args: vec![proj.to_string_lossy().into_owned()],
         };
         let off = ModToggles::default();
-        let mut on = ModToggles::default();
-        on.console = true;
-        on.developer = true;
-        on.quick_save_keys = true;
-        on.rollback = true;
+        let on = ModToggles {
+            console: true,
+            developer: true,
+            quick_save_keys: true,
+            rollback: true,
+            ..Default::default()
+        };
 
         run_json_dump(&proj, &game, &launcher, "before".into()).unwrap_or_else(|e| {
-            panic!("{which}: engine dump failed: {e}\n{}", engine_log(&exe, &proj))
+            panic!(
+                "{which}: engine dump failed: {e}\n{}",
+                engine_log(&exe, &proj)
+            )
         });
-        let before = fs::read_to_string(&mark).unwrap_or_else(|e| panic!("{which}: no probe output: {e}"));
+        let before =
+            fs::read_to_string(&mark).unwrap_or_else(|e| panic!("{which}: no probe output: {e}"));
         let _ = fs::remove_file(&mark);
 
-        compile_toggles(&proj, &game, Some(&launcher), &on).unwrap_or_else(|e| {
-            panic!("{which}: {e}\n{}", engine_log(&exe, &proj))
-        });
+        compile_toggles(&proj, &game, Some(&launcher), &on)
+            .unwrap_or_else(|e| panic!("{which}: {e}\n{}", engine_log(&exe, &proj)));
         let project = Project::open(&proj).unwrap();
         let backups = work.join("backups");
         let undo = work.join("undo");
@@ -1014,13 +1069,19 @@ mod tests {
         assert!(!game.join(TOGGLES_NAME).exists() && !game.join(TOGGLES_COMPILED).exists());
 
         run_json_dump(&proj, &game, &launcher, "after".into()).unwrap_or_else(|e| {
-            panic!("{which}: engine dump of the patch failed: {e}\n{}", engine_log(&exe, &proj))
+            panic!(
+                "{which}: engine dump of the patch failed: {e}\n{}",
+                engine_log(&exe, &proj)
+            )
         });
         let after = fs::read_to_string(&mark)
             .unwrap_or_else(|e| panic!("{which}: no probe output after baking: {e}"));
         let _ = fs::remove_file(&mark);
         eprintln!("{which}: settings before {before}\n{which}: settings after  {after}");
-        assert!(after.starts_with("(True, True, True, ['K_F5']"), "{which}: {after}");
+        assert!(
+            after.starts_with("(True, True, True, ['K_F5']"),
+            "{which}: {after}"
+        );
         assert!(after.contains("['K_F9']"), "{which}: {after}");
         assert_ne!(before, after, "{which}: the toggles changed nothing");
 
@@ -1029,7 +1090,10 @@ mod tests {
             .unwrap_or_else(|e| panic!("{which}: {e}"));
         run_json_dump(&proj, &game, &launcher, "off".into()).unwrap();
         let reverted = fs::read_to_string(&mark).unwrap();
-        assert_eq!(reverted, before, "{which}: toggles stayed on after being turned off");
+        assert_eq!(
+            reverted, before,
+            "{which}: toggles stayed on after being turned off"
+        );
     }
 
     fn engine_check(sdk: &Path, which: &str) {
@@ -1333,11 +1397,11 @@ mod tests {
         }
     }
 
-    fn stage_runtime(src: &Path, dest: &Path) -> Result<(), String> {
-        fs::create_dir_all(dest).map_err(|e| e.to_string())?;
+    fn stage_runtime(src: &Path, dest: &Path) -> Result<(), AppError> {
+        fs::create_dir_all(dest)?;
         let (exe, py) = launcher_pair(src)?;
-        fs::copy(&exe, dest.join(exe.file_name().unwrap())).map_err(|e| e.to_string())?;
-        fs::copy(&py, dest.join(py.file_name().unwrap())).map_err(|e| e.to_string())?;
+        fs::copy(&exe, dest.join(exe.file_name().unwrap()))?;
+        fs::copy(&py, dest.join(py.file_name().unwrap()))?;
         let from = src.join("renpy");
         let to = dest.join("renpy");
         let status = Command::new("robocopy")
@@ -1347,7 +1411,7 @@ mod tests {
             .status()
             .map_err(|e| format!("robocopy: {e}"))?;
         if status.code().unwrap_or(16) >= 8 {
-            return Err(format!("could not copy the engine ({})", status));
+            return Err(format!("could not copy the engine ({})", status).into());
         }
         let link_at = dest.join("lib");
         let link_to = src.join("lib");
@@ -1367,10 +1431,10 @@ mod tests {
         Ok(())
     }
 
-    fn launcher_pair(sdk: &Path) -> Result<(PathBuf, PathBuf), String> {
+    fn launcher_pair(sdk: &Path) -> Result<(PathBuf, PathBuf), AppError> {
         let mut found = None;
-        for entry in fs::read_dir(sdk).map_err(|e| e.to_string())? {
-            let path = entry.map_err(|e| e.to_string())?.path();
+        for entry in fs::read_dir(sdk)? {
+            let path = entry?.path();
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
             if !ext.eq_ignore_ascii_case("exe") {
                 continue;
@@ -1389,6 +1453,8 @@ mod tests {
                 break;
             }
         }
-        found.ok_or_else(|| format!("no launcher next to {}", sdk.display()))
+        found.ok_or_else(|| {
+            crate::error::AppError::new(format!("no launcher next to {}", sdk.display()))
+        })
     }
 }

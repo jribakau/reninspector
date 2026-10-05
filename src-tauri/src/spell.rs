@@ -3,6 +3,7 @@
 //! Extra words live in `<project>/.vnide/words.txt`, outside `game/`, so a
 //! build does not ship them and the list can still be committed.
 
+use crate::error::AppError;
 use std::collections::HashSet;
 use std::fs;
 use std::sync::OnceLock;
@@ -27,7 +28,7 @@ pub struct SpellHit {
     pub word: String,
 }
 
-fn dictionary() -> Result<&'static Dictionary, String> {
+fn dictionary() -> Result<&'static Dictionary, AppError> {
     static DICT: OnceLock<Dictionary> = OnceLock::new();
     if let Some(dict) = DICT.get() {
         return Ok(dict);
@@ -37,13 +38,13 @@ fn dictionary() -> Result<&'static Dictionary, String> {
     Ok(DICT.get_or_init(|| parsed))
 }
 
-fn no_project() -> String {
-    "No project is open.".into()
-}
-
-fn project_root(state: &State<'_, AppState>) -> Result<std::path::PathBuf, String> {
-    let guard = state.project.lock().map_err(|e| e.to_string())?;
-    Ok(guard.as_ref().ok_or_else(no_project)?.root.clone())
+fn project_root(state: &State<'_, AppState>) -> Result<std::path::PathBuf, AppError> {
+    let guard = crate::util::lock(&state.project);
+    Ok(guard
+        .as_ref()
+        .ok_or_else(crate::util::no_project)?
+        .root
+        .clone())
 }
 
 fn word_list(root: &std::path::Path) -> HashSet<String> {
@@ -54,17 +55,17 @@ fn word_list(root: &std::path::Path) -> HashSet<String> {
         .collect()
 }
 
-fn symbol_names(state: &State<'_, AppState>) -> Result<HashSet<String>, String> {
-    let guard = state.project.lock().map_err(|e| e.to_string())?;
-    let project = guard.as_ref().ok_or_else(no_project)?;
-    let mut names = HashSet::new();
-    for symbol in &project.analysis.catalog.symbols {
-        names.insert(symbol.name.to_lowercase());
-    }
-    for variable in &project.analysis.catalog.variables {
-        names.insert(variable.name.to_lowercase());
-    }
-    Ok(names)
+fn symbol_names(state: &State<'_, AppState>) -> Result<HashSet<String>, AppError> {
+    crate::util::with_project(state, |project| {
+        let mut names = HashSet::new();
+        for symbol in &project.analysis.catalog.symbols {
+            names.insert(symbol.name.to_lowercase());
+        }
+        for variable in &project.analysis.catalog.variables {
+            names.insert(variable.name.to_lowercase());
+        }
+        Ok(names)
+    })
 }
 
 fn all_caps(word: &str) -> bool {
@@ -92,7 +93,7 @@ fn known_name(word: &str, names: &HashSet<String>, extra: &HashSet<String>) -> b
         .is_some_and(|stem| !stem.is_empty() && (names.contains(stem) || extra.contains(stem)))
 }
 
-fn clean_word(word: &str) -> Result<String, String> {
+fn clean_word(word: &str) -> Result<String, AppError> {
     let word = word.trim();
     if word.is_empty() || word.chars().count() > 64 {
         return Err("That word cannot be added.".into());
@@ -108,7 +109,7 @@ fn clean_word(word: &str) -> Result<String, String> {
 }
 
 #[tauri::command(async)]
-pub fn spell_check(state: State<'_, AppState>, text: String) -> Result<Vec<SpellHit>, String> {
+pub fn spell_check(state: State<'_, AppState>, text: String) -> Result<Vec<SpellHit>, AppError> {
     if text.len() > MAX_TEXT {
         return Ok(Vec::new());
     }
@@ -141,7 +142,7 @@ pub fn spell_check(state: State<'_, AppState>, text: String) -> Result<Vec<Spell
 }
 
 #[tauri::command(async)]
-pub fn spell_suggest(word: String) -> Result<Vec<String>, String> {
+pub fn spell_suggest(word: String) -> Result<Vec<String>, AppError> {
     let word = word.trim();
     if word.is_empty() || word.len() > 64 {
         return Ok(Vec::new());
@@ -154,7 +155,7 @@ pub fn spell_suggest(word: String) -> Result<Vec<String>, String> {
 }
 
 #[tauri::command(async)]
-pub fn spell_add_word(state: State<'_, AppState>, word: String) -> Result<(), String> {
+pub fn spell_add_word(state: State<'_, AppState>, word: String) -> Result<(), AppError> {
     let word = clean_word(&word)?;
     let root = project_root(&state)?;
     let dir = root.join(".vnide");
@@ -172,12 +173,13 @@ pub fn spell_add_word(state: State<'_, AppState>, word: String) -> Result<(), St
     }
     existing.push_str(&word);
     existing.push('\n');
-    fs::write(&path, existing).map_err(|e| format!("Could not save the word list: {e}"))
+    fs::write(&path, existing)
+        .map_err(|e| crate::error::AppError::new(format!("Could not save the word list: {e}")))
 }
 
 /// Words the author added to this project, in the order they were added.
 #[tauri::command(async)]
-pub fn spell_words(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+pub fn spell_words(state: State<'_, AppState>) -> Result<Vec<String>, AppError> {
     let root = project_root(&state)?;
     let text = fs::read_to_string(root.join(".vnide").join("words.txt")).unwrap_or_default();
     Ok(text
@@ -188,7 +190,7 @@ pub fn spell_words(state: State<'_, AppState>) -> Result<Vec<String>, String> {
 }
 
 #[tauri::command(async)]
-pub fn spell_remove_word(state: State<'_, AppState>, word: String) -> Result<(), String> {
+pub fn spell_remove_word(state: State<'_, AppState>, word: String) -> Result<(), AppError> {
     let root = project_root(&state)?;
     let path = root.join(".vnide").join("words.txt");
     let Ok(existing) = fs::read_to_string(&path) else {
@@ -203,7 +205,8 @@ pub fn spell_remove_word(state: State<'_, AppState>, word: String) -> Result<(),
     if !out.is_empty() {
         out.push('\n');
     }
-    fs::write(&path, out).map_err(|e| format!("Could not save the word list: {e}"))
+    fs::write(&path, out)
+        .map_err(|e| crate::error::AppError::new(format!("Could not save the word list: {e}")))
 }
 
 #[cfg(test)]

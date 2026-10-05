@@ -423,7 +423,12 @@ pub fn build(files: &[SourceFile]) -> Catalog {
                     }
                 }
             }
-            Kind::Python { block, text, refs, names } => {
+            Kind::Python {
+                block,
+                text,
+                refs,
+                names,
+            } => {
                 for n in names {
                     symbols.push(Symbol {
                         kind: n.kind.into(),
@@ -511,7 +516,7 @@ pub fn build(files: &[SourceFile]) -> Catalog {
             uses: v.uses,
         })
         .collect();
-    variables.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    variables.sort_by_key(|a| a.name.to_lowercase());
 
     for v in variables
         .iter()
@@ -1129,9 +1134,8 @@ fn idents(s: &str) -> Vec<String> {
                 i += 1;
             }
             let word = &s[start..i];
-            if word.starts_with("persistent.") && word.len() > "persistent.".len() {
-                out.push(word.to_string());
-            } else if !word.contains('.') && !SKIP_IDENT.contains(&word) {
+            let persistent = word.starts_with("persistent.") && word.len() > "persistent.".len();
+            if persistent || (!word.contains('.') && !SKIP_IDENT.contains(&word)) {
                 out.push(word.to_string());
             }
             continue;
@@ -1207,7 +1211,7 @@ fn tag_error(text: &str) -> Option<String> {
             }
             continue;
         }
-        let name = tag_name(&inner);
+        let name = tag_name(inner);
         if CLOSING_TAGS.contains(&name) {
             stack.push(name.to_string());
         }
@@ -1443,8 +1447,14 @@ init python:
         assert!(cat.symbols.iter().any(|s| {
             s.kind == "style" && s.name == "say_dialogue" && s.line == 19 && s.end_line == 20
         }));
-        assert!(cat.symbols.iter().any(|s| s.kind == "function" && s.name == "greet" && s.line == 22));
-        assert!(cat.symbols.iter().any(|s| s.kind == "class" && s.name == "Box" && s.line == 24));
+        assert!(cat
+            .symbols
+            .iter()
+            .any(|s| s.kind == "function" && s.name == "greet" && s.line == 22));
+        assert!(cat
+            .symbols
+            .iter()
+            .any(|s| s.kind == "class" && s.name == "Box" && s.line == 24));
         // Methods belong to their class, not to the store.
         assert!(!cat.symbols.iter().any(|s| s.name == "method"));
         assert_eq!(
@@ -1519,7 +1529,8 @@ style big is default:
     color "#fff"
 "##;
         let cat = build(&[file(src)]);
-        let line_of = |needle: &str| src.lines().position(|l| l.contains(needle)).unwrap() as u32 + 1;
+        let line_of =
+            |needle: &str| src.lines().position(|l| l.contains(needle)).unwrap() as u32 + 1;
 
         let uses = roles(&cat, "function", "greet");
         for needle in [
@@ -1588,11 +1599,7 @@ label start:
                 }
                 let next = rename_in_line(line, old, new);
                 assert_ne!(next, line, "line `{}` was not rewritten", line.trim());
-                assert!(
-                    !next.contains(old),
-                    "`{old}` still in `{}`",
-                    next.trim()
-                );
+                assert!(!next.contains(old), "`{old}` still in `{}`", next.trim());
                 changed += 1;
             }
             assert_eq!(changed, expect);

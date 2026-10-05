@@ -488,7 +488,9 @@ impl<'a> Parser<'a> {
                 end = e;
                 if name.is_empty() {
                     self.opaque += 1;
-                    Kind::Opaque { kind: "style".into() }
+                    Kind::Opaque {
+                        kind: "style".into(),
+                    }
                 } else {
                     Kind::Style { name }
                 }
@@ -707,7 +709,7 @@ pub fn parse_string_at(s: &str) -> Option<(String, usize)> {
         }
         if c == q {
             if triple {
-                if i + 2 < bytes.len() + 0 && bytes[i + 1] == q && bytes[i + 2] == q {
+                if i + 2 < bytes.len() && bytes[i + 1] == q && bytes[i + 2] == q {
                     return Some((String::from_utf8_lossy(&out).into_owned(), i + 3));
                 }
             } else {
@@ -905,10 +907,9 @@ fn py_name(line: &str) -> Option<(&'static str, String)> {
         ("function", rest)
     } else if let Some(rest) = t.strip_prefix("async def ") {
         ("function", rest)
-    } else if let Some(rest) = t.strip_prefix("class ") {
-        ("class", rest)
     } else {
-        return None;
+        let rest = t.strip_prefix("class ")?;
+        ("class", rest)
     };
     let name = ident_prefix(rest.trim_start());
     if name.is_empty() {
@@ -1237,8 +1238,24 @@ fn scan_notes(lines: &[LLine], meta: &mut Meta) {
 /// Statements whose first word is Ren'Py syntax, so the words after it are not
 /// Python names (`show greet` is an image, not a call).
 const RENPY_LINE: &[&str] = &[
-    "show", "scene", "hide", "play", "jump", "call", "label", "image", "layeredimage", "with",
-    "menu", "voice", "queue", "stop", "window", "pause", "translate", "nvl",
+    "show",
+    "scene",
+    "hide",
+    "play",
+    "jump",
+    "call",
+    "label",
+    "image",
+    "layeredimage",
+    "with",
+    "menu",
+    "voice",
+    "queue",
+    "stop",
+    "window",
+    "pause",
+    "translate",
+    "nvl",
 ];
 
 /// Record bare identifiers on a logical line. Quoted strings and comments are
@@ -1598,7 +1615,10 @@ mod tests {
         assert!(meta.defs.contains(&"narr".to_string()));
         assert_eq!(meta.images, ["ice cream"]);
         assert_eq!(meta.config[0].0, "name");
-        assert!(meta.config.iter().any(|(k, v)| k == "build.name" && v == "\"game\""));
+        assert!(meta
+            .config
+            .iter()
+            .any(|(k, v)| k == "build.name" && v == "\"game\""));
     }
 
     #[test]
@@ -1635,7 +1655,12 @@ $ style.big.color = "#000"
 "##;
         let lexed = lex(src);
         let meta = scan_meta(&lexed.lines);
-        let has = |name: &str| meta.idents.get(name).map(|v| !v.is_empty()).unwrap_or(false);
+        let has = |name: &str| {
+            meta.idents
+                .get(name)
+                .map(|v| !v.is_empty())
+                .unwrap_or(false)
+        };
         // A call is recorded; the `def` name, an attribute and a quoted string are not.
         assert!(has("greet"));
         assert!(!has("method"));

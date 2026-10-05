@@ -4,8 +4,23 @@ version = "0.1.0"
 description = "Ren'Inspector: inspect, edit and run Ren'Py games, in development or already released"
 license = "GPL-3.0-or-later"
 edition = "2021"
-rust-version = "1.77.2"
+rust-version = "1.82"
 publish = false
+
+[workspace]
+members = [".", "renpy-core"]
+resolver = "2"
+
+[workspace.lints.rust]
+unused_must_use = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+too_many_arguments = "allow"
+type_complexity = "allow"
+
+[lints]
+workspace = true
 
 [lib]
 name = "vn_ide_lib"

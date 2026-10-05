@@ -713,15 +713,16 @@ fn expand(
                 None
             } else {
                 vars.map(|vars| {
-                let pairs: Vec<(&str, &str)> = views
-                    .iter()
-                    .map(|(cond, how, _)| (*how, cond.as_str()))
-                    .collect();
-                vars::judge(&pairs, vars)
-            })
+                    let pairs: Vec<(&str, &str)> = views
+                        .iter()
+                        .map(|(cond, how, _)| (*how, cond.as_str()))
+                        .collect();
+                    vars::judge(&pairs, vars)
+                })
             };
             let prefer = judged.as_ref().and_then(|v| vars::preferred(v));
             let many = n > 1;
+            #[allow(clippy::needless_range_loop)] // `i` is also the branch number
             for i in 0..n {
                 let Some(next) = views[i].2 else { continue };
                 let (assumes, step) = if let Some(verdicts) = &judged {
@@ -1048,7 +1049,13 @@ pub fn plan(project: &Project, file: &str, line: u32) -> Result<ReplayPlan, Stri
     let located = locate(&prepared, project, file, line)?;
     let found = {
         let mut state = prepared.search.lock().unwrap_or_else(|e| e.into_inner());
-        match search(&mut state, located.graph, located.start, located.target, None) {
+        match search(
+            &mut state,
+            located.graph,
+            located.start,
+            located.target,
+            None,
+        ) {
             Ok(found) => found,
             Err(saw_dynamic) => return Err(unreachable(&located.file, located.line, saw_dynamic)),
         }
@@ -1078,6 +1085,7 @@ pub struct StoryPath {
 
 /// Walks the value-aware search has stored. A query for a line already settled
 /// does not add any. The plain search used by `plan` is separate.
+#[cfg(test)]
 pub(crate) fn stored_walks(prepared: &Prepared) -> usize {
     prepared
         .lean_search
@@ -1101,7 +1109,13 @@ pub fn path_in(
     let located = locate(prepared, project, file, line)?;
     let found = {
         let mut state = prepared.search.lock().unwrap_or_else(|e| e.into_inner());
-        match search(&mut state, located.graph, located.start, located.target, None) {
+        match search(
+            &mut state,
+            located.graph,
+            located.start,
+            located.target,
+            None,
+        ) {
             Ok(found) => found,
             Err(saw_dynamic) => return Err(unreachable(&located.file, located.line, saw_dynamic)),
         }
@@ -1290,12 +1304,26 @@ label start:
         let prepared = prepare(&project);
         let plain = path_in(&prepared, &project, "script.rpy", 6).unwrap();
         assert!(plain.assumptions.iter().any(|a| a.contains("assumes")));
-        assert!(plain.assumptions.iter().all(|a| !a.contains("could not be decided")));
+        assert!(plain
+            .assumptions
+            .iter()
+            .all(|a| !a.contains("could not be decided")));
 
         let open = path_with(&prepared, &project, "script.rpy", 6, &VarState::default()).unwrap();
-        assert!(open.steps.iter().any(|(_, line)| *line == 3), "{:?}", open.steps);
-        assert!(!open.steps.iter().any(|(_, line)| *line == 5), "{:?}", open.steps);
-        assert!(open.assumptions.iter().any(|a| a.contains("could not be decided")));
+        assert!(
+            open.steps.iter().any(|(_, line)| *line == 3),
+            "{:?}",
+            open.steps
+        );
+        assert!(
+            !open.steps.iter().any(|(_, line)| *line == 5),
+            "{:?}",
+            open.steps
+        );
+        assert!(open
+            .assumptions
+            .iter()
+            .any(|a| a.contains("could not be decided")));
         assert!(open.assumptions.iter().any(|a| a.contains("needs `time`")));
 
         let mut night = VarState::default();
@@ -1303,12 +1331,20 @@ label start:
         // The reused search is keyed by pins only. A different unpinned value needs its own.
         let priced = prepare(&project);
         let late = path_with(&priced, &project, "script.rpy", 6, &night).unwrap();
-        assert!(late.steps.iter().any(|(_, line)| *line == 5), "{:?}", late.steps);
+        assert!(
+            late.steps.iter().any(|(_, line)| *line == 5),
+            "{:?}",
+            late.steps
+        );
         assert!(late.assumptions.is_empty(), "{:?}", late.assumptions);
 
         night.pin("time", Value::Int(12));
         let pinned = path_with(&priced, &project, "script.rpy", 6, &night).unwrap();
-        assert!(pinned.steps.iter().any(|(_, line)| *line == 3), "{:?}", pinned.steps);
+        assert!(
+            pinned.steps.iter().any(|(_, line)| *line == 3),
+            "{:?}",
+            pinned.steps
+        );
         assert!(pinned.assumptions.is_empty(), "{:?}", pinned.assumptions);
 
         let inside = path_with(&priced, &project, "script.rpy", 5, &night).unwrap();

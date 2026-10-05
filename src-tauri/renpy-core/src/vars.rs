@@ -337,7 +337,11 @@ impl VarState {
             if matches!(after, Some('.' | '(')) {
                 continue;
             }
-            if cond[..i].chars().next_back().is_some_and(|c| c == '.' || c.is_ascii_alphanumeric()) {
+            if cond[..i]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c == '.' || c.is_ascii_alphanumeric())
+            {
                 continue;
             }
             if !out.iter().any(|n| n == name) {
@@ -480,7 +484,8 @@ fn needs_clause(vars: &VarState, cond: &str, earlier: &[String]) -> String {
     let mut names = Vec::new();
     for src in source_conds(cond, earlier) {
         for name in VarState::names_in(src) {
-            if matches!(vars.get(&name), Some(Value::Unknown) | None) && !names.iter().any(|n| n == &name)
+            if matches!(vars.get(&name), Some(Value::Unknown) | None)
+                && !names.iter().any(|n| n == &name)
             {
                 names.push(name);
             }
@@ -1023,17 +1028,17 @@ mod tests {
         assert_eq!(plain.fingerprint(), other.fingerprint());
         plain.pin("time", Value::Int(9));
         assert_ne!(plain.fingerprint(), other.fingerprint());
-        assert_eq!(s.unknown_names("time >= 6 and place == 'home'"), vec!["place".to_string()]);
+        assert_eq!(
+            s.unknown_names("time >= 6 and place == 'home'"),
+            vec!["place".to_string()]
+        );
     }
 
     #[test]
     fn elif_and_else_follow_the_values() {
         let open = VarState::default();
         assert_eq!(
-            judge(
-                &[("if", "time >= 6 and time < 20"), ("else", "")],
-                &open
-            ),
+            judge(&[("if", "time >= 6 and time < 20"), ("else", "")], &open),
             vec![Verdict::Unknown, Verdict::Unknown]
         );
         let mut night = state("time = 22\n");
@@ -1050,18 +1055,12 @@ mod tests {
 
         let mut mid = state("flag = False\n");
         assert_eq!(
-            judge(
-                &[("if", "flag"), ("elif", "other"), ("else", "")],
-                &mid
-            ),
+            judge(&[("if", "flag"), ("elif", "other"), ("else", "")], &mid),
             vec![Verdict::False, Verdict::Unknown, Verdict::Unknown]
         );
         mid.apply("other = True\n");
         assert_eq!(
-            judge(
-                &[("if", "flag"), ("elif", "other"), ("else", "")],
-                &mid
-            ),
+            judge(&[("if", "flag"), ("elif", "other"), ("else", "")], &mid),
             vec![Verdict::False, Verdict::True, Verdict::False]
         );
         let note = condition_note(

@@ -932,10 +932,10 @@ fn walk_seq(stmts: &[Stmt], depth: u32, out: &mut Vec<ScriptLine>, truncated: &m
                 );
                 return true;
             }
-            Kind::Python { block, refs, .. } => {
-                if !*block && refs.iter().any(|r| r.kind == RefKind::RenpyJump) {
-                    return true;
-                }
+            Kind::Python { block, refs, .. }
+                if !*block && refs.iter().any(|r| r.kind == RefKind::RenpyJump) =>
+            {
+                return true;
             }
             _ => {}
         }

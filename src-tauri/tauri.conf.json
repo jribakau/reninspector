@@ -41,6 +41,7 @@
     "licenseFile": "../LICENSE",
     "resources": {
       "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
+      "../LICENSE-EXCEPTION": "LICENSE-EXCEPTION.txt",
       "dictionaries/LICENSE": "licenses/SCOWL.txt"
     },
     "icon": [

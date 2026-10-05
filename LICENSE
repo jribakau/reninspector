@@ -1,30 +1,3 @@
-Ren'Inspector
-Copyright (C) 2026 Justinas Ribakauskas
-
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program. If not, see <https://www.gnu.org/licenses/>.
-
-Additional permission under GNU GPL version 3 section 7
-
-The elkjs library, used for graph layout, is distributed with this
-program under the Eclipse Public License, version 2.0, and is not
-covered by the GNU GPL. You may convey verbatim copies of elkjs
-together with this program. That permission does not change the
-licence of elkjs, and it does not allow conveying elkjs under the
-GNU GPL. elkjs is included unmodified; its source and the EPL-2.0
-text are at <https://github.com/kieler/elkjs>.
-
-The GNU General Public License follows.
                     GNU GENERAL PUBLIC LICENSE
                        Version 3, 29 June 2007
 

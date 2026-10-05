@@ -1,5 +1,6 @@
 //! Watches `game/**/*.rpy`, re-parses changed files and tells the UI.
 
+use crate::error::AppError;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -27,7 +28,7 @@ pub struct WatchHandle {
     _watcher: RecommendedWatcher,
 }
 
-pub fn start(app: AppHandle, game_dir: PathBuf) -> Result<WatchHandle, String> {
+pub fn start(app: AppHandle, game_dir: PathBuf) -> Result<WatchHandle, AppError> {
     let (tx, rx) = mpsc::channel::<PathBuf>();
     let filter_dir = game_dir.clone();
     let mut watcher =
@@ -44,11 +45,8 @@ pub fn start(app: AppHandle, game_dir: PathBuf) -> Result<WatchHandle, String> {
                     let _ = tx.send(p);
                 }
             }
-        })
-        .map_err(|e| e.to_string())?;
-    watcher
-        .watch(&game_dir, RecursiveMode::Recursive)
-        .map_err(|e| e.to_string())?;
+        })?;
+    watcher.watch(&game_dir, RecursiveMode::Recursive)?;
 
     std::thread::spawn(move || {
         while let Ok(first) = rx.recv() {

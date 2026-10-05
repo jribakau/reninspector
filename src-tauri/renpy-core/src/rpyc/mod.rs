@@ -31,6 +31,75 @@ pub struct Decompiled {
 }
 
 #[cfg(test)]
+fn collect_rpyc(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<String>) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for ent in rd.flatten() {
+        let path = ent.path();
+        if path.is_dir() {
+            collect_rpyc(root, &path, out);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("rpyc") {
+            let rel = path
+                .strip_prefix(root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            out.push(rel);
+        }
+    }
+}
+
+/// Node sequence of a compiled script, after the same folds the decompiler uses.
+pub fn node_sequence(bytes: &[u8]) -> Result<Vec<String>, String> {
+    let nodes = container::read_statements(bytes)?;
+    let tree = ast::tree_from(&nodes);
+    Ok(ast::sequence(&tree.nodes))
+}
+
+fn engine_file_of(nodes: &[Value]) -> Option<String> {
+    let raw = nodes.iter().find_map(|n| ast::text_field(n, "filename"))?;
+    let rel = game_script_rel(&raw);
+    if rel.is_empty() {
+        None
+    } else {
+        Some(rel)
+    }
+}
+
+/// `game/script.rpy`, `C:/proj/game/script.rpy` and `script.rpy` all become `script.rpy`.
+pub fn game_script_rel(path: &str) -> String {
+    let s = path.replace('\\', "/");
+    if let Some(i) = s.rfind("/game/") {
+        return s[i + "/game/".len()..].to_string();
+    }
+    s.strip_prefix("game/").unwrap_or(&s).to_string()
+}
+
+pub fn decompile(bytes: &[u8]) -> Result<Decompiled, String> {
+    let nodes = container::read_statements(bytes)?;
+    let engine_file = engine_file_of(&nodes);
+    let tree = ast::tree_from(&nodes);
+    let (text, engine_lines) = decompile::render_mapped(&tree);
+    let why = verify::explain(&tree, &text);
+    let mut reasons = tree.reasons;
+    if let Some(why) = why {
+        if why != "partial" {
+            reasons.push(why);
+        }
+    }
+    let editable = reasons.is_empty();
+    Ok(Decompiled {
+        text,
+        editable,
+        partial: tree.partial || !editable,
+        reasons,
+        engine_lines,
+        engine_file,
+    })
+}
+
+#[cfg(test)]
 mod tests {
     fn first_compiled_where(pred: impl Fn(&super::Decompiled) -> bool) -> Option<Vec<u8>> {
         let root = std::env::var_os("RPYC_GAME_PATH")?;
@@ -182,73 +251,4 @@ mod tests {
             assert_eq!(editable + partial + failed, files.len());
         }
     }
-}
-
-#[cfg(test)]
-fn collect_rpyc(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<String>) {
-    let Ok(rd) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for ent in rd.flatten() {
-        let path = ent.path();
-        if path.is_dir() {
-            collect_rpyc(root, &path, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("rpyc") {
-            let rel = path
-                .strip_prefix(root)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .replace('\\', "/");
-            out.push(rel);
-        }
-    }
-}
-
-/// Node sequence of a compiled script, after the same folds the decompiler uses.
-pub fn node_sequence(bytes: &[u8]) -> Result<Vec<String>, String> {
-    let nodes = container::read_statements(bytes)?;
-    let tree = ast::tree_from(&nodes);
-    Ok(ast::sequence(&tree.nodes))
-}
-
-fn engine_file_of(nodes: &[Value]) -> Option<String> {
-    let raw = nodes.iter().find_map(|n| ast::text_field(n, "filename"))?;
-    let rel = game_script_rel(&raw);
-    if rel.is_empty() {
-        None
-    } else {
-        Some(rel)
-    }
-}
-
-/// `game/script.rpy`, `C:/proj/game/script.rpy` and `script.rpy` all become `script.rpy`.
-pub fn game_script_rel(path: &str) -> String {
-    let s = path.replace('\\', "/");
-    if let Some(i) = s.rfind("/game/") {
-        return s[i + "/game/".len()..].to_string();
-    }
-    s.strip_prefix("game/").unwrap_or(&s).to_string()
-}
-
-pub fn decompile(bytes: &[u8]) -> Result<Decompiled, String> {
-    let nodes = container::read_statements(bytes)?;
-    let engine_file = engine_file_of(&nodes);
-    let tree = ast::tree_from(&nodes);
-    let (text, engine_lines) = decompile::render_mapped(&tree);
-    let why = verify::explain(&tree, &text);
-    let mut reasons = tree.reasons;
-    if let Some(why) = why {
-        if why != "partial" {
-            reasons.push(why);
-        }
-    }
-    let editable = reasons.is_empty();
-    Ok(Decompiled {
-        text,
-        editable,
-        partial: tree.partial || !editable,
-        reasons,
-        engine_lines,
-        engine_file,
-    })
 }

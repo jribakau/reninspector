@@ -1,5 +1,6 @@
 //! Start the game (or warp into it at a given script line).
 
+use crate::error::AppError;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -87,7 +88,7 @@ pub fn launch(
     launcher_override: Option<String>,
     warp: Option<(String, u32)>,
     extra: LaunchExtra<'_>,
-) -> Result<LaunchReport, String> {
+) -> Result<LaunchReport, AppError> {
     let launcher = match launcher_override.filter(|s| !s.trim().is_empty()) {
         Some(path) => Launcher {
             exe: PathBuf::from(path),
@@ -100,10 +101,7 @@ pub fn launch(
         })?,
     };
     if !launcher.exe.is_file() {
-        return Err(format!(
-            "Launcher {} does not exist.",
-            launcher.exe.display()
-        ));
+        return Err(format!("Launcher {} does not exist.", launcher.exe.display()).into());
     }
 
     let mut notes = Vec::new();
@@ -153,7 +151,7 @@ pub fn launch(
                 if let Some(path) = &seeds_path {
                     let _ = fs::remove_file(path);
                 }
-                return Err(format!("Could not write {}: {e}", path.display()));
+                return Err(format!("Could not write {}: {e}", path.display()).into());
             }
             written.push((*name).to_string());
         }
@@ -202,7 +200,7 @@ pub fn launch(
             if let Some(path) = &seeds_path {
                 let _ = fs::remove_file(path);
             }
-            return Err(format!("Could not start {}: {e}", launcher.exe.display()));
+            return Err(format!("Could not start {}: {e}", launcher.exe.display()).into());
         }
     };
 
@@ -217,7 +215,7 @@ pub fn launch(
                 }
                 return Err(format!(
                     "The game exited immediately ({status}). Check log.txt / traceback.txt in the project folder."
-                ));
+                ).into());
             }
             Ok(Some(_)) => break,
             Ok(None) => std::thread::sleep(Duration::from_millis(100)),
@@ -947,13 +945,16 @@ fn warp_needs_developer_shim(project: &LaunchSource) -> bool {
     project.script_version.is_some() || developer.as_deref() == Some("false")
 }
 
-fn write_warp_shim(game_dir: &Path, force_developer: bool) -> Result<(), String> {
+fn write_warp_shim(game_dir: &Path, force_developer: bool) -> Result<(), AppError> {
     let path = game_dir.join("vnide_developer.rpy");
-    fs::write(&path, warp_shim(force_developer))
-        .map_err(|e| format!("Could not write the warp helper for this launch: {e}"))
+    fs::write(&path, warp_shim(force_developer)).map_err(|e| {
+        crate::error::AppError::new(format!(
+            "Could not write the warp helper for this launch: {e}"
+        ))
+    })
 }
 
-fn write_warp_seeds(project: &LaunchSource, gen: u64) -> Result<PathBuf, String> {
+fn write_warp_seeds(project: &LaunchSource, gen: u64) -> Result<PathBuf, AppError> {
     // Unique per launch so a stop or a second launch cannot delete the file
     // another game is still reading.
     let path = std::env::temp_dir().join(format!("vnide-seeds-{}-{gen}.json", std::process::id()));
@@ -1225,9 +1226,9 @@ fn process_exists(exe_name: &str) -> bool {
         else {
             return false;
         };
-        return String::from_utf8_lossy(&output.stdout)
+        String::from_utf8_lossy(&output.stdout)
             .to_ascii_lowercase()
-            .contains(&exe_name.to_ascii_lowercase());
+            .contains(&exe_name.to_ascii_lowercase())
     }
     #[cfg(not(windows))]
     {

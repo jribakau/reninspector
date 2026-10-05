@@ -11,23 +11,13 @@ use rayon::prelude::*;
 use super::format::{safe_relative, RpaError};
 use super::reader::Archive;
 
+#[derive(Default)]
 pub struct ExtractOptions<'a> {
     /// Entry names to extract. `None` extracts everything.
     pub names: Option<&'a HashSet<String>>,
     pub overwrite: bool,
     pub progress: Option<&'a (dyn Fn(u64, u64) + Sync)>,
     pub cancel: Option<&'a AtomicBool>,
-}
-
-impl Default for ExtractOptions<'static> {
-    fn default() -> Self {
-        Self {
-            names: None,
-            overwrite: false,
-            progress: None,
-            cancel: None,
-        }
-    }
 }
 
 #[derive(Debug)]

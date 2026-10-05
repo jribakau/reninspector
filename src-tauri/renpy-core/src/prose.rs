@@ -23,8 +23,12 @@ pub fn prose_words(src: &str) -> Vec<ProseWord> {
     collect(&parsed.stmts, &mut sites);
     let mut words = Vec::new();
     for (line_no, menu) in sites {
-        let Some((line, offset)) = line_at(src, line_no) else { continue };
-        let Some(rel) = dialogue_quote(line, menu) else { continue };
+        let Some((line, offset)) = line_at(src, line_no) else {
+            continue;
+        };
+        let Some(rel) = dialogue_quote(line, menu) else {
+            continue;
+        };
         scan_string(src, offset + rel, &mut words);
     }
     words
@@ -182,11 +186,12 @@ fn scan_string(src: &str, quote_at: usize, out: &mut Vec<ProseWord>) {
 
     while i < bytes.len() && line.saturating_sub(start_line) < 40 {
         let c = bytes[i];
-        if c == q && (!triple || (i + 2 < bytes.len() && bytes[i + 1] == q && bytes[i + 2] == q)) {
-            if !triple || (i + 2 < bytes.len() && bytes[i + 1] == q && bytes[i + 2] == q) {
-                flush(&mut word, out, word_line, word_from, col);
-                return;
-            }
+        if c == q
+            && (!triple || (i + 2 < bytes.len() && bytes[i + 1] == q && bytes[i + 2] == q))
+            && (!triple || (i + 2 < bytes.len() && bytes[i + 1] == q && bytes[i + 2] == q))
+        {
+            flush(&mut word, out, word_line, word_from, col);
+            return;
         }
         if c == b'\\' && i + 1 < bytes.len() {
             flush(&mut word, out, word_line, word_from, col);
@@ -238,7 +243,12 @@ fn scan_string(src: &str, quote_at: usize, out: &mut Vec<ProseWord>) {
         }
         let ch = src[i..].chars().next().unwrap_or('\u{fffd}');
         let next = src[i + ch.len_utf8()..].chars().next();
-        if ch.is_alphabetic() || (ch == '\'' && q != b'\'' && !word.is_empty() && next.is_some_and(|n| n.is_alphabetic())) {
+        if ch.is_alphabetic()
+            || (ch == '\''
+                && q != b'\''
+                && !word.is_empty()
+                && next.is_some_and(|n| n.is_alphabetic()))
+        {
             if word.is_empty() {
                 word_line = line;
                 word_from = col;
@@ -269,7 +279,7 @@ fn skip_format(bytes: &[u8], i: usize) -> usize {
             j += 1;
         }
     }
-    while j < bytes.len() && matches!(bytes[j], b'0'..=b'9' | b'.' | b'-' | b'+' | b'#' ) {
+    while j < bytes.len() && matches!(bytes[j], b'0'..=b'9' | b'.' | b'-' | b'+' | b'#') {
         j += 1;
     }
     if j < bytes.len() && matches!(bytes[j], b's' | b'd' | b'r' | b'f' | b'i' | b'c' | b'%') {
@@ -326,7 +336,10 @@ mod tests {
     fn prose_follows_a_string_across_lines() {
         let src = "label start:\n    eileen \"Hello\nworld\"\n";
         let found = prose_words(src);
-        assert_eq!(found.iter().map(|w| w.word.as_str()).collect::<Vec<_>>(), vec!["Hello", "world"]);
+        assert_eq!(
+            found.iter().map(|w| w.word.as_str()).collect::<Vec<_>>(),
+            vec!["Hello", "world"]
+        );
         assert_eq!(found[0].line, 2);
         assert_eq!(found[1].line, 3);
     }

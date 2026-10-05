@@ -5,6 +5,7 @@
 //! are recorded by content hash so the file watcher can ignore them instead of
 //! reloading the editor.
 
+use crate::error::AppError;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::hash::{Hash, Hasher};
@@ -43,17 +44,10 @@ pub(crate) fn snapshot(analysis: &Analysis) -> Snapshot {
 /// bytes on disk do not yet match (the rename is still landing).
 const PENDING_TTL: Duration = Duration::from_secs(3);
 
+#[derive(Default)]
 pub struct EditState {
     /// `path_key` -> hash of the bytes we are writing or just wrote.
     pub pending: HashMap<String, PendingWrite>,
-}
-
-impl Default for EditState {
-    fn default() -> Self {
-        Self {
-            pending: HashMap::new(),
-        }
-    }
 }
 
 pub struct PendingWrite {
@@ -182,22 +176,23 @@ fn write_decompiled_marker(
     backup_root: &Path,
     rel: &str,
     marker: &DecompiledMarker,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     let dest = decompiled_marker_path(backup_root, rel);
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("Could not create backup folder: {e}"))?;
     }
-    let text = serde_json::to_string(marker).map_err(|e| e.to_string())?;
-    fs::write(dest, text).map_err(|e| format!("Could not record the compiled original: {e}"))
+    let text = serde_json::to_string(marker)?;
+    fs::write(dest, text).map_err(|e| {
+        crate::error::AppError::new(format!("Could not record the compiled original: {e}"))
+    })
 }
 
 fn rpyc_rel(rel: &str) -> Option<String> {
     if let Some(stem) = rel.strip_suffix(".rpy") {
         Some(format!("{stem}.rpyc"))
-    } else if let Some(stem) = rel.strip_suffix(".rpym") {
-        Some(format!("{stem}.rpymc"))
     } else {
-        None
+        rel.strip_suffix(".rpym")
+            .map(|stem| format!("{stem}.rpymc"))
     }
 }
 
@@ -206,13 +201,15 @@ fn read_marker(backup_root: &Path, rel: &str) -> Option<ArchivedMarker> {
     serde_json::from_str(&text).ok()
 }
 
-fn write_marker(backup_root: &Path, rel: &str, marker: &ArchivedMarker) -> Result<(), String> {
+fn write_marker(backup_root: &Path, rel: &str, marker: &ArchivedMarker) -> Result<(), AppError> {
     let dest = marker_path(backup_root, rel);
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("Could not create backup folder: {e}"))?;
     }
-    let text = serde_json::to_string(marker).map_err(|e| e.to_string())?;
-    fs::write(dest, text).map_err(|e| format!("Could not record the archived original: {e}"))
+    let text = serde_json::to_string(marker)?;
+    fs::write(dest, text).map_err(|e| {
+        crate::error::AppError::new(format!("Could not record the archived original: {e}"))
+    })
 }
 
 fn compiled_sidecar(abs: &Path) -> PathBuf {
@@ -225,7 +222,7 @@ fn compiled_sidecar(abs: &Path) -> PathBuf {
 }
 
 /// Copy the pristine file the first time we are about to change it.
-fn ensure_backup(backup_root: &Path, rel: &str, abs: &Path) -> Result<PathBuf, String> {
+fn ensure_backup(backup_root: &Path, rel: &str, abs: &Path) -> Result<PathBuf, AppError> {
     let dest = backup_path(backup_root, rel);
     if dest.is_file() {
         return Ok(dest);
@@ -237,7 +234,7 @@ fn ensure_backup(backup_root: &Path, rel: &str, abs: &Path) -> Result<PathBuf, S
     Ok(dest)
 }
 
-fn replace_file(dest: &Path, bytes: &[u8]) -> Result<(), String> {
+fn replace_file(dest: &Path, bytes: &[u8]) -> Result<(), AppError> {
     let name = dest
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -248,7 +245,7 @@ fn replace_file(dest: &Path, bytes: &[u8]) -> Result<(), String> {
     if !dest.exists() {
         if let Err(e) = fs::rename(&tmp, dest) {
             let _ = fs::remove_file(&tmp);
-            return Err(format!("Could not move the new file into place: {e}"));
+            return Err(format!("Could not move the new file into place: {e}").into());
         }
         return Ok(());
     }
@@ -259,7 +256,8 @@ fn replace_file(dest: &Path, bytes: &[u8]) -> Result<(), String> {
         return Err(format!(
             "Could not move {} aside ({e}). If the file is read-only, clear that and try again.",
             dest.display()
-        ));
+        )
+        .into());
     }
     if let Err(e) = fs::rename(&tmp, dest) {
         let restored = fs::rename(&bak, dest);
@@ -268,9 +266,10 @@ fn replace_file(dest: &Path, bytes: &[u8]) -> Result<(), String> {
             return Err(format!(
                 "Could not move the new file into place ({e}). The previous copy is at {}.",
                 bak.display()
-            ));
+            )
+            .into());
         }
-        return Err(format!("Could not move the new file into place: {e}"));
+        return Err(format!("Could not move the new file into place: {e}").into());
     }
     let _ = fs::remove_file(&bak);
     Ok(())
@@ -348,7 +347,7 @@ fn commit_one(
     backup_root: &Path,
     rel: &str,
     text: &str,
-) -> Result<Option<PathBuf>, String> {
+) -> Result<Option<PathBuf>, AppError> {
     let idx = project
         .file_index(rel)
         .ok_or_else(|| format!("`{rel}` is not a script of this project."))?;
@@ -473,7 +472,7 @@ pub(crate) fn prepare_write(
     backup_root: &Path,
     rel: &str,
     text: &str,
-) -> Result<Option<Snapshot>, String> {
+) -> Result<Option<Snapshot>, AppError> {
     let before = snapshot(&project.analysis);
     let Some(abs) = commit_one(project, edit, backup_root, rel, text)? else {
         return Ok(None);
@@ -490,7 +489,7 @@ pub fn apply_write(
     backup_root: &Path,
     rel: &str,
     text: &str,
-) -> Result<EditImpact, String> {
+) -> Result<EditImpact, AppError> {
     let Some(before) = prepare_write(project, edit, backup_root, rel, text)? else {
         return Ok(EditImpact::default());
     };
@@ -531,7 +530,7 @@ pub fn apply_writes(
     edit: &mut EditState,
     backup_root: &Path,
     changes: &[(String, String)],
-) -> Result<(EditImpact, Vec<String>), String> {
+) -> Result<(EditImpact, Vec<String>), AppError> {
     let before = snapshot(&project.analysis);
     let mut paths = Vec::new();
     let mut rels = Vec::new();
@@ -543,7 +542,7 @@ pub fn apply_writes(
                     Ok(bytes) => (true, Some(bytes)),
                     Err(e) => {
                         rollback_writes(backup_root, &written);
-                        return Err(format!("Could not read `{rel}` before writing: {e}"));
+                        return Err(format!("Could not read `{rel}` before writing: {e}").into());
                     }
                 }
             }
@@ -571,7 +570,7 @@ pub fn apply_writes(
                     let undone: Vec<PathBuf> = written.iter().map(|w| w.abs.clone()).collect();
                     project.refresh_paths(&undone);
                 }
-                return Err(format!("{e} Earlier files in this change were put back."));
+                return Err(format!("{e} Earlier files in this change were put back.").into());
             }
         }
     }
@@ -588,7 +587,7 @@ pub fn apply_revert(
     edit: &mut EditState,
     backup_root: &Path,
     rel: &str,
-) -> Result<EditImpact, String> {
+) -> Result<EditImpact, AppError> {
     let idx = project
         .file_index(rel)
         .ok_or_else(|| format!("`{rel}` is not a script of this project."))?;
@@ -628,9 +627,7 @@ pub fn apply_revert(
     }
     let backup = backup_path(backup_root, rel);
     if !backup.is_file() {
-        return Err(format!(
-            "`{rel}` has no backup. It has not been saved from the IDE."
-        ));
+        return Err(format!("`{rel}` has no backup. It has not been saved from the IDE.").into());
     }
     let bytes = fs::read(&backup).map_err(|e| format!("Could not read the backup: {e}"))?;
     edit.pending.insert(

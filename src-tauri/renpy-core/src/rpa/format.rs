@@ -244,9 +244,8 @@ fn rpa3_offset_and_key(buf: &[u8], label: &str) -> Result<(u64, u64), RpaError> 
             format!("{label} header is missing an offset and key"),
         ));
     }
-    let offset = parse_hex_u64(parts[1].as_bytes()).map_err(|_| {
-        RpaError::named(label, format!("{label} offset {:?} is not hex", parts[1]))
-    })?;
+    let offset = parse_hex_u64(parts[1].as_bytes())
+        .map_err(|_| RpaError::named(label, format!("{label} offset {:?} is not hex", parts[1])))?;
     let mut key_text = parts[2].as_str();
     if parts.len() > 3 && key_text.len() < 8 {
         if let Some(last) = parts.last() {
@@ -261,21 +260,30 @@ fn rpa3_offset_and_key(buf: &[u8], label: &str) -> Result<(u64, u64), RpaError> 
 }
 
 fn header_parts(buf: &[u8]) -> Vec<String> {
-    let line = buf.split(|b| *b == b'\n' || *b == b'\r').next().unwrap_or(buf);
+    let line = buf
+        .split(|b| *b == b'\n' || *b == b'\r')
+        .next()
+        .unwrap_or(buf);
     let text = String::from_utf8_lossy(line);
     text.split_whitespace().map(|s| s.to_string()).collect()
 }
 
 fn fixed_hex(buf: &[u8], at: usize, len: usize, label: &str) -> Result<u64, RpaError> {
     if buf.len() < at + len {
-        return Err(RpaError::named(label, format!("{label} header is truncated")));
+        return Err(RpaError::named(
+            label,
+            format!("{label} header is truncated"),
+        ));
     }
     parse_hex_u64(&buf[at..at + len])
         .map_err(|_| RpaError::named(label, format!("{label} header offset is not hex")))
 }
 
 fn header_token(buf: &[u8]) -> Option<String> {
-    let line = buf.split(|b| *b == b'\n' || *b == b'\r').next().unwrap_or(buf);
+    let line = buf
+        .split(|b| *b == b'\n' || *b == b'\r')
+        .next()
+        .unwrap_or(buf);
     let text = std::str::from_utf8(line).ok()?.trim();
     let token = text.split_whitespace().next()?;
     if (3..=32).contains(&token.len())
@@ -301,7 +309,6 @@ fn parse_hex_u64(bytes: &[u8]) -> Result<u64, RpaError> {
     u64::from_str_radix(text.trim(), 16)
         .map_err(|_| RpaError::new(format!("header offset {text:?} is not hex")))
 }
-
 
 /// True when `buf` looks like a zlib stream (an RPA-1.0 `.rpi`).
 pub fn looks_like_zlib(buf: &[u8]) -> bool {

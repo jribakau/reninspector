@@ -9,6 +9,7 @@ use tauri::Manager;
 
 mod commands;
 mod edit;
+mod error;
 mod fs_tree;
 mod git;
 mod ide;
@@ -21,6 +22,7 @@ mod pylsp;
 mod sdk;
 mod settings;
 mod spell;
+mod util;
 mod watch;
 
 fn sweep_stale_temp() {
@@ -43,7 +45,7 @@ fn sweep_stale_temp() {
         if let Ok(children) = std::fs::read_dir(&path) {
             for child in children.flatten() {
                 if let Ok(t) = child.metadata().and_then(|m| m.modified()) {
-                    if newest.map_or(true, |n| t > n) {
+                    if newest.is_none_or(|n| t > n) {
                         newest = Some(t);
                     }
                 }

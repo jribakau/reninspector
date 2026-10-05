@@ -58,7 +58,7 @@ is distributed under its own licence, linked from its source repository.
 
 - **elkjs** (EPL-2.0). Graph layout. Source: https://github.com/kieler/elkjs.
   Used unmodified. It does not grant the GPL as a secondary licence, so it stays
-  under the EPL-2.0. The project's \`LICENSE\` gives a GPL section 7 permission
+  under the EPL-2.0. The project's \`LICENSE-EXCEPTION\` gives a GPL section 7 permission
   to ship it alongside the GPL code.
 - **spellbook, cssparser, selectors, dtoa-short, option-ext** (MPL-2.0). Source
   for each is linked in the table below; the MPL-2.0 files are used unmodified.
