@@ -889,6 +889,80 @@ pub fn rename_in_line(line: &str, old: &str, new: &str) -> String {
     out
 }
 
+/// Quoted values of `style_prefix` on this line. A prefix builds `prefix` and `prefix_*`.
+pub fn style_prefix_values(line: &str) -> Vec<&str> {
+    let bytes = line.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    let mut quote: Option<u8> = None;
+    while i < bytes.len() {
+        if !line.is_char_boundary(i) {
+            i += 1;
+            continue;
+        }
+        if let Some(q) = quote {
+            if bytes[i] == b'\\' {
+                i += 2;
+                continue;
+            }
+            if bytes[i] == q {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        if bytes[i] == b'#' {
+            break;
+        }
+        if bytes[i] == b'"' || bytes[i] == b'\'' {
+            quote = Some(bytes[i]);
+            i += 1;
+            continue;
+        }
+        if line[i..].starts_with("style_prefix") {
+            let end = i + "style_prefix".len();
+            let before_ok = i == 0 || !is_ident_cont(bytes[i - 1] as char);
+            let after_ok = end >= bytes.len() || !is_ident_cont(bytes[end] as char);
+            if before_ok && after_ok {
+                let mut at = end;
+                while at < bytes.len() && bytes[at].is_ascii_whitespace() {
+                    at += 1;
+                }
+                if at < bytes.len() && (bytes[at] == b'"' || bytes[at] == b'\'') {
+                    let q = bytes[at];
+                    let start = at + 1;
+                    let mut j = start;
+                    while j < bytes.len() && bytes[j] != q {
+                        if bytes[j] == b'\\' {
+                            j += 1;
+                        }
+                        if j < bytes.len() {
+                            j += 1;
+                        }
+                    }
+                    if j < bytes.len() && bytes[j] == q && j > start {
+                        out.push(&line[start..j]);
+                    }
+                    i = end;
+                    continue;
+                }
+            }
+            i = end;
+            continue;
+        }
+        i += 1;
+    }
+    out
+}
+
+/// `style_prefix "say"` builds the style `say` and styles such as `say_button`.
+pub fn prefix_builds(prefix: &str, name: &str) -> bool {
+    if prefix.is_empty() {
+        return false;
+    }
+    name == prefix || name.starts_with(prefix) && name[prefix.len()..].starts_with('_')
+}
+
 /// Replace the first quoted string on a translation line. Used by the side-by-side editor.
 pub fn replace_quoted(line: &str, text: &str) -> String {
     let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
@@ -1611,6 +1685,19 @@ label start:
         // `obj.greet` is an attribute, so that line is not part of the rename.
         let attr = src.lines().position(|l| l.contains("obj.greet")).unwrap() as u32 + 1;
         assert!(!owned("function", "greet").contains(&attr));
+    }
+
+    #[test]
+    fn style_prefix_values_are_the_quoted_argument_only() {
+        let line = r#"screen phone(): textbutton "Go" style_prefix "say" # style_prefix "no""#;
+        assert_eq!(style_prefix_values(line), vec!["say"]);
+        assert!(style_prefix_values(r#"style_prefix 'box'"#).contains(&"box"));
+        assert!(style_prefix_values("textbutton \"style_prefix\"").is_empty());
+        assert!(prefix_builds("say", "say"));
+        assert!(prefix_builds("say", "say_button"));
+        assert!(prefix_builds("say", "say_button_text"));
+        assert!(!prefix_builds("say", "sayhello"));
+        assert!(!prefix_builds("say", "other"));
     }
 
     #[test]

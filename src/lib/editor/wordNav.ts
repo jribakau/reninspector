@@ -44,6 +44,18 @@ export function preferredKind(line: string, wordStart: number, word: string): st
   return null
 }
 
+/** The word is the quoted value of `style_prefix`, so a rename is a prefix rename. */
+export function isStylePrefixValue(line: string, wordStart: number, word: string): boolean {
+  const hash = line.indexOf('#')
+  if (hash >= 0 && wordStart >= hash) return false
+  const limit = hash >= 0 ? hash : line.length
+  if (wordStart + word.length > limit) return false
+  const before = line.slice(0, wordStart)
+  const after = line.slice(wordStart + word.length, limit)
+  if (!/^["']/.test(after)) return false
+  return /style_prefix\s*["']$/.test(before)
+}
+
 /** Kind hint for the word at `wordStart` on a 1-based line. */
 export function preferHere(state: EditorState, lineNo: number, line: string, wordStart: number, word: string): string | null {
   const base = preferredKind(line, wordStart, word)
@@ -91,6 +103,10 @@ export function followWord(view: EditorView, how: 'goto' | 'refs' | 'rename', ac
   const found = wordAt(view.state, view.state.selection.main.head)
   if (!found) return false
   const line = view.state.doc.lineAt(found.from)
+  if (how === 'rename' && isStylePrefixValue(line.text, found.from - line.from, found.text)) {
+    actions.rename('style-prefix', found.text)
+    return true
+  }
   const prefer = preferHere(view.state, line.number, line.text, found.from - line.from, found.text)
   void symbolHere(line.number, found.text, prefer, actions.lookup).then(async (sym) => {
     if (!sym) {
@@ -102,11 +118,6 @@ export function followWord(view: EditorView, how: 'goto' | 'refs' | 'rename', ac
     }
     if (how === 'goto') {
       if (sym.path) actions.goto(sym.path, sym.line)
-      return
-    }
-    // `style_prefix` derives names like `name_text`, which a rename cannot follow.
-    if (sym.kind === 'style' && how === 'rename') {
-      actions.notice('Styles can be found but not renamed, because a style prefix derives other names.')
       return
     }
     if (how === 'refs') {

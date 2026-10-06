@@ -81,6 +81,51 @@ describe('toVirtual', () => {
     expect(got[11]).toBe('')
   })
 
+  it('rewrites Python 2 without moving the tokens that stay', () => {
+    const py2 = [
+      'label start:',
+      'init python:',
+      '    try:',
+      '        print value',
+      '    except ValueError, err:',
+      '        x = 1 <> 0',
+      '        n = 1L',
+      '        s = ur"hi"',
+      '        raise ValueError, err',
+      '        y = xrange(n)',
+      '        z = `gone`',
+    ].join('\n')
+    const srcLines = py2.split('\n')
+    const got = toVirtual(py2, true).split('\n')
+    expect(got).toHaveLength(srcLines.length)
+    expect(got[0]).toContain('from renpy7_compat import ')
+    expect(got[4]).toBe('    except ValueError     :')
+    expect(got[4].indexOf('ValueError')).toBe(srcLines[4].indexOf('ValueError'))
+    expect(got[5]).toBe('        x = 1 != 0')
+    expect(got[6]).toBe('        n = 1 ')
+    expect(got[7]).toBe('        s =  r"hi"')
+    expect(got[8]).toBe('        raise ValueError     ')
+    expect(got[8]).toHaveLength(srcLines[8].length)
+    expect(got[3].trim()).toBe('')
+    expect(got[3]).toHaveLength(srcLines[3].length)
+    expect(got[9].indexOf('xrange')).toBe(srcLines[9].indexOf('xrange'))
+    expect(got[10].trim()).toBe('')
+    expect(got.every((line, i) => i === 0 || line.length === srcLines[i].length)).toBe(true)
+  })
+
+  it('puts the compat import on the header when the file starts with python', () => {
+    const src = 'init python:\n    x = xrange(1)\n'
+    const got = toVirtual(src, true).split('\n')
+    expect(got[0].startsWith('from renpy7_compat import ')).toBe(true)
+    expect(got[0].endsWith('; if 1:')).toBe(true)
+    expect(got[1].indexOf('xrange')).toBe('    x = xrange(1)'.indexOf('xrange'))
+  })
+
+  it('leaves a Python 3 script alone when the dialect flag is off', () => {
+    const line = '    except ValueError as err:'
+    expect(toVirtual(`init python:\n${line}\n`).split('\n')[1]).toBe(line)
+  })
+
   it('only keeps text on lines python.ts calls inline, plus headers and defines', () => {
     const doc = { lines: srcLines.length, line: (n: number) => ({ text: srcLines[n - 1] ?? '' }) }
     outLines.forEach((line, i) => {

@@ -34,10 +34,21 @@
       {#if preview.hits.length > sample.length}
         <p class="dim">and {(preview.hits.length - sample.length).toLocaleString()} more</p>
       {/if}
+      {#if preview.notes.length}
+        <p>These style prefixes still build this name, and were left unchanged.</p>
+        <ul>
+          {#each preview.notes.slice(0, 8) as note (`${note.path}:${note.line}:${note.text}`)}
+            <li>
+              <code>{note.path}:{note.line}</code>
+              <span>{note.text}</span>
+            </li>
+          {/each}
+        </ul>
+      {/if}
       {#if app.error}<p class="bad">{app.error}</p>{/if}
     {#snippet footer()}
       <button onclick={cancelRename} disabled={!!app.busy}>Cancel</button>
-      {#if !preview.truncated}
+      {#if !preview.truncated && preview.hits.length}
         <button class="primary apply" onclick={applyRename} disabled={!!app.busy}>
           {#if app.busy}<i class="spinner"></i>{/if}
           {app.busy ? 'Applying…' : 'Apply'}

@@ -493,11 +493,18 @@ export interface RenameEdit {
   after: string
 }
 
+export interface RenameNote {
+  path: string
+  line: number
+  text: string
+}
+
 export interface RenamePreview {
   kind: string
   oldName: string
   newName: string
   hits: RenameEdit[]
+  notes: RenameNote[]
   fileCount: number
   truncated: boolean
 }

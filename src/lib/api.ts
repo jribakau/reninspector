@@ -56,6 +56,8 @@ export const api = {
     scriptVersion: string | null
     pythonVersion: string | null
     sdkRoot: string | null
+    python2: boolean
+    compatDir: string
     unsupported: boolean
     reason: string
   }>('pylsp_env'),

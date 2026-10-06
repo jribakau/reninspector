@@ -1,6 +1,6 @@
 import { listen } from '@tauri-apps/api/event'
 import { api, errorText } from './api'
-import { toVirtual } from './editor/pyvirtual'
+import { PY2_COMPAT_IMPORT, toVirtual } from './editor/pyvirtual'
 import { app } from './model.svelte'
 import { settings } from './settings.svelte'
 import { notify as toast } from './toast.svelte'
@@ -43,7 +43,7 @@ const open = new Map<string, { uri: string; version: number; text: string }>()
 const waiters = new Map<number, (result: unknown) => void>()
 let nextId = 1
 let current = ''
-let env: { pythonVersion: string | null; sdkRoot: string | null } | null = null
+let env: { pythonVersion: string | null; sdkRoot: string | null; python2: boolean; compatDir: string } | null = null
 let bound = false
 let chain: Promise<void> = Promise.resolve()
 /** Text waiting for the debounce, so a request can send it first. */
@@ -280,7 +280,13 @@ async function runSync(force: boolean, restarted: boolean) {
     startedRoot = root
     return
   }
-  env = { pythonVersion: got.pythonVersion, sdkRoot: got.sdkRoot }
+  env = {
+    pythonVersion: got.pythonVersion,
+    sdkRoot: got.sdkRoot,
+    python2: got.python2,
+    compatDir: got.compatDir,
+  }
+  const dialect = got.python2 ? got.reason : ''
   py.status = 'starting'
   py.detail = ''
   startedRoot = root
@@ -311,6 +317,7 @@ async function runSync(force: boolean, restarted: boolean) {
   }
   notify('initialized', {})
   py.status = 'ready'
+  py.detail = dialect
 }
 
 function tySettings() {
@@ -318,7 +325,7 @@ function tySettings() {
     configuration: {
       environment: {
         'python-version': env?.pythonVersion ?? '3.12',
-        'extra-paths': env?.sdkRoot ? [env.sdkRoot] : [],
+        'extra-paths': [env?.sdkRoot, env?.compatDir].filter((p): p is string => !!p),
       },
       rules: {
         'unresolved-reference': 'ignore',
@@ -332,7 +339,7 @@ function tySettings() {
 
 function pushDocument(rel: string, text: string) {
   if (py.status !== 'ready') return
-  const virt = toVirtual(text)
+  const virt = toVirtual(text, env?.python2 ?? false)
   const uri = uriFor(rel)
   const prev = open.get(rel)
   if (prev?.text === virt) return
@@ -360,7 +367,7 @@ function onMessage(payload: unknown) {
     const abs = uriToPath(msg.params.uri)
     const key = abs ? inGame(abs) ?? norm(abs) : ''
     if (!key) return
-    diags.set(key, (msg.params.diagnostics ?? []).map(toDiag))
+    diags.set(key, (msg.params.diagnostics ?? []).map(toDiag).filter((d) => keepDiag(key, d)))
     pyDiags.seq += 1
   }
 }
@@ -370,6 +377,18 @@ interface LspDiag {
   severity?: number
   code?: string | { value?: string }
   range?: { start?: { line?: number } }
+}
+
+/** Drop diagnostics that only exist because a Python 2 line was blanked or the compat import could not be resolved. */
+function keepDiag(rel: string, d: PyDiag): boolean {
+  if (!env?.python2) return true
+  const virt = open.get(rel)?.text.split('\n')[d.line - 1] ?? ''
+  if (virt.length > 0 && virt.trim() === '') return false
+  if (virt.includes(PY2_COMPAT_IMPORT)) return false
+  const msg = d.message.toLowerCase()
+  if (msg.includes('renpy7_compat')) return false
+  if (msg.includes('print') && (msg.includes('parenthes') || msg.includes('statement'))) return false
+  return true
 }
 
 function toDiag(d: LspDiag): PyDiag {

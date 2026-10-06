@@ -351,10 +351,20 @@ pub struct RenameEdit {
     pub after: String,
 }
 
+/// A `style_prefix` that still builds the name being renamed. It is not rewritten.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenameNote {
+    pub path: String,
+    pub line: u32,
+    pub text: String,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RenamePreview {
     pub hits: Vec<RenameEdit>,
+    pub notes: Vec<RenameNote>,
     pub file_count: u32,
     pub truncated: bool,
 }
@@ -364,6 +374,7 @@ struct RenamePlan {
     /// Hash of each file's bytes when it was read, to detect a save in between.
     sources: HashMap<String, u64>,
     hits: Vec<RenameEdit>,
+    notes: Vec<RenameNote>,
     file_count: u32,
     truncated: bool,
 }
@@ -446,6 +457,125 @@ fn plan_rename(
         changes,
         sources,
         hits,
+        notes: Vec::new(),
+        file_count,
+        truncated,
+    })
+}
+
+const NOTE_LIMIT: usize = 40;
+
+/// `style_prefix` lines that still produce `style_name` after an exact rename.
+fn style_notes(files: &[(String, String, u64)], style_name: &str) -> Vec<RenameNote> {
+    let mut notes = Vec::new();
+    for (rel, text, _) in files {
+        for (i, line) in text.split('\n').enumerate() {
+            let raw = line.trim_end_matches('\r');
+            let builds = catalog::style_prefix_values(raw)
+                .into_iter()
+                .any(|prefix| catalog::prefix_builds(prefix, style_name));
+            if !builds {
+                continue;
+            }
+            notes.push(RenameNote {
+                path: rel.clone(),
+                line: (i + 1) as u32,
+                text: clip_line(raw),
+            });
+            if notes.len() >= NOTE_LIMIT {
+                return notes;
+            }
+        }
+    }
+    notes
+}
+
+/// Rename a `style_prefix` and every declared style it builds (`say` and `say_button`).
+fn plan_prefix_rename(
+    files: &[(String, String, u64)],
+    sites: &HashMap<String, HashMap<String, HashSet<u32>>>,
+    old_prefix: &str,
+    new_prefix: &str,
+) -> Result<RenamePlan, AppError> {
+    let mut names: Vec<&String> = sites.keys().collect();
+    names.sort_by_key(|name| std::cmp::Reverse(name.len()));
+    let mut hits = Vec::new();
+    let mut changes = Vec::new();
+    let mut file_count = 0u32;
+    let mut truncated = false;
+    let mut sources = HashMap::new();
+    for (rel, text, hash) in files {
+        sources.insert(rel.clone(), *hash);
+        if truncated {
+            break;
+        }
+        let mut next = String::new();
+        let mut changed = false;
+        let mut counted = false;
+        for (i, line) in text.split('\n').enumerate() {
+            let raw = line.trim_end_matches('\r');
+            let line_no = (i + 1) as u32;
+            let mut rewritten = raw.to_string();
+            let mut selected = false;
+            for name in &names {
+                let Some(file_lines) = sites.get(*name).and_then(|m| m.get(rel)) else {
+                    continue;
+                };
+                if !file_lines.contains(&line_no) {
+                    continue;
+                }
+                selected = true;
+                let renamed = if *name == old_prefix {
+                    new_prefix.to_string()
+                } else {
+                    format!("{new_prefix}{}", &name[old_prefix.len()..])
+                };
+                rewritten = catalog::rename_in_line(&rewritten, name, &renamed);
+            }
+            if catalog::style_prefix_values(raw)
+                .into_iter()
+                .any(|prefix| prefix == old_prefix)
+            {
+                selected = true;
+                rewritten = catalog::rename_in_line(&rewritten, old_prefix, new_prefix);
+            }
+            if selected && rewritten != raw {
+                changed = true;
+                if !counted {
+                    file_count = file_count.saturating_add(1);
+                    counted = true;
+                }
+                if hits.len() >= RENAME_LIMIT {
+                    truncated = true;
+                    break;
+                }
+                hits.push(RenameEdit {
+                    path: rel.clone(),
+                    line: line_no,
+                    before: clip_line(raw),
+                    after: clip_line(&rewritten),
+                });
+            }
+            next.push_str(if selected { &rewritten } else { raw });
+            next.push('\n');
+        }
+        if truncated {
+            break;
+        }
+        if changed {
+            let body = if text.ends_with('\n') {
+                next
+            } else {
+                next.trim_end_matches('\n').to_string()
+            };
+            changes.push((rel.clone(), body));
+        }
+    }
+    Ok(RenamePlan {
+        changes,
+        sources,
+        hits,
+        notes: Vec::new(),
         file_count,
         truncated,
     })
@@ -462,6 +592,7 @@ pub fn preview_rename(
     if new_name == old_name {
         return Ok(RenamePreview {
             hits: Vec::new(),
+            notes: Vec::new(),
             file_count: 0,
             truncated: false,
         });
@@ -469,6 +600,7 @@ pub fn preview_rename(
     let plan = plan_rename_off_lock(&state, &kind, &old_name, &new_name)?;
     Ok(RenamePreview {
         hits: plan.hits,
+        notes: plan.notes,
         file_count: plan.file_count,
         truncated: plan.truncated,
     })
@@ -515,23 +647,109 @@ fn plan_rename_off_lock(
     old_name: &str,
     new_name: &str,
 ) -> Result<RenamePlan, AppError> {
-    let (lines, holds) = {
+    let (lines, holds, sites, scan_all) = {
         let guard = crate::util::lock(&state.project);
         let project = guard.as_ref().ok_or_else(crate::util::no_project)?;
         if !project.analysis_is_current() {
             return Err("The project is still being analysed. Try again in a moment.".into());
         }
-        let lines = owned_sites(&project.analysis.catalog, kind, old_name);
+        let scan_all = kind == "style" || kind == "style-prefix";
+        let sites = if kind == "style-prefix" {
+            prefix_sites(&project.analysis.catalog, old_name)
+        } else {
+            HashMap::new()
+        };
+        let lines = if kind == "style-prefix" {
+            HashMap::new()
+        } else {
+            owned_sites(&project.analysis.catalog, kind, old_name)
+        };
         let holds = script_holds(project)
             .into_iter()
-            .filter(|(rel, _)| lines.contains_key(rel))
+            .filter(|(rel, _)| scan_all || lines.contains_key(rel))
             .collect::<Vec<_>>();
-        (lines, holds)
+        (lines, holds, sites, scan_all)
     };
     let mut files = Vec::with_capacity(holds.len());
     for (rel, hold) in holds {
-        let (text, hash) = read_hold_utf8(&rel, hold)?;
-        files.push((rel, text, hash));
+        // A style preview also reads scripts that will not be rewritten, so a
+        // prefix in another file can be listed. A file that is not part of the
+        // edit and is not UTF-8 is skipped instead of failing the rename.
+        let needed = lines.contains_key(&rel) || sites.values().any(|m| m.contains_key(&rel));
+        match read_hold_utf8(&rel, hold) {
+            Ok((text, hash)) => files.push((rel, text, hash)),
+            Err(e) if needed || !scan_all => return Err(e),
+            Err(_) => continue,
+        }
     }
-    plan_rename(&files, &lines, old_name, new_name)
+    if kind == "style-prefix" {
+        return plan_prefix_rename(&files, &sites, old_name, new_name);
+    }
+    let mut plan = plan_rename(&files, &lines, old_name, new_name)?;
+    if scan_all {
+        plan.notes = style_notes(&files, old_name);
+    }
+    Ok(plan)
+}
+
+/// Declared styles a prefix builds, with the lines the exact-style rename would touch.
+fn prefix_sites(
+    catalog: &catalog::Catalog,
+    prefix: &str,
+) -> HashMap<String, HashMap<String, HashSet<u32>>> {
+    let mut names = HashSet::new();
+    for sym in &catalog.symbols {
+        if sym.kind == "style" && catalog::prefix_builds(prefix, &sym.name) {
+            names.insert(sym.name.clone());
+        }
+    }
+    names
+        .into_iter()
+        .map(|name| {
+            let sites = owned_sites(catalog, "style", &name);
+            (name, sites)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{HashMap, HashSet};
+
+    use super::{plan_prefix_rename, style_notes};
+
+    #[test]
+    fn prefix_rename_rewrites_the_prefix_and_derived_styles() {
+        let src = "\
+style say_button:\n    color \"#fff\"\n\
+style other:\n    pass\n\
+screen phone():\n    textbutton \"Go\" style_prefix \"say\"\n\
+screen other():\n    textbutton \"Stay\" style_prefix \"other\"\n";
+        let mut say_lines = HashMap::new();
+        say_lines.insert("gui.rpy".to_string(), HashSet::from([1]));
+        let mut sites = HashMap::new();
+        sites.insert("say_button".to_string(), say_lines);
+        let files = vec![("gui.rpy".to_string(), src.to_string(), 1)];
+        let plan = plan_prefix_rename(&files, &sites, "say", "hello").unwrap();
+        let body = &plan.changes[0].1;
+        assert!(body.contains("style hello_button:"), "{body}");
+        assert!(body.contains("style_prefix \"hello\""), "{body}");
+        assert!(body.contains("style_prefix \"other\""), "{body}");
+        assert!(body.contains("style other:"), "{body}");
+        assert!(!body.contains("say_button"), "{body}");
+        assert!(!body.contains("style_prefix \"say\""), "{body}");
+    }
+
+    #[test]
+    fn style_notes_list_prefixes_that_still_build_the_name() {
+        let files = vec![(
+            "gui.rpy".to_string(),
+            "screen phone():\n    textbutton \"Go\" style_prefix \"say\"\n".to_string(),
+            1,
+        )];
+        let notes = style_notes(&files, "say_button");
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].line, 2);
+        assert!(style_notes(&files, "other_button").is_empty());
+    }
 }

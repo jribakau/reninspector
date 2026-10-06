@@ -32,9 +32,9 @@ The script editor is a CodeMirror buffer. A few of the bindings that are easy to
 
 Folding markers in the gutter can be turned off in Settings. Vim and Emacs keymaps are a setting too.
 
-F12 goes to the definition under the caret, Shift+F12 finds every use, and F2 renames it. This works for labels, screens, images, transforms, characters, variables, functions and classes. Styles can be found but not renamed, because a style prefix derives other names.
+F12 goes to the definition under the caret, Shift+F12 finds every use, and F2 renames it. This works for labels, screens, images, transforms, characters, variables, functions, classes and styles. A `style_prefix` is left unchanged and listed in the preview, because it builds other names. Renaming the quoted prefix itself also renames the styles that start with it.
 
-Python blocks and `$` lines can use the [ty](https://docs.astral.sh/ty/) language server for completions, hover, signature help and diagnostics. It is off until you turn it on in Settings, which downloads a checked copy into the app's data folder. It does not read Ren'Py 7 projects, because those are Python 2.
+Python blocks and `$` lines can use the [ty](https://docs.astral.sh/ty/) language server for completions, hover, signature help and diagnostics. It is off until you turn it on in Settings, which downloads a checked copy into the app's data folder. Ren'Py 7 scripts are rewritten into Python 3 first. A `print` statement is left unchecked.
 
 ## Develop
 

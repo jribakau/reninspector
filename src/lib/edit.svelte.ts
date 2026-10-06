@@ -227,7 +227,7 @@ export async function renameSymbol(kind: string, oldName: string) {
   app.error = ''
   try {
     const preview = await api.previewRename(kind, oldName, next.trim())
-    if (!preview.hits.length && !preview.truncated) {
+    if (!preview.hits.length && !preview.notes.length && !preview.truncated) {
       app.notice = `No lines would change for ${oldName}.`
       return
     }
@@ -236,6 +236,7 @@ export async function renameSymbol(kind: string, oldName: string) {
       oldName,
       newName: next.trim(),
       hits: preview.hits,
+      notes: preview.notes,
       fileCount: preview.fileCount,
       truncated: preview.truncated,
     }

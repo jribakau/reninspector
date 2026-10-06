@@ -1,6 +1,6 @@
 import { EditorState } from '@codemirror/state'
 import { describe, expect, it } from 'vitest'
-import { preferHere, preferredKind, wordAt } from './wordNav'
+import { isStylePrefixValue, preferHere, preferredKind, wordAt } from './wordNav'
 
 function state(doc: string) {
   return EditorState.create({ doc })
@@ -23,6 +23,14 @@ describe('word navigation', () => {
     expect(preferredKind('    show eileen happy', 9, 'eileen')).toBe('image')
     expect(preferredKind('    e "Hello"', 4, 'e')).toBe('character')
     expect(preferredKind('    jump start  # start', 18, 'start')).toBeNull()
+  })
+
+  it('treats the quoted argument of style_prefix as a prefix', () => {
+    const line = '    textbutton "Go" style_prefix "say"  # style_prefix "no"'
+    const at = line.indexOf('say')
+    expect(isStylePrefixValue(line, at, 'say')).toBe(true)
+    expect(isStylePrefixValue(line, line.indexOf('Go'), 'Go')).toBe(false)
+    expect(isStylePrefixValue(line, line.lastIndexOf('style_prefix') + 'style_prefix "'.length, 'no')).toBe(false)
   })
 
   it('treats a call in a python line as a function', () => {

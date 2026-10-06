@@ -16,6 +16,7 @@
         Not installed. Turning the language server on downloads it into this app's data folder.
       {:else if py.status === 'ready'}
         Running. It reads python blocks and $ lines, using the project's Ren'Py SDK when one is set.
+        {#if py.detail} {py.detail}{/if}
       {:else if py.status === 'starting'}
         Starting…
       {:else if py.detail}

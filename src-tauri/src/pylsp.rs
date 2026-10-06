@@ -58,7 +58,11 @@ pub struct PyEnv {
     pub script_version: Option<String>,
     pub python_version: Option<String>,
     pub sdk_root: Option<String>,
-    /// Set when the project's Ren'Py is too old for ty (Python 2).
+    /// Ren'Py 7. ty still runs, against a Python 3 reading of the script.
+    pub python2: bool,
+    /// Directory that contains `renpy7_compat.py`, empty when `python2` is false.
+    pub compat_dir: String,
+    /// Kept for a project the server really cannot read. Ren'Py 7 is not one of those.
     pub unsupported: bool,
     pub reason: String,
 }
@@ -114,7 +118,7 @@ pub fn pylsp_status(app: AppHandle, state: State<'_, AppState>) -> Result<PyStat
 }
 
 #[tauri::command(async)]
-pub fn pylsp_env(state: State<'_, AppState>) -> Result<PyEnv, AppError> {
+pub fn pylsp_env(app: AppHandle, state: State<'_, AppState>) -> Result<PyEnv, AppError> {
     let guard = crate::util::lock(&state.project);
     let project = guard.as_ref().ok_or_else(crate::util::no_project)?;
     // The engine that runs the game decides the Python version. Most projects have no script_version.txt.
@@ -122,15 +126,26 @@ pub fn pylsp_env(state: State<'_, AppState>) -> Result<PyEnv, AppError> {
         .engine_version
         .clone()
         .or_else(|| project.script_version.clone());
-    let python = script.as_deref().and_then(python_for_renpy);
+    let python2 = script.as_deref().is_some_and(is_renpy7);
+    // ty parses Python 3. Ren'Py 7 scripts are rewritten into that before they are sent.
+    let python = if python2 {
+        Some("3.12")
+    } else {
+        script.as_deref().and_then(python_for_renpy)
+    };
     let sdk = project
         .launcher
         .as_ref()
         .and_then(|launcher| crate::sdk::sdk_root(&launcher.exe))
         .map(|p| p.to_string_lossy().into_owned());
-    let unsupported = python.is_none() && script.as_deref().is_some_and(|v| v.starts_with('7'));
-    let reason = if unsupported {
-        "Ren'Py 7 uses Python 2, which this language server cannot read.".into()
+    let compat_dir = if python2 {
+        compat_dir(&app).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let reason = if python2 {
+        "Ren'Py 7. Completions use Python 3 with a dialect shim. print statements are not checked."
+            .into()
     } else {
         String::new()
     };
@@ -138,9 +153,43 @@ pub fn pylsp_env(state: State<'_, AppState>) -> Result<PyEnv, AppError> {
         script_version: script,
         python_version: python.map(str::to_string),
         sdk_root: sdk,
-        unsupported,
+        python2,
+        compat_dir,
+        unsupported: false,
         reason,
     })
+}
+
+const COMPAT_PY: &str = "\
+# Python 2 names a Ren'Py 7 script may still use. ty reads this as Python 3.
+xrange = range
+unicode = str
+basestring = str
+long = int
+unichr = chr
+raw_input = input
+";
+
+/// Directory on ty's import path. The virtual script imports `renpy7_compat` from here.
+fn compat_dir(app: &AppHandle) -> Result<String, AppError> {
+    let dir = crate::util::data_dir(app)?
+        .join("tools")
+        .join("renpy7_compat");
+    fs::create_dir_all(&dir)?;
+    let file = dir.join("renpy7_compat.py");
+    if fs::read_to_string(&file).ok().as_deref() != Some(COMPAT_PY) {
+        fs::write(&file, COMPAT_PY)
+            .map_err(|e| format!("Could not write the Ren'Py 7 stub: {e}"))?;
+    }
+    Ok(dir.to_string_lossy().replace('\\', "/"))
+}
+
+fn is_renpy7(version: &str) -> bool {
+    version
+        .split('.')
+        .next()
+        .and_then(|n| n.parse::<u32>().ok())
+        == Some(7)
 }
 
 #[tauri::command(async)]
@@ -583,7 +632,8 @@ pub fn sha256_sidecar(text: &str) -> Option<String> {
     }
 }
 
-/// Python that this Ren'Py release embeds. Ren'Py 7 is Python 2, which ty cannot read.
+/// Python that this Ren'Py release embeds. Ren'Py 7 is Python 2, so this returns
+/// nothing for it; ty is still started on 3.12 against a rewritten script.
 pub fn python_for_renpy(version: &str) -> Option<&'static str> {
     let mut parts = version.split('.');
     let major: u32 = parts.next()?.parse().ok()?;
@@ -773,6 +823,9 @@ mod tests {
         assert_eq!(python_for_renpy("8.5.2"), Some("3.12"));
         assert_eq!(python_for_renpy("7.5.3"), None);
         assert_eq!(python_for_renpy("nope"), None);
+        assert!(is_renpy7("7.5.3"));
+        assert!(!is_renpy7("8.3.0"));
+        assert!(!is_renpy7("nope"));
     }
 
     #[test]
