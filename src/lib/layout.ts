@@ -168,7 +168,7 @@ export function mapCacheKey(root: string, map: ProjectMap, mode: ClusterMode, he
   for (const e of map.edges) {
     h = Math.imul(h ^ hashString(`${e.from}>${e.to}:${e.kind}:${e.badge ?? ''}`), 16777619)
   }
-  return `map|v7|${root}|${mode}|${helpers ? 'h' : 'n'}|${map.nodes.length}|${map.edges.length}|${h >>> 0}`
+  return `map|v8|${root}|${mode}|${helpers ? 'h' : 'n'}|${map.nodes.length}|${map.edges.length}|${h >>> 0}`
 }
 
 const INNER_OPTIONS = {
@@ -293,6 +293,27 @@ function tileLayout(members: readonly MapNode[]): {
     pos.set(m.id, { x: (i % cols) * cellW, y: Math.floor(i / cols) * cellH, w: widths[i], h: NODE_H })
   })
   return { pos, w: cols * cellW - TILE_GAP_X, h: rows * cellH - TILE_GAP_Y }
+}
+
+/** Shift chips that land on the same spot so two conditions stay readable. */
+function separateBadges(edges: LEdge[]) {
+  const chips = edges.filter((e) => e.badge && e.lx != null && e.ly != null)
+  chips.sort((a, b) => a.ly! - b.ly! || a.lx! - b.lx!)
+  for (let i = 0; i < chips.length; i++) {
+    const chip = chips[i]
+    const width = chipWidthFor(chip.badge!)
+    for (let j = 0; j < i; j++) {
+      const other = chips[j]
+      const gapX = Math.abs(chip.lx! - other.lx!)
+      const gapY = Math.abs(chip.ly! - other.ly!)
+      const need = (width + chipWidthFor(other.badge!)) / 2 + 10
+      if (gapX < need && gapY < 20) {
+        chip.ly = other.ly! + 22
+        chip.y0 = Math.min(chip.y0, chip.ly - 11)
+        chip.y1 = Math.max(chip.y1, chip.ly + 11)
+      }
+    }
+  }
 }
 
 function edgeMarks(
@@ -644,6 +665,8 @@ export async function layoutProjectMap(
       intra: false,
     })
   }
+
+  separateBadges(edges)
 
   const clusterEdges: LClusterEdge[] = []
   for (const [k, weight] of weights) {
