@@ -75,7 +75,7 @@ pub enum Kind {
     /// screen name(...): with the labels and other screens its body can lead to.
     Screen {
         name: String,
-        labels: Vec<NameAt>,
+        labels: Vec<ScreenAction>,
         uses: Vec<NameAt>,
     },
     /// call screen x / show screen x.
@@ -127,11 +127,21 @@ pub enum RefKind {
     ScreenAction,
 }
 
-/// A name mentioned at one source line (`Jump("shop")` inside a screen, `use phone`).
+/// A name mentioned at one source line (`use phone`, `Show("map")`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NameAt {
     pub name: String,
     pub line: u32,
+}
+
+/// A screen button that transfers to a label. `how` is `"jump"` or `"call"`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScreenAction {
+    pub name: String,
+    pub line: u32,
+    pub how: &'static str,
+    pub cond: Option<String>,
+    pub caption: Option<String>,
 }
 
 /// A function or class defined in a `python` block.

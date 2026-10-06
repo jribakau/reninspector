@@ -77,8 +77,21 @@ describe('findHelpers', () => {
     expect([...findHelpers(nodes, edges)]).toEqual(['beep'])
   })
 
-  it('ignores a label that never returns', () => {
+  it('keeps a shared routine that leaves by jump when many scenes call it', () => {
     const { nodes, edges } = withHelper(6, { returns: false })
+    edges.push(edge('beep', 'scene_end'))
+    expect([...findHelpers(nodes, edges)]).toEqual(['beep'])
+  })
+
+  it('ignores a jump-exit routine with only two callers', () => {
+    const nodes = [node('start', { root: true }), node('a'), node('b'), node('fx'), node('end')]
+    const edges = [
+      edge('start', 'a'),
+      edge('a', 'b'),
+      edge('a', 'fx', 'call'),
+      edge('b', 'fx', 'call'),
+      edge('fx', 'end'),
+    ]
     expect(findHelpers(nodes, edges).size).toBe(0)
   })
 

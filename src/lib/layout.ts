@@ -112,6 +112,12 @@ export interface LEdge {
   fan?: string
   /** A link to or from a side group (helpers or unlinked scenes). Drawn only for the selected scene. */
   helper?: boolean
+  /** Short condition chip. Not an elkjs label; placed on the route after layout. */
+  badge?: string
+  lx?: number
+  ly?: number
+  /** The callee returns, so the call edge also wears a return arrow. */
+  backs?: boolean
   /** Overall box. Used when a cached layout has no segment boxes. */
   x0: number
   y0: number
@@ -159,8 +165,10 @@ export function mapCacheKey(root: string, map: ProjectMap, mode: ClusterMode, he
     // Helper detection reads these, so a change to them must not reuse a stored layout.
     h = Math.imul(h ^ hashString(`${n.id}|${n.kind}|${n.returns ? 1 : 0}|${n.root ? 1 : 0}|${n.endsScript ? 1 : 0}`), 16777619)
   }
-  for (const e of map.edges) h = Math.imul(h ^ hashString(`${e.from}>${e.to}:${e.kind}`), 16777619)
-  return `map|v6|${root}|${mode}|${helpers ? 'h' : 'n'}|${map.nodes.length}|${map.edges.length}|${h >>> 0}`
+  for (const e of map.edges) {
+    h = Math.imul(h ^ hashString(`${e.from}>${e.to}:${e.kind}:${e.badge ?? ''}`), 16777619)
+  }
+  return `map|v7|${root}|${mode}|${helpers ? 'h' : 'n'}|${map.nodes.length}|${map.edges.length}|${h >>> 0}`
 }
 
 const INNER_OPTIONS = {
@@ -287,6 +295,27 @@ function tileLayout(members: readonly MapNode[]): {
   return { pos, w: cols * cellW - TILE_GAP_X, h: rows * cellH - TILE_GAP_Y }
 }
 
+function edgeMarks(
+  edge: MapEdge,
+  pts: readonly RoutePoint[],
+  returnsTo: ReadonlySet<string>,
+): { badge?: string; lx: number; ly: number; backs: boolean } {
+  const mid = polylineMidpoint([...pts])
+  const badge = edge.badge?.trim() || undefined
+  return { badge, lx: mid.x, ly: mid.y, backs: edge.kind === 'call' && returnsTo.has(edge.to) }
+}
+
+function withChip(box: { x0: number; y0: number; x1: number; y1: number }, badge: string | undefined, lx: number, ly: number) {
+  if (!badge) return box
+  const half = chipWidthFor(badge) / 2
+  return {
+    x0: Math.min(box.x0, lx - half),
+    y0: Math.min(box.y0, ly - 10),
+    x1: Math.max(box.x1, lx + half),
+    y1: Math.max(box.y1, ly + 10),
+  }
+}
+
 /** Horizontal, vertical, horizontal. A readable route between two nodes in different groups. */
 function zRoute(from: RoutePoint, to: RoutePoint): RoutePoint[] {
   const mid = (from.x + to.x) / 2
@@ -309,6 +338,7 @@ export async function layoutProjectMap(
   }
 
   const helperSet = options.helpers === false ? new Set<string>() : findHelpers(map.nodes, map.edges)
+  const returnsTo = new Set(map.nodes.filter((n) => n.returns).map((n) => n.id))
   const clusterOf = assignGroups(map.nodes, map.edges, files, mode, helperSet)
   // Helpers are reached from everywhere, so they would flatten the story's depth.
   const depth = storyDepth(
@@ -545,13 +575,15 @@ export async function layoutProjectMap(
     for (const { edge, points } of inner.intra) {
       const pts = dedupePoints(points.map((p) => ({ x: p.x + dx, y: p.y + dy })))
       if (pts.length < 2) continue
-      const box = boundsOf(pts)
+      const mark = edgeMarks(edge, pts, returnsTo)
+      const box = withChip(boundsOf(pts), mark.badge, mark.lx, mark.ly)
       edges.push({
         from: edge.from,
         to: edge.to,
         kind: edge.kind,
         count: edge.count,
         d: roundedPath(pts, ROUTE_RADIUS),
+        ...mark,
         x0: box.x0,
         y0: box.y0,
         x1: box.x1,
@@ -568,7 +600,8 @@ export async function layoutProjectMap(
     if (aside.has(a.c) || aside.has(b.c)) {
       const route = zRoute(sidePort(a, b.x + b.w / 2), sidePort(b, a.x + a.w / 2))
       if (route.length < 2) continue
-      const hb = boundsOf(route)
+      const mark = edgeMarks(e, route, returnsTo)
+      const hb = withChip(boundsOf(route), mark.badge, mark.lx, mark.ly)
       edges.push({
         from: e.from,
         to: e.to,
@@ -576,6 +609,7 @@ export async function layoutProjectMap(
         count: e.count,
         d: roundedPath(route, ROUTE_RADIUS),
         helper: true,
+        ...mark,
         x0: hb.x0,
         y0: hb.y0,
         x1: hb.x1,
@@ -592,7 +626,8 @@ export async function layoutProjectMap(
     const fanIn = elbow(end, sidePort(b, end.x), false)
     const full = dedupePoints([...fanOut, ...trunk.slice(1), ...fanIn.slice(1)])
     if (full.length < 2) continue
-    const box = boundsOf(full)
+    const mark = edgeMarks(e, full, returnsTo)
+    const box = withChip(boundsOf(full), mark.badge, mark.lx, mark.ly)
     edges.push({
       from: e.from,
       to: e.to,
@@ -600,6 +635,7 @@ export async function layoutProjectMap(
       count: e.count,
       d: roundedPath(full, ROUTE_RADIUS),
       fan: `${roundedPath(fanOut, ROUTE_RADIUS)} ${roundedPath(fanIn, ROUTE_RADIUS)}`.trim(),
+      ...mark,
       x0: box.x0,
       y0: box.y0,
       x1: box.x1,

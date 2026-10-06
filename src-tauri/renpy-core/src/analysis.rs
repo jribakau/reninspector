@@ -8,7 +8,7 @@ use serde::Serialize;
 use crate::ast::*;
 use crate::diagnostics::{self, DiagReport, MissingRef};
 use crate::engine::EngineDump;
-use crate::flow::{visit_labels, EKind, GKind};
+use crate::flow::{visit_labels, GKind};
 use crate::project::{ImageIndex, SourceFile};
 use crate::screens::ScreenTable;
 
@@ -77,6 +77,9 @@ pub struct MapEdge {
     /// `jump`, `choice`, `fall` or `call`.
     pub kind: &'static str,
     pub count: u32,
+    /// Set for a single conditional choice or screen button. Empty when several links share the edge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub badge: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -159,6 +162,59 @@ struct RegionEdge {
     target: String,
     kind: &'static str,
     line: u32,
+    caption: Option<String>,
+    cond: Option<String>,
+}
+
+struct EdgeAcc {
+    count: u32,
+    badge: Option<String>,
+}
+
+const BADGE_MAX: usize = 48;
+
+/// A short chip for one conditional link. Several links to the same place share no chip.
+fn edge_badge(caption: Option<&str>, cond: Option<&str>) -> Option<String> {
+    let cond = cond.map(str::trim).filter(|s| !s.is_empty())?;
+    if cond.chars().count() > BADGE_MAX {
+        return None;
+    }
+    let cap = caption
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && s.chars().count() <= 24 && !s.contains(cond));
+    match cap {
+        Some(cap) => {
+            let full = format!("{cap} · {cond}");
+            if full.chars().count() <= BADGE_MAX + 8 {
+                Some(full)
+            } else {
+                Some(cond.to_string())
+            }
+        }
+        None => Some(cond.to_string()),
+    }
+}
+
+fn push_edge(
+    agg: &mut std::collections::BTreeMap<(String, String, &'static str), EdgeAcc>,
+    from: String,
+    to: String,
+    kind: &'static str,
+    badge: Option<String>,
+) {
+    let entry = agg.entry((from, to, kind)).or_insert(EdgeAcc {
+        count: 0,
+        badge: None,
+    });
+    if entry.count == 0 {
+        entry.badge = badge;
+    } else {
+        entry.badge = None;
+    }
+    entry.count += 1;
+    if entry.count != 1 {
+        entry.badge = None;
+    }
 }
 
 struct Region {
@@ -258,15 +314,21 @@ pub fn analyze(files: &[SourceFile], auto_images: &ImageIndex, ext: &External) -
         .collect();
 
     // Aggregate edges, find missing targets.
-    let mut agg: BTreeMap<(String, String, &'static str), u32> = BTreeMap::new();
+    let mut agg: BTreeMap<(String, String, &'static str), EdgeAcc> = BTreeMap::new();
     let mut missing: Vec<MissingRef> = Vec::new();
     let mut missing_names: HashSet<String> = HashSet::new();
     for r in &regions {
         let from = &defs[r.def];
         for e in &r.edges {
+            let badge = edge_badge(e.caption.as_deref(), e.cond.as_deref());
             if e.kind == "screen" {
-                *agg.entry((from.name.clone(), e.target.clone(), e.kind))
-                    .or_insert(0) += 1;
+                push_edge(
+                    &mut agg,
+                    from.name.clone(),
+                    e.target.clone(),
+                    e.kind,
+                    badge,
+                );
                 continue;
             }
             if known.contains(&e.target) && !seen.contains_key(&e.target) {
@@ -282,8 +344,13 @@ pub fn analyze(files: &[SourceFile], auto_images: &ImageIndex, ext: &External) -
                     from: from.name.clone(),
                 });
             }
-            *agg.entry((from.name.clone(), e.target.clone(), e.kind))
-                .or_insert(0) += 1;
+            push_edge(
+                &mut agg,
+                from.name.clone(),
+                e.target.clone(),
+                e.kind,
+                badge,
+            );
         }
     }
 
@@ -296,7 +363,8 @@ pub fn analyze(files: &[SourceFile], auto_images: &ImageIndex, ext: &External) -
     for name in &screen_names {
         let info = &screens.by_name[name.as_str()];
         let id = format!("screen:{name}");
-        for target in &info.labels {
+        for action in &info.actions {
+            let target = &action.name;
             if !seen.contains_key(target)
                 && !engine_labels.contains_key(target.as_str())
                 && !known.contains(target)
@@ -304,18 +372,29 @@ pub fn analyze(files: &[SourceFile], auto_images: &ImageIndex, ext: &External) -
                 missing_names.insert(target.clone());
                 missing.push(MissingRef {
                     file: info.file,
-                    line: info.line,
+                    line: action.line,
                     target: target.clone(),
                     from: id.clone(),
                 });
             }
-            *agg.entry((id.clone(), target.clone(), "action"))
-                .or_insert(0) += 1;
+            let kind = if action.how == "call" { "call" } else { "jump" };
+            push_edge(
+                &mut agg,
+                id.clone(),
+                target.clone(),
+                kind,
+                edge_badge(action.caption.as_deref(), action.cond.as_deref()),
+            );
         }
         for used in &info.uses {
             if screens.navigational(used) && used != name.as_str() {
-                *agg.entry((id.clone(), format!("screen:{used}"), "screen"))
-                    .or_insert(0) += 1;
+                push_edge(
+                    &mut agg,
+                    id.clone(),
+                    format!("screen:{used}"),
+                    "screen",
+                    None,
+                );
             }
         }
     }
@@ -509,11 +588,12 @@ pub fn analyze(files: &[SourceFile], auto_images: &ImageIndex, ext: &External) -
     }
     let edges: Vec<MapEdge> = agg
         .into_iter()
-        .map(|((from, to, kind), count)| MapEdge {
+        .map(|((from, to, kind), acc)| MapEdge {
             from,
             to,
             kind,
-            count,
+            count: acc.count,
+            badge: acc.badge,
         })
         .collect();
 
@@ -622,12 +702,6 @@ fn build_region(files: &[SourceFile], screens: &ScreenTable, primary: &Primary) 
             end_line: primary.end_line,
         };
     };
-    let via_choice: HashSet<u32> = g
-        .edges
-        .iter()
-        .filter(|e| e.kind == EKind::Choice)
-        .map(|e| e.to)
-        .collect();
     let mut r = Region {
         def: primary.def,
         edges: Vec::new(),
@@ -647,12 +721,14 @@ fn build_region(files: &[SourceFile], screens: &ScreenTable, primary: &Primary) 
             GKind::Jump => match (&n.target, n.dynamic) {
                 (Some(t), false) => r.edges.push(RegionEdge {
                     target: t.clone(),
-                    kind: if via_choice.contains(&n.id) {
+                    kind: if n.choice_label.is_some() {
                         "choice"
                     } else {
                         "jump"
                     },
                     line: n.line,
+                    caption: n.choice_label.clone(),
+                    cond: n.choice_cond.clone(),
                 }),
                 _ => r.dynamic += 1,
             },
@@ -661,6 +737,8 @@ fn build_region(files: &[SourceFile], screens: &ScreenTable, primary: &Primary) 
                     target: t.clone(),
                     kind: "call",
                     line: n.line,
+                    caption: n.choice_label.clone(),
+                    cond: n.choice_cond.clone(),
                 }),
                 _ => r.dynamic += 1,
             },
@@ -670,6 +748,8 @@ fn build_region(files: &[SourceFile], screens: &ScreenTable, primary: &Primary) 
                         target: format!("screen:{t}"),
                         kind: "screen",
                         line: n.line,
+                        caption: None,
+                        cond: None,
                     });
                 }
             }
@@ -679,6 +759,8 @@ fn build_region(files: &[SourceFile], screens: &ScreenTable, primary: &Primary) 
                         target: t.clone(),
                         kind: "fall",
                         line: n.line,
+                        caption: None,
+                        cond: None,
                     });
                 }
             }

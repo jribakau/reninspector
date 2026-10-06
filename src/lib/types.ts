@@ -216,6 +216,8 @@ export interface MapEdge {
   to: string
   kind: MapEdgeKind
   count: number
+  /** One conditional choice or screen button. Absent when several links were merged. */
+  badge?: string | null
 }
 
 export interface ProjectMap {
@@ -243,7 +245,7 @@ export interface DiagReport {
 }
 
 export type GKind = 'dialogue' | 'menu' | 'choice' | 'cond' | 'jump' | 'fall' | 'call' | 'screen' | 'return' | 'end'
-export type EKind = 'next' | 'choice' | 'branch'
+export type EKind = 'next' | 'choice' | 'branch' | 'return'
 
 export interface GNode {
   id: number

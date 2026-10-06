@@ -70,9 +70,9 @@ label orphan:
             .any(|e| e.from == from && e.to == to && e.kind == kind)
     };
     assert!(has("start", "screen:town_map", "screen"));
-    assert!(has("screen:town_map", "shop", "action"));
+    assert!(has("screen:town_map", "shop", "jump"));
     assert!(has("screen:town_map", "screen:hud", "screen"));
-    assert!(has("screen:hud", "phone", "action"));
+    assert!(has("screen:hud", "phone", "jump"));
 
     // Labels reached only through the screen are reachable; the orphan is not.
     let reach = |id: &str| map.nodes.iter().find(|n| n.id == id).unwrap().reachable;
@@ -104,6 +104,60 @@ label orphan:
             .count()
             >= 1
     );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn choice_badges_and_screen_calls_stay_distinct() {
+    let script = r#"
+screen town():
+    textbutton "Shop" action Jump("shop")
+    textbutton "Play" action Function(renpy.call, "minigame")
+    textbutton "Peek" hovered Jump("peek")
+
+label start:
+    call screen town
+    menu:
+        "Go to the shop" if karma > 5:
+            jump shop
+        "Wander":
+            jump park
+    return
+
+label shop:
+    return
+
+label park:
+    call shop
+    call minigame
+    return
+
+label minigame:
+    jump park
+
+label peek:
+    return
+"#;
+    let (root, p) = project("badges", &[("script.rpy", script)]);
+    let map = &p.analysis.map;
+    let edge = |from: &str, to: &str, kind: &str| {
+        map.edges
+            .iter()
+            .find(|e| e.from == from && e.to == to && e.kind == kind)
+    };
+    let shop = edge("start", "shop", "choice").expect("conditional choice");
+    assert_eq!(shop.badge.as_deref(), Some("Go to the shop · karma > 5"));
+    assert!(edge("start", "park", "choice").unwrap().badge.is_none());
+    assert!(edge("screen:town", "shop", "jump").is_some());
+    assert!(edge("screen:town", "minigame", "call").is_some());
+    assert!(edge("screen:town", "peek", "jump").is_none());
+    assert!(edge("screen:town", "peek", "call").is_none());
+    let peek = map.nodes.iter().find(|n| n.id == "peek").unwrap();
+    // The name still sits in the source as a string, so it is indirect data, not a button edge.
+    assert!(peek.indirect);
+    assert!(!peek.root);
+    let g = p.label_graph("start", false).unwrap();
+    assert!(g.edges.iter().any(|e| e.kind == renpy_core::flow::EKind::Return));
     let _ = fs::remove_dir_all(root);
 }
 

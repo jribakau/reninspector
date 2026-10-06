@@ -29,7 +29,7 @@ type Link = Pick<MapEdge, 'from' | 'to'> & Partial<Pick<MapEdge, 'kind' | 'count
 
 // ---------------------------------------------------------------- helpers
 
-/** A helper is called from several places and comes back, like `call play_sound`. */
+/** A helper is called from several places, like `call play_sound` or a shared scene that jumps away. */
 const HELPER_CALL_SHARE = 0.8
 const HELPER_MIN_CALLERS = 3
 const HELPER_LEAF_MIN_CALLERS = 2
@@ -37,10 +37,10 @@ const HELPER_LEAF_MIN_CALLERS = 2
 const HELPER_MAX_SHARE = 0.6
 
 /**
- * Labels that act as shared subroutines. They are reached by `call`, return to
- * the caller, and either have several callers or are a leaf (jump nowhere).
- * Their links reach every part of the story, so drawing them ties unrelated
- * scenes together. A project that is mostly helpers by this rule keeps none.
+ * Labels that act as shared subroutines. They are reached by `call`, and either
+ * return to the caller or are called from enough places that a jump-exit would
+ * still tie the story in knots. A leaf that returns can qualify with two callers.
+ * A project that is mostly helpers by this rule keeps none.
  */
 export function findHelpers(nodes: readonly MapNode[], edges: readonly MapEdge[]): Set<string> {
   const known = new Map(nodes.map((n) => [n.id, n]))
@@ -58,14 +58,16 @@ export function findHelpers(nodes: readonly MapNode[], edges: readonly MapEdge[]
   for (const n of nodes) {
     if (n.kind !== 'label') continue
     eligible++
-    if (n.root || n.endsScript || !n.returns) continue
+    if (n.root || n.endsScript) continue
     const ins = incoming.get(n.id)
     if (!ins || !ins.length) continue
     const viaCall = ins.filter((e) => e.kind === 'call').length
     if (viaCall / ins.length < HELPER_CALL_SHARE) continue
     const callers = new Set(ins.map((e) => e.from)).size
     const leaf = !outgoing.get(n.id)
-    if (callers >= HELPER_MIN_CALLERS || (leaf && callers >= HELPER_LEAF_MIN_CALLERS)) out.add(n.id)
+    const shared = callers >= HELPER_MIN_CALLERS
+    const smallLeaf = n.returns && leaf && callers >= HELPER_LEAF_MIN_CALLERS
+    if (shared || smallLeaf) out.add(n.id)
   }
   if (eligible === 0 || out.size > eligible * HELPER_MAX_SHARE) return new Set()
   return out

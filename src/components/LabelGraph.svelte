@@ -595,7 +595,7 @@
         {@const showPreview = !cheap && v.k >= 0.35}
         {@const showChips = !cheap && v.k >= 0.4}
         <defs>
-          {#each ['next', 'choice', 'branch'] as kind (kind)}
+          {#each ['next', 'choice', 'branch', 'return'] as kind (kind)}
             <marker
               id={`g-arrow-${kind}`}
               viewBox="0 0 10 10"
@@ -1120,6 +1120,10 @@
     stroke: var(--warning);
     stroke-dasharray: 5 3;
   }
+  .edge.return {
+    stroke: var(--call);
+    stroke-dasharray: 2 3;
+  }
   .edge.fall {
     stroke: var(--fall);
     stroke-dasharray: 6 4;
@@ -1138,6 +1142,9 @@
   .arrow.branch {
     fill: var(--warning);
   }
+  .arrow.return {
+    fill: var(--call);
+  }
 
   .chip rect {
     fill: var(--panel);
@@ -1148,6 +1155,9 @@
   }
   .chip.branch rect {
     stroke: var(--warning);
+  }
+  .chip.return rect {
+    stroke: var(--call);
   }
   .chip text {
     fill: var(--text);

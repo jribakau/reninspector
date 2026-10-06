@@ -57,9 +57,8 @@
     { kind: 'jump', name: 'jump' },
     { kind: 'choice', name: 'menu choice' },
     { kind: 'fall', name: 'falls through' },
-    { kind: 'call', name: 'call' },
+    { kind: 'call', name: 'call, returns' },
     { kind: 'screen', name: 'opens screen' },
-    { kind: 'action', name: 'screen button' },
   ] as const
 
   function loadHiddenKinds(): string[] {
@@ -186,6 +185,10 @@
     toC: number
     /** A link into a side group. Drawn only for the selected scene. */
     helper: boolean
+    badge: string
+    lx: number
+    ly: number
+    backs: boolean
   }
 
   interface DrawClusterEdge {
@@ -305,6 +308,10 @@
       fromC: clusterOf.get(e.from) ?? -1,
       toC: clusterOf.get(e.to) ?? -1,
       helper: !!e.helper,
+      badge: e.badge ?? '',
+      lx: e.lx ?? (e.x0 + e.x1) / 2,
+      ly: e.ly ?? (e.y0 + e.y1) / 2,
+      backs: !!e.backs,
     }))
     const clusterEdges: DrawClusterEdge[] = l.clusterEdges.map((e, i) => ({
       i,
@@ -624,6 +631,18 @@
               <path d="M0 0 L10 5 L0 10 z" class={`arrow ${kind}`} />
             </marker>
           {/each}
+          <marker
+            id="arrow-return"
+            viewBox="0 0 10 10"
+            refX="1"
+            refY="5"
+            markerWidth="8"
+            markerHeight="8"
+            markerUnits="userSpaceOnUse"
+            orient="auto-start-reverse"
+          >
+            <path d="M0 0 L10 5 L0 10 z" class="arrow call" />
+          </marker>
         </defs>
 
         {#each S.clusters as c (c.key)}
@@ -680,13 +699,33 @@
                 class:inter={!e.intra}
                 style={`stroke-width:${Math.max(e.sw, 0.9 / v.k)}px`}
                 marker-end={S.markers ? `url(#arrow-${e.kind})` : undefined}
+                marker-start={e.backs && S.markers ? 'url(#arrow-return)' : undefined}
               />
             {/each}
           {/if}
         </g>
         {#each S.hot as e (e.i)}
-          <path d={e.d} class={`edge hot ${e.kind}`} marker-end={`url(#arrow-${e.kind})`} />
+          <path
+            d={e.d}
+            class={`edge hot ${e.kind}`}
+            marker-end={`url(#arrow-${e.kind})`}
+            marker-start={e.backs ? 'url(#arrow-return)' : undefined}
+          />
         {/each}
+        {#if !S.batch}
+          {#each S.edges as e (`b${e.i}`)}
+            {#if e.badge}
+              {@const w = Math.min(220, 16 + e.badge.length * 6.2)}
+              <g class={`chip ${e.kind}`} pointer-events="none">
+                <rect x={e.lx - w / 2} y={e.ly - 9} width={w} height="18" rx="9" />
+                <text x={e.lx} y={e.ly + 4} text-anchor="middle">
+                  {e.badge.length > 42 ? `${e.badge.slice(0, 40)}…` : e.badge}
+                  <title>{e.badge}</title>
+                </text>
+              </g>
+            {/if}
+          {/each}
+        {/if}
 
         {#if S.marks}
           <!-- Too far out, or too crowded, for the nodes themselves. Each one is still drawn, as a mark at least 3px across. -->
@@ -863,7 +902,8 @@
               <span class="lg-item"><i class="tag-sw end">END</i>end</span>
               <span class="lg-item"><i class="sw selected"></i>selected</span>
               <span class="lg-item"><i class="sw near"></i>connected to selection</span>
-              <span class="lg-note">Thicker lines mean more links</span>
+              <span class="lg-note">Thicker lines mean more links. A call's second arrow is the return.</span>
+              <span class="lg-note">A chip on a line is that choice's condition.</span>
               {#if helperCount}
                 <span class="lg-note">
                   Helpers are scenes other scenes call and return from. Select a scene to see which it uses.
@@ -1124,6 +1164,23 @@
   .edge.call {
     stroke: var(--call);
     stroke-dasharray: 2 3;
+  }
+  .chip {
+    pointer-events: none;
+  }
+  .chip rect {
+    fill: var(--panel);
+    stroke: var(--choice);
+  }
+  .chip.call rect {
+    stroke: var(--call);
+  }
+  .chip.jump rect {
+    stroke: var(--accent);
+  }
+  .chip text {
+    fill: var(--text);
+    font-size: 11px;
   }
   .edge.flat {
     stroke-dasharray: none;

@@ -75,6 +75,8 @@ pub enum EKind {
     Next,
     Choice,
     Branch,
+    /// The statement after a `call`. Decorative: it is not a second trip through the callee.
+    Return,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -107,6 +109,11 @@ pub struct GNode {
     pub target_line: u32,
     /// For screen nodes: labels the screen can lead to (also drawn as jump-out nodes).
     pub targets: Vec<String>,
+    /// Set when this jump or call sits inside a menu choice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub choice_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub choice_cond: Option<String>,
     /// Detail mode, beat cards: the staging statements on the card, in order.
     pub beats: Vec<BeatLine>,
 }
@@ -170,6 +177,8 @@ struct Builder<'a> {
     detail: bool,
     root_stmt: *const Stmt,
     last_run: Option<u32>,
+    /// Menu choice the walk is inside: caption and `if` condition.
+    choice: Option<(String, Option<String>)>,
 }
 
 /// Build the graph for the label-like statement `stmt`.
@@ -212,6 +221,7 @@ fn walk_graph(
         detail,
         root_stmt: stmt as *const Stmt,
         last_run: None,
+        choice: None,
     };
     let (name, kind): (String, &str) = match &stmt.kind {
         Kind::Label { name, .. } => (name.clone(), "label"),
@@ -283,6 +293,8 @@ impl Builder<'_> {
             target_line: 0,
             targets: Vec::new(),
             beats: Vec::new(),
+            choice_label: None,
+            choice_cond: None,
         });
         if kind != GKind::Dialogue {
             self.last_run = None;
@@ -292,7 +304,9 @@ impl Builder<'_> {
 
     fn connect(&mut self, open: Vec<Open>, to: u32) {
         for o in open {
-            if o.from == ROOT || (self.outline && o.kind == EKind::Next) {
+            if o.from == ROOT
+                || (self.outline && matches!(o.kind, EKind::Next | EKind::Return))
+            {
                 continue;
             }
             self.edges.push(GEdge {
@@ -312,6 +326,24 @@ impl Builder<'_> {
             label: None,
             cond: None,
         }]
+    }
+
+    /// Continuation after `call`. The callee is not inlined; this edge is the return.
+    fn return_from(id: u32) -> Vec<Open> {
+        vec![Open {
+            from: id,
+            kind: EKind::Return,
+            label: Some("return".into()),
+            cond: None,
+        }]
+    }
+
+    fn note_choice(&mut self, id: u32) {
+        if let Some((label, cond)) = &self.choice {
+            let n = &mut self.nodes[id as usize];
+            n.choice_label = Some(label.clone());
+            n.choice_cond = cond.clone();
+        }
     }
 
     fn seq(&mut self, stmts: &[Stmt], mut open: Vec<Open>) -> Vec<Open> {
@@ -341,8 +373,11 @@ impl Builder<'_> {
                     self.connect(open, id);
                     let mut next: Vec<Open> = Vec::new();
                     for c in choices {
+                        let saved = self.choice.clone();
+                        self.choice = Some((c.text.clone(), c.cond.clone()));
                         if self.detail {
                             next.extend(self.detail_choice(id, c));
+                            self.choice = saved;
                             continue;
                         }
                         let entry = vec![Open {
@@ -352,6 +387,7 @@ impl Builder<'_> {
                             cond: c.cond.clone(),
                         }];
                         next.extend(self.seq(&c.body, entry));
+                        self.choice = saved;
                     }
                     if choices.is_empty() {
                         next = Self::next_from(id);
@@ -364,6 +400,7 @@ impl Builder<'_> {
                     n.target = Some(target.clone());
                     n.dynamic = *dynamic;
                     n.end_line = s.end_line;
+                    self.note_choice(id);
                     self.connect(open, id);
                     return Vec::new();
                 }
@@ -375,8 +412,9 @@ impl Builder<'_> {
                     n.target = Some(target.clone());
                     n.dynamic = *dynamic;
                     n.end_line = s.end_line;
+                    self.note_choice(id);
                     self.connect(open, id);
-                    open = Self::next_from(id);
+                    open = Self::return_from(id);
                 }
                 Kind::Return => {
                     let id = self.new_node(GKind::Return, s.line, "return".into());
@@ -423,6 +461,7 @@ impl Builder<'_> {
                         n.target = r.name.clone();
                         n.dynamic = r.name.is_none();
                         n.end_line = s.end_line;
+                        self.note_choice(id);
                         self.connect(open, id);
                         if *block {
                             open = Self::next_from(id);
@@ -443,8 +482,9 @@ impl Builder<'_> {
                         n.target = r.name.clone();
                         n.dynamic = r.name.is_none();
                         n.end_line = s.end_line;
+                        self.note_choice(id);
                         self.connect(open, id);
-                        open = Self::next_from(id);
+                        open = Self::return_from(id);
                     } else {
                         open = self.add_run(s, open);
                     }
@@ -460,9 +500,10 @@ impl Builder<'_> {
         open
     }
 
-    /// A screen that leads to labels: one node, plus jump-out nodes for its actions.
+    /// A screen that leads to labels: one node, plus a node per action.
+    /// `Jump` leaves the screen. `Call` comes back, so that node is a call.
     fn screen_node(&mut self, s: &Stmt, how: &str, name: &str, open: Vec<Open>) -> Vec<Open> {
-        let reach: Vec<String> = self.screens.reach(name).to_vec();
+        let actions = self.screens.reach_actions(name);
         let id = self.new_node(GKind::Screen, s.line, format!("{how} screen {name}"));
         {
             let n = &mut self.nodes[id as usize];
@@ -471,40 +512,66 @@ impl Builder<'_> {
         }
         self.connect(open, id);
         if !self.lite {
-            self.nodes[id as usize].targets = reach.clone();
-            for t in reach.iter().take(MAX_SCREEN_TARGETS) {
-                let jid = self.new_node(GKind::Jump, s.line, t.clone());
-                self.nodes[jid as usize].target = Some(t.clone());
+            let mut targets = Vec::new();
+            for action in &actions {
+                if !targets.contains(&action.name) {
+                    targets.push(action.name.clone());
+                }
+            }
+            self.nodes[id as usize].targets = targets;
+            for action in actions.iter().take(MAX_SCREEN_TARGETS) {
+                let kind = if action.how == "call" {
+                    GKind::Call
+                } else {
+                    GKind::Jump
+                };
+                let jid = self.new_node(kind, action.line, action.name.clone());
+                self.nodes[jid as usize].target = Some(action.name.clone());
                 self.edges.push(GEdge {
                     from: id,
                     to: jid,
                     kind: EKind::Branch,
-                    label: Some("action".into()),
-                    cond: None,
+                    label: action.caption.clone(),
+                    cond: action.cond.clone(),
                 });
             }
-            if reach.len() > MAX_SCREEN_TARGETS {
+            if actions.len() > MAX_SCREEN_TARGETS {
                 let jid = self.new_node(
                     GKind::Jump,
                     s.line,
-                    format!("+{} more labels", reach.len() - MAX_SCREEN_TARGETS),
+                    format!("+{} more labels", actions.len() - MAX_SCREEN_TARGETS),
                 );
                 self.nodes[jid as usize].dynamic = true;
                 self.edges.push(GEdge {
                     from: id,
                     to: jid,
                     kind: EKind::Branch,
-                    label: Some("action".into()),
+                    label: None,
                     cond: None,
                 });
             }
         }
-        Self::next_from(id)
+        if how == "call" {
+            Self::return_from(id)
+        } else {
+            Self::next_from(id)
+        }
     }
 
     fn fall_to(&mut self, name: &str, s: &Stmt, open: Vec<Open>) -> Vec<Open> {
         let id = self.new_node(GKind::Fall, s.line, name.to_string());
         self.nodes[id as usize].target = Some(name.to_string());
+        // Falling into the next label is not the return from a call.
+        let open = open
+            .into_iter()
+            .map(|mut o| {
+                if o.kind == EKind::Return {
+                    o.kind = EKind::Next;
+                    o.label = None;
+                }
+                o
+            })
+            .collect();
         self.connect(open, id);
         Vec::new()
     }
@@ -1196,5 +1263,19 @@ mod tests {
                 ("$", 6, false)
             ]
         );
+    }
+
+    #[test]
+    fn call_continues_on_a_return_edge_and_keeps_the_choice_condition() {
+        let src = "label start:\n    call shop\n    \"back\"\n    menu:\n        \"Go\" if karma > 5:\n            \"wait\"\n            jump end\nlabel shop:\n    return\nlabel end:\n    return\n";
+        let gs = graphs(src);
+        let start = gs.iter().find(|g| g.name == "start").unwrap();
+        let call = start.nodes.iter().find(|n| n.kind == GKind::Call).unwrap();
+        let ret = start.edges.iter().find(|e| e.from == call.id).unwrap();
+        assert_eq!(ret.kind, EKind::Return);
+        assert_eq!(ret.label.as_deref(), Some("return"));
+        let jump = start.nodes.iter().find(|n| n.kind == GKind::Jump).unwrap();
+        assert_eq!(jump.choice_label.as_deref(), Some("Go"));
+        assert_eq!(jump.choice_cond.as_deref(), Some("karma > 5"));
     }
 }

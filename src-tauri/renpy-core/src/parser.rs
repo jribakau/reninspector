@@ -220,38 +220,65 @@ impl<'a> Parser<'a> {
     }
 
     /// Swallow a screen body. Returns the last physical line plus the labels
-    /// (`Jump("x")`, `renpy.call("x")`, ...) and other screens (`use x`,
-    /// `Show("x")`, ...) it can lead to.
+    /// (`Jump("x")`, `Call("x")`, ...) and other screens (`use x`, `Show("x")`)
+    /// it can lead to. Hover and tooltip actions are not story flow.
     fn consume_screen(
         &mut self,
         header_indent: u32,
         base_end: u32,
-    ) -> (u32, Vec<NameAt>, Vec<NameAt>) {
+    ) -> (u32, Vec<ScreenAction>, Vec<NameAt>) {
         let mut end = base_end;
-        let mut labels: Vec<NameAt> = Vec::new();
+        let mut labels: Vec<ScreenAction> = Vec::new();
         let mut uses: Vec<NameAt> = Vec::new();
+        // `(indent, condition)` for screen `if` / `elif` / `else` blocks.
+        let mut conds: Vec<(u32, String)> = Vec::new();
         while let Some(n) = self.lines.get(self.pos) {
             if n.indent <= header_indent {
                 break;
             }
             end = end.max(n.end_line);
-            if let Some(rest) = n.text.strip_prefix("use ") {
+            let text = n.text.as_str();
+            if let Some(rest) = text.trim_start().strip_prefix("use ") {
                 let name = ident_prefix(rest.trim_start());
                 if !name.is_empty() {
-                    uses.push(NameAt { name, line: n.line });
+                    uses.push(NameAt {
+                        name,
+                        line: n.line,
+                    });
                 }
             }
-            if n.text.contains('(') {
-                for r in scan_refs(&n.text) {
+            while conds.last().is_some_and(|(ind, _)| *ind >= n.indent) {
+                conds.pop();
+            }
+            if let Some(cond) = screen_if_header(text) {
+                conds.push((n.indent, cond));
+            }
+            let (body, trailing) = split_trailing_if(text);
+            let block = active_screen_cond(&conds);
+            let cond = merge_cond(block, trailing);
+            let caption = button_caption(text);
+            for hit in scan_screen_transfers(body) {
+                labels.push(ScreenAction {
+                    name: hit.name,
+                    line: n.line,
+                    how: hit.how,
+                    cond: merge_cond(cond.clone(), hit.cond),
+                    caption: caption.clone(),
+                });
+            }
+            if text.contains('(') {
+                for r in scan_refs(text) {
+                    if !matches!(r.kind, RefKind::Screen | RefKind::ScreenAction) {
+                        continue;
+                    }
                     let Some(name) = r.name else { continue };
-                    let list = match r.kind {
-                        RefKind::Action | RefKind::RenpyJump | RefKind::RenpyCall => &mut labels,
-                        RefKind::Screen | RefKind::ScreenAction => &mut uses,
-                    };
-                    list.push(NameAt { name, line: n.line });
+                    uses.push(NameAt {
+                        name,
+                        line: n.line,
+                    });
                 }
             }
-            harvest_strings(&n.text, &mut self.data);
+            harvest_strings(text, &mut self.data);
             self.pos += 1;
         }
         (end, labels, uses)
@@ -950,6 +977,358 @@ fn is_label_like(s: &str) -> bool {
             .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
 }
 
+struct Transfer {
+    name: String,
+    how: &'static str,
+    cond: Option<String>,
+}
+
+fn word_at(text: &str, i: usize, word: &str) -> bool {
+    let b = text.as_bytes();
+    if i + word.len() > b.len() || !text.is_char_boundary(i) {
+        return false;
+    }
+    if &text[i..i + word.len()] != word {
+        return false;
+    }
+    let before_ok = i == 0 || !is_ident_byte(b[i - 1]);
+    let after = i + word.len();
+    let after_ok = after >= b.len() || !is_ident_byte(b[after]);
+    before_ok && after_ok
+}
+
+fn skip_string(text: &str, i: usize) -> Option<usize> {
+    if !text.is_char_boundary(i) {
+        return None;
+    }
+    let b = text.as_bytes().get(i).copied()?;
+    if b != b'"' && b != b'\'' {
+        return None;
+    }
+    parse_string_at(&text[i..]).map(|(_, used)| i + used.max(1))
+}
+
+fn blank_range(buf: &mut [u8], start: usize, end: usize) {
+    let end = end.min(buf.len());
+    for b in &mut buf[start.min(end)..end] {
+        if *b != b'\n' {
+            *b = b' ';
+        }
+    }
+}
+
+/// Replace `hovered` / `unhovered` / `tooltip` clauses with spaces so their
+/// jumps are not story edges. The next real property (`action`, `clicked`, …)
+/// ends the clause.
+fn mask_hover_clauses(text: &str) -> String {
+    let skip = ["hovered", "unhovered", "tooltip"];
+    let ends = ["action", "clicked", "alternate", "key"];
+    let mut buf = text.as_bytes().to_vec();
+    let mut i = 0;
+    let mut depth = 0i32;
+    while i < text.len() {
+        if let Some(next) = skip_string(text, i) {
+            i = next;
+            continue;
+        }
+        let b = text.as_bytes()[i];
+        if b == b'(' || b == b'[' {
+            depth += 1;
+            i += 1;
+            continue;
+        }
+        if b == b')' || b == b']' {
+            depth -= 1;
+            i += 1;
+            continue;
+        }
+        if depth == 0 && skip.iter().any(|w| word_at(text, i, w)) {
+            let start = i;
+            let word = skip.iter().find(|w| word_at(text, i, w)).copied().unwrap();
+            i += word.len();
+            let mut d = 0i32;
+            while i < text.len() {
+                if let Some(next) = skip_string(text, i) {
+                    i = next;
+                    continue;
+                }
+                let c = text.as_bytes()[i];
+                if c == b'(' || c == b'[' {
+                    d += 1;
+                } else if c == b')' || c == b']' {
+                    d -= 1;
+                } else if d == 0 && ends.iter().any(|w| word_at(text, i, w)) {
+                    break;
+                }
+                i += 1;
+            }
+            blank_range(&mut buf, start, i);
+            continue;
+        }
+        i += 1;
+    }
+    String::from_utf8(buf).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+}
+
+fn screen_if_header(text: &str) -> Option<String> {
+    let t = text.trim();
+    if let Some(rest) = t.strip_prefix("if ") {
+        let cond = rest.trim().strip_suffix(':')?.trim();
+        return (!cond.is_empty()).then(|| cond.to_string());
+    }
+    if let Some(rest) = t.strip_prefix("elif ") {
+        let cond = rest.trim().strip_suffix(':')?.trim();
+        return (!cond.is_empty()).then(|| cond.to_string());
+    }
+    if t == "else:" {
+        return Some("else".into());
+    }
+    None
+}
+
+fn active_screen_cond(stack: &[(u32, String)]) -> Option<String> {
+    if stack.is_empty() {
+        None
+    } else {
+        Some(stack.iter().map(|(_, c)| c.as_str()).collect::<Vec<_>>().join(" · "))
+    }
+}
+
+fn merge_cond(outer: Option<String>, inner: Option<String>) -> Option<String> {
+    match (outer, inner) {
+        (Some(a), Some(b)) if a != b => Some(format!("{a} · {b}")),
+        (Some(a), _) => Some(a),
+        (_, b) => b,
+    }
+}
+
+/// `textbutton "Go" action Jump("x") if karma > 5` → the line without the `if`, and the condition.
+fn split_trailing_if(text: &str) -> (&str, Option<String>) {
+    let mut last = None;
+    let mut i = 0;
+    let mut depth = 0i32;
+    while i < text.len() {
+        if let Some(next) = skip_string(text, i) {
+            i = next;
+            continue;
+        }
+        let b = text.as_bytes()[i];
+        if b == b'(' || b == b'[' {
+            depth += 1;
+        } else if b == b')' || b == b']' {
+            depth -= 1;
+        } else if depth == 0 && word_at(text, i, "if") && !text[..i].trim().is_empty() {
+            last = Some(i);
+        }
+        i += 1;
+    }
+    let Some(at) = last else {
+        return (text, None);
+    };
+    let cond = text[at + 2..].trim().trim_end_matches(':').trim();
+    if cond.is_empty() {
+        (text, None)
+    } else {
+        (&text[..at], Some(cond.to_string()))
+    }
+}
+
+fn button_caption(text: &str) -> Option<String> {
+    let rest = text.trim_start().strip_prefix("textbutton")?.trim_start();
+    let rest = rest.strip_prefix("_(").map(str::trim_start).unwrap_or(rest);
+    let (caption, _) = parse_string_at(rest)?;
+    let caption = caption.trim();
+    if caption.is_empty() {
+        None
+    } else {
+        Some(caption.to_string())
+    }
+}
+
+fn else_cond(cond: &str) -> String {
+    let t = cond.trim();
+    if t.is_empty() || t.chars().count() > 32 {
+        "else".into()
+    } else {
+        format!("not ({t})")
+    }
+}
+
+/// `If(cond, then, else)` starting at `If`. Returns cond, then-text, else-text, and the index after the call.
+fn split_if_call(text: &str, at: usize) -> Option<(String, String, String, usize)> {
+    let bytes = text.as_bytes();
+    if !word_at(text, at, "If") {
+        return None;
+    }
+    let mut i = at + 2;
+    while i < text.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    if i >= text.len() || bytes[i] != b'(' {
+        return None;
+    }
+    i += 1;
+    let mut depth = 1i32;
+    let mut commas = Vec::new();
+    let start = i;
+    while i < text.len() && depth > 0 {
+        if let Some(next) = skip_string(text, i) {
+            i = next;
+            continue;
+        }
+        let b = bytes[i];
+        if b == b'(' || b == b'[' {
+            depth += 1;
+        } else if b == b')' || b == b']' {
+            depth -= 1;
+            if depth == 0 {
+                break;
+            }
+        } else if b == b',' && depth == 1 {
+            commas.push(i);
+        }
+        i += 1;
+    }
+    if depth != 0 || commas.is_empty() {
+        return None;
+    }
+    let close = i;
+    let cond = text[start..commas[0]].trim().to_string();
+    let then_end = commas.get(1).copied().unwrap_or(close);
+    let then_txt = text[commas[0] + 1..then_end].trim().to_string();
+    let else_txt = if commas.len() >= 2 {
+        text[commas[1] + 1..close].trim().to_string()
+    } else {
+        String::new()
+    };
+    Some((cond, then_txt, else_txt, close + 1))
+}
+
+fn take_function_transfers(text: &str) -> Vec<Transfer> {
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(at) = find_word_pos(&text[from..], "Function").map(|p| from + p) {
+        let after = at + "Function".len();
+        let rest = text[after..].trim_start();
+        if !rest.starts_with('(') {
+            from = after;
+            continue;
+        }
+        let inner = rest[1..].trim_start();
+        let (how, after_name) = if let Some(r) = inner.strip_prefix("renpy.call_in_new_context") {
+            ("call", r)
+        } else if let Some(r) = inner.strip_prefix("renpy.jump") {
+            ("jump", r)
+        } else if let Some(r) = inner.strip_prefix("renpy.call") {
+            ("call", r)
+        } else {
+            from = after;
+            continue;
+        };
+        let after_name = after_name.trim_start();
+        if !after_name.starts_with(',') {
+            from = after;
+            continue;
+        }
+        let arg = after_name[1..].trim_start();
+        if let Some((name, _)) = parse_string_at(arg) {
+            if !name.is_empty() {
+                out.push(Transfer {
+                    name,
+                    how,
+                    cond: None,
+                });
+            }
+        }
+        from = after;
+    }
+    out
+}
+
+fn take_literal_transfers(text: &str) -> Vec<Transfer> {
+    const PATTERNS: &[(&str, &str)] = &[
+        ("renpy.call_in_new_context(", "call"),
+        ("renpy.jump(", "jump"),
+        ("renpy.call(", "call"),
+        ("Jump(", "jump"),
+        ("Call(", "call"),
+        ("Start(", "jump"),
+    ];
+    let b = text.as_bytes();
+    let mut out = Vec::new();
+    for (pat, how) in PATTERNS {
+        let mut from = 0usize;
+        while let Some(p) = text[from..].find(pat) {
+            let at = from + p;
+            from = at + pat.len();
+            if at > 0 && (is_ident_byte(b[at - 1]) || b[at - 1] == b'.') {
+                continue;
+            }
+            let arg = text[from..].trim_start();
+            if *pat == "Start(" && arg.starts_with(')') {
+                out.push(Transfer {
+                    name: "start".into(),
+                    how,
+                    cond: None,
+                });
+                continue;
+            }
+            if !(arg.starts_with('"') || arg.starts_with('\'')) {
+                continue;
+            }
+            let Some((name, used)) = parse_string_at(arg) else {
+                continue;
+            };
+            let next = arg[used..].trim_start().chars().next();
+            if matches!(next, Some('%') | Some('+') | Some('.')) || name.is_empty() {
+                continue;
+            }
+            out.push(Transfer {
+                name,
+                how,
+                cond: None,
+            });
+        }
+    }
+    out
+}
+
+fn transfers_in(text: &str) -> Vec<Transfer> {
+    let mut src = text.to_string();
+    let mut out = Vec::new();
+    for _ in 0..64 {
+        let Some(at) = find_word_pos(&src, "If") else {
+            break;
+        };
+        if let Some((cond, then_txt, else_txt, end)) = split_if_call(&src, at) {
+            for mut hit in transfers_in(&then_txt) {
+                hit.cond = merge_cond(hit.cond.take(), Some(cond.clone()));
+                out.push(hit);
+            }
+            let other = else_cond(&cond);
+            for mut hit in transfers_in(&else_txt) {
+                hit.cond = merge_cond(hit.cond.take(), Some(other.clone()));
+                out.push(hit);
+            }
+            let mut buf = src.into_bytes();
+            blank_range(&mut buf, at, end);
+            src = String::from_utf8(buf).unwrap_or_default();
+        } else {
+            let mut buf = src.into_bytes();
+            blank_range(&mut buf, at, at + 2);
+            src = String::from_utf8(buf).unwrap_or_default();
+        }
+    }
+    out.extend(take_function_transfers(&src));
+    out.extend(take_literal_transfers(&src));
+    out
+}
+
+/// Story transfers in one screen line. Hover and tooltip actions are dropped.
+fn scan_screen_transfers(text: &str) -> Vec<Transfer> {
+    transfers_in(&mask_hover_clauses(text))
+}
+
 /// Find string-literal label references in a code line.
 pub fn scan_refs(text: &str) -> Vec<PyRef> {
     const PATTERNS: &[(&str, RefKind)] = &[
@@ -1036,11 +1415,11 @@ pub fn scan_meta(lines: &[LLine]) -> Meta {
             continue;
         }
         if t.contains("Jump(") || t.contains("Call(") || t.contains("Start(") {
-            for r in scan_refs(t) {
-                if r.kind == RefKind::Action {
-                    if let Some(n) = r.name {
-                        meta.action_refs.push(n);
-                    }
+            // A screen `Call` returns to the screen, so it does not start a story by itself.
+            // Hover and tooltip actions are not ways in either.
+            for hit in scan_screen_transfers(t) {
+                if hit.how == "jump" && !meta.action_refs.contains(&hit.name) {
+                    meta.action_refs.push(hit.name);
                 }
             }
         }
@@ -1581,9 +1960,13 @@ mod tests {
         };
         assert_eq!(name, "hub");
         assert_eq!(
-            labels.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(),
-            ["shop"]
+            labels
+                .iter()
+                .map(|l| (l.name.as_str(), l.how))
+                .collect::<Vec<_>>(),
+            [("shop", "jump"), ("x", "call")]
         );
+        assert_eq!(labels[1].caption.as_deref(), Some("b"));
         assert_eq!(
             uses.iter().map(|u| u.name.as_str()).collect::<Vec<_>>(),
             ["bar", "info"]
@@ -1604,6 +1987,43 @@ mod tests {
             panic!()
         };
         assert_eq!(refs[0].name, None);
+    }
+
+    #[test]
+    fn screen_actions_keep_jump_call_and_conditions() {
+        let src = r#"
+screen town():
+    hotspot (0, 0, 10, 10) hovered Jump("peek") action Jump("home")
+    textbutton "Go" action If(karma > 5, Jump("good"), Jump("bad"))
+    textbutton "Play" action Function(renpy.call, "minigame")
+    textbutton "Leave" action Call("evening")
+    textbutton "Secret" action Jump("end") if karma > 5
+    if energy > 1:
+        textbutton "Shop" action Jump("shop")
+"#;
+        let out = parse_src(src);
+        let Kind::Screen { labels, .. } = &out.stmts[0].kind else {
+            panic!()
+        };
+        let brief: Vec<(&str, &str, Option<&str>)> = labels
+            .iter()
+            .map(|l| (l.name.as_str(), l.how, l.cond.as_deref()))
+            .collect();
+        assert_eq!(
+            brief,
+            vec![
+                ("home", "jump", None),
+                ("good", "jump", Some("karma > 5")),
+                ("bad", "jump", Some("not (karma > 5)")),
+                ("minigame", "call", None),
+                ("evening", "call", None),
+                ("end", "jump", Some("karma > 5")),
+                ("shop", "jump", Some("energy > 1")),
+            ]
+        );
+        assert!(labels.iter().all(|l| l.name != "peek"));
+        assert_eq!(labels[1].caption.as_deref(), Some("Go"));
+        assert_eq!(labels[5].caption.as_deref(), Some("Secret"));
     }
 
     #[test]
