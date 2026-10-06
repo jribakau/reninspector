@@ -324,6 +324,7 @@ pub fn sdk_remove(app: AppHandle, path: String, delete_files: bool) -> Result<Sd
     reg.extra.retain(|p| !same_path(p, &root));
     reg.unverified.retain(|p| !same_path(Path::new(p), &root));
     save_registry(&data, &reg)?;
+    log::info!(target: "sdk", "Removed SDK {}", root.display());
     let folder = reg.folder.to_string_lossy().into_owned();
     Ok(SdkList {
         items: scan(&reg),
@@ -359,6 +360,7 @@ pub async fn sdk_install(
     version: String,
 ) -> Result<SdkInfo, AppError> {
     let version = version.trim().to_string();
+    let label = version.clone();
     if !valid_version(&version) {
         return Err(format!("{version} is not a Ren'Py version.").into());
     }
@@ -371,7 +373,9 @@ pub async fn sdk_install(
         .await
         .map_err(crate::error::AppError::from);
     state.sdk_busy.store(false, Ordering::Release);
-    result?
+    let installed = result??;
+    log::info!(target: "sdk", "Installed Ren'Py {label}");
+    Ok(installed)
 }
 
 #[tauri::command]
@@ -383,6 +387,7 @@ pub async fn sdk_install_web(
     let (root, _) = resolve_sdk(&path)?;
     let version = renpy_core::project::read_engine_version(&root)
         .ok_or_else(|| format!("Could not read the Ren'Py version in {}.", root.display()))?;
+    let label = version.clone();
     if state.sdk_busy.swap(true, Ordering::AcqRel) {
         return Err("An SDK download is already running.".into());
     }
@@ -393,7 +398,9 @@ pub async fn sdk_install_web(
             .await
             .map_err(crate::error::AppError::from);
     state.sdk_busy.store(false, Ordering::Release);
-    result?
+    let installed = result??;
+    log::info!(target: "sdk", "Installed web support for Ren'Py {label}");
+    Ok(installed)
 }
 
 fn install_sdk(app: &AppHandle, cancel: &AtomicBool, version: &str) -> Result<SdkInfo, AppError> {
@@ -934,10 +941,12 @@ pub async fn build_pc(
 ) -> Result<String, AppError> {
     let (sdk_root, exe) = resolve_sdk(&sdk)?;
     let packages = normalize_packages(&packages)?;
+    let label = packages.join(", ");
+    log::info!(target: "sdk", "Building {label}");
     let (root, aside) = build_project(&state)?;
     let slot = state.build.clone();
     let cancel = state.build_cancel.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let text = tauri::async_runtime::spawn_blocking(move || {
         let _aside = aside;
         let mut args = vec![root.to_string_lossy().into_owned()];
         if let Some(dest) = dest.filter(|s| !s.trim().is_empty()) {
@@ -959,7 +968,9 @@ pub async fn build_pc(
             None,
         )
     })
-    .await?
+    .await??;
+    log::info!(target: "sdk", "Built {label}");
+    Ok(text)
 }
 
 #[tauri::command]
@@ -974,10 +985,11 @@ pub async fn build_web(
     if !sdk_root.join("web").is_dir() {
         return Err("This SDK has no Web support yet. Install it and build again.".into());
     }
+    log::info!(target: "sdk", "Building web");
     let (root, aside) = build_project(&state)?;
     let slot = state.build.clone();
     let cancel = state.build_cancel.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let text = tauri::async_runtime::spawn_blocking(move || {
         let _aside = aside;
         let mut args = vec![root.to_string_lossy().into_owned()];
         if let Some(dest) = dest.filter(|s| !s.trim().is_empty()) {
@@ -998,7 +1010,9 @@ pub async fn build_web(
             None,
         )
     })
-    .await?
+    .await??;
+    log::info!(target: "sdk", "Built web");
+    Ok(text)
 }
 
 #[tauri::command]

@@ -1,5 +1,6 @@
-import { invoke } from '@tauri-apps/api/core'
+import { invoke as rawInvoke, type InvokeArgs } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { logUi, type AppLogInput } from './applog.svelte'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import type {
   ChangedPayload,
@@ -156,6 +157,11 @@ export const api = {
     invoke<string>('build_web', { sdk, dest, launch }),
   buildCancel: () => invoke<void>('build_cancel'),
   revealPath: (path: string) => invoke<void>('reveal_path', { path }),
+  applogRead: () => invoke<AppLogInput[]>('applog_read'),
+  applogWrite: (level: string, source: string, message: string) =>
+    invoke<void>('applog_write', { level, source, message }),
+  applogClear: () => invoke<void>('applog_clear'),
+  applogPath: () => invoke<string | null>('applog_path'),
   stageAt: (file: string, line: number, vars?: Record<string, string>) =>
     invoke<import('./types').StageEstimate>('stage_at', { file, line, vars: vars ?? {} }),
   liveShots: (on: boolean) => invoke<void>('live_shots', { on }),
@@ -266,6 +272,10 @@ export function onBuildLine(cb: (line: { stream: string; text: string }) => void
   return listen<{ stream: string; text: string }>('build:line', (e) => cb(e.payload))
 }
 
+export function onApplogEntry(cb: (entry: AppLogInput) => void): Promise<UnlistenFn> {
+  return listen<AppLogInput>('applog:entry', (e) => cb(e.payload))
+}
+
 export async function readArchiveEntry(archive: string, name: string): Promise<ArrayBuffer> {
   return invoke<ArrayBuffer>('archive_read_entry', { archive, name })
 }
@@ -337,4 +347,21 @@ export function errorText(e: unknown): string {
   } catch {
     return String(e)
   }
+}
+
+const QUIET_COMMANDS = new Set(['applog_write', 'applog_read', 'applog_clear', 'applog_path'])
+
+/** A project folder with no repository is a normal state, not an application fault. */
+function quietFailure(command: string, err: unknown): boolean {
+  if (QUIET_COMMANDS.has(command)) return true
+  return errorText(err).toLowerCase().includes('not a git repository')
+}
+
+function invoke<T>(command: string, args?: InvokeArgs): Promise<T> {
+  return rawInvoke<T>(command, args).catch((err: unknown) => {
+    if (!quietFailure(command, err)) {
+      logUi('error', 'ui', `${command} failed: ${errorText(err)}`)
+    }
+    throw err
+  })
 }

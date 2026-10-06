@@ -1,3 +1,4 @@
+import { logUi } from './applog.svelte'
 import { app } from './model.svelte'
 
 export type ToastKind = 'info' | 'ok' | 'warn' | 'error'
@@ -49,6 +50,8 @@ function arm(id: number, ms: number) {
 export function notify(text: string, kind: ToastKind = 'info', options: NotifyOptions = {}) {
   const message = text.trim()
   if (!message) return
+  const level = kind === 'error' ? 'error' : kind === 'warn' ? 'warn' : 'info'
+  logUi(level, 'ui', message)
   app.notice = message
   app.noticeAction = options.action
     ? { text: message, label: options.action.label, run: options.action.run }

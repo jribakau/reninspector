@@ -102,6 +102,12 @@ pub fn start(app: AppHandle, game_dir: PathBuf) -> Result<WatchHandle, AppError>
                     project.publish_analysis(job.epoch, analysis);
                 }
             }
+            let shown = if rels.len() <= 6 {
+                rels.join(", ")
+            } else {
+                format!("{}, and {} more", rels[..6].join(", "), rels.len() - 6)
+            };
+            log::info!(target: "watch", "Files changed on disk: {shown}");
             let _ = app.emit(CHANGED_EVENT, ChangedPayload { paths: rels });
         }
     });

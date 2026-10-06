@@ -196,7 +196,13 @@ fn windows_install_candidates(
         }
     }
     if let Some(local) = local_app_data.filter(|base| !base.as_os_str().is_empty()) {
-        out.push(local.join("Programs").join("Git").join("cmd").join("git.exe"));
+        out.push(
+            local
+                .join("Programs")
+                .join("Git")
+                .join("cmd")
+                .join("git.exe"),
+        );
     }
     out
 }
@@ -932,6 +938,7 @@ fn show_missing(err: &str) -> bool {
     err.contains("does not exist")
         || err.contains("exists on disk")
         || err.contains("not in ")
+        || err.contains("not a git repository")
         || err.contains("invalid object name 'head'")
 }
 
@@ -1159,9 +1166,28 @@ pub fn git_branches(state: State<'_, AppState>) -> Result<Vec<GitBranch>, AppErr
     branches_at(&git_root(&state)?)
 }
 
+fn first_line(text: &str) -> String {
+    let line = text.lines().next().unwrap_or("").trim();
+    let mut out = String::new();
+    for (i, c) in line.chars().enumerate() {
+        if i >= 80 {
+            out.push('…');
+            break;
+        }
+        out.push(c);
+    }
+    if out.is_empty() {
+        "ok".to_string()
+    } else {
+        out
+    }
+}
+
 #[tauri::command(async)]
 pub fn git_switch(state: State<'_, AppState>, name: String) -> Result<(), AppError> {
-    switch_at(&git_root(&state)?, &name)
+    switch_at(&git_root(&state)?, &name)?;
+    log::info!(target: "git", "Switched to {name}");
+    Ok(())
 }
 
 #[tauri::command(async)]
@@ -1180,14 +1206,18 @@ pub fn git_fetch(state: State<'_, AppState>) -> Result<String, AppError> {
 #[tauri::command(async)]
 pub fn git_pull(state: State<'_, AppState>) -> Result<String, AppError> {
     let root = git_root(&state)?;
-    Ok(git_ok(&git_net(&root, &["pull", "--ff-only"])?)?
+    let text = git_ok(&git_net(&root, &["pull", "--ff-only"])?)?
         .trim()
-        .to_string())
+        .to_string();
+    log::info!(target: "git", "Pulled ({})", first_line(&text));
+    Ok(text)
 }
 
 #[tauri::command(async)]
 pub fn git_push(state: State<'_, AppState>) -> Result<String, AppError> {
-    push_at(&git_root(&state)?)
+    let text = push_at(&git_root(&state)?)?;
+    log::info!(target: "git", "Pushed ({})", first_line(&text));
+    Ok(text)
 }
 
 #[tauri::command(async)]
@@ -1201,7 +1231,9 @@ pub fn git_commit(
     message: String,
     amend: bool,
 ) -> Result<String, AppError> {
-    commit_at(&git_root(&state)?, &message, amend)
+    let hash = commit_at(&git_root(&state)?, &message, amend)?;
+    log::info!(target: "git", "Committed {}", first_line(&message));
+    Ok(hash)
 }
 
 #[tauri::command(async)]
@@ -1249,9 +1281,11 @@ pub fn git_discard(
         let backup_root = commands::backup_dir(&app, &root)?;
         let backup = backup_root.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
         discard_untracked_file(&abs, &backup, &rel)?;
+        log::info!(target: "git", "Discarded {rel}");
         return Ok(());
     }
     git_ok(&git(&root, &["restore", "--", &rel])?)?;
+    log::info!(target: "git", "Discarded {rel}");
     Ok(())
 }
 
@@ -1452,6 +1486,15 @@ mod tests {
         assert!(fs::read_to_string(dir.0.join("game").join("script.rpy"))
             .unwrap()
             .contains("label start"));
+    }
+
+    #[test]
+    fn show_outside_a_repository_is_empty() {
+        let dir = TempDir::new();
+        fs::create_dir_all(dir.0.join("game")).unwrap();
+        fs::write(dir.0.join("game").join("script.rpy"), "label start:\n").unwrap();
+        assert_eq!(show_at(&dir.0, "INDEX", "game/script.rpy").unwrap(), "");
+        assert_eq!(status_at(&dir.0).unwrap_err().message(), NOT_A_REPO);
     }
 
     #[test]
@@ -1826,7 +1869,10 @@ mod tests {
                 assert!(used <= 30, "batch of {} used {used}", group.len());
             }
         }
-        assert_eq!(groups.iter().map(|group| group.len()).sum::<usize>(), paths.len());
+        assert_eq!(
+            groups.iter().map(|group| group.len()).sum::<usize>(),
+            paths.len()
+        );
     }
 
     #[test]

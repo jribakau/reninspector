@@ -125,8 +125,16 @@ pub fn open_project(
     *crate::util::lock(&state.project) = Some(project);
     match watch::start(app, game_dir) {
         Ok(handle) => *crate::util::lock(&state.watcher) = Some(handle),
-        Err(e) => log::warn!("file watcher unavailable: {e}"),
+        Err(e) => log::warn!(target: "watch", "File watcher unavailable: {e}"),
     }
+    log::info!(
+        target: "project",
+        "Opened {} ({} files, {} lines, {} ms)",
+        info.root,
+        info.stats.files,
+        info.stats.lines,
+        info.parse_ms
+    );
     Ok(info)
 }
 
@@ -281,6 +289,7 @@ pub fn write_file(
     // Report the effect of this edit from the run that followed it, even if a
     // newer edit has since taken over the stored analysis.
     project.publish_analysis(job.epoch, std::sync::Arc::clone(&analysis));
+    log::info!(target: "project", "Saved {path}");
     Ok(edit::diff_impact(&before, &analysis))
 }
 
@@ -290,12 +299,14 @@ pub fn revert_file(
     state: State<'_, AppState>,
     path: String,
 ) -> Result<EditImpact, AppError> {
-    crate::util::with_project_mut(&state, |project| {
+    let impact = crate::util::with_project_mut(&state, |project| {
         ensure_game_closed(project)?;
         let mut edit = crate::util::lock(&state.edit);
         let root = backup_dir(&app, &project.root)?;
         edit::apply_revert(project, &mut edit, &root, &path)
-    })
+    })?;
+    log::info!(target: "project", "Reverted {path}");
+    Ok(impact)
 }
 
 /// Syntax of an unsaved buffer. Does not re-run project analysis.
@@ -350,7 +361,9 @@ pub fn launch_game(
         let project = guard.as_ref().ok_or_else(crate::util::no_project)?;
         launch::LaunchSource::capture(project)
     };
-    launch::launch(&source, launcher, None, launch::LaunchExtra::default())
+    let report = launch::launch(&source, launcher, None, launch::LaunchExtra::default())?;
+    log::info!(target: "project", "Launched {}", source.root.display());
+    Ok(report)
 }
 
 #[tauri::command(async)]

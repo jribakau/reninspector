@@ -7,6 +7,7 @@ static COMCTL_V6: [u8; include_bytes!("comctl.drectve").len()] = *include_bytes!
 
 use tauri::Manager;
 
+mod applog;
 mod commands;
 mod edit;
 mod error;
@@ -82,6 +83,7 @@ fn silence_browser_keys(app: &tauri::AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    applog::install();
     sweep_stale_temp();
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -219,8 +221,13 @@ pub fn run() {
             live::live_shots,
             live::live_shot,
             ide::diagnostic_bundle,
+            applog::applog_read,
+            applog::applog_write,
+            applog::applog_clear,
+            applog::applog_path,
         ])
         .setup(|app| {
+            applog::attach(app.handle());
             #[cfg(windows)]
             silence_browser_keys(app.handle());
             Ok(())

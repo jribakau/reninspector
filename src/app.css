@@ -1071,6 +1071,8 @@ button.sb-item.sel:active,
 .sb-item.row {
   flex-direction: row;
   align-items: center;
+  /* .sb-item centers a stacked label. In a row, that would center the file name. */
+  justify-content: flex-start;
 }
 
 .sb-name {

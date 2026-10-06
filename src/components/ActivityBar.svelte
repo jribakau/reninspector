@@ -1,12 +1,11 @@
 <script lang="ts">
   import { git } from '../lib/git.svelte'
   import type { IconName } from '../lib/icons'
-  import { app, openBottom, showActivity, toggleBottom, type Activity } from '../lib/store.svelte'
+  import { app, showActivity, toggleBottom, type Activity } from '../lib/store.svelte'
   import { tooltip } from '../lib/tooltip'
   import Icon from './Icon.svelte'
 
   const gitChanges = $derived(git.status?.changes.length ?? 0)
-
   const errors = $derived(app.diag?.errors ?? 0)
   const problems = $derived(errors + (app.diag?.warnings ?? 0))
 
@@ -22,10 +21,6 @@
     return n > 99 ? '99+' : String(n)
   }
 
-  function showProblems() {
-    if (app.bottomOpen && app.bottomTab === 'problems') toggleBottom()
-    else openBottom('problems')
-  }
 </script>
 
 <nav class="rail" aria-label="Activity">
@@ -62,15 +57,6 @@
         onclick={toggleBottom}
       >
         <Icon name="panel" size={18} />
-      </button>
-      <button
-        class:on={app.bottomOpen && app.bottomTab === 'problems'}
-        use:tooltip={'Problems'}
-        aria-label={problems ? `Problems, ${problems}` : 'Problems'}
-        onclick={showProblems}
-      >
-        <Icon name={errors ? 'error' : 'warning'} size={18} />
-        {#if problems > 0}<span class="badge" class:bad={errors > 0} class:warn={errors === 0}>{count(problems)}</span>{/if}
       </button>
     </div>
   {/if}
@@ -135,9 +121,5 @@
     font-size: var(--fs-xs);
     line-height: 13px;
     border: 1px solid var(--panel);
-  }
-  .badge.warn {
-    background: var(--warning);
-    color: var(--on-accent);
   }
 </style>

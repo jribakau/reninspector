@@ -4,6 +4,7 @@
   interface Tab {
     id: T
     label: string
+    title?: string
     count?: number
     bad?: boolean
     pulse?: boolean
@@ -40,6 +41,7 @@
         aria-controls={`${prefix}-panel-${t.id}`}
         tabindex={active === t.id ? 0 : -1}
         class:on={active === t.id}
+        title={t.title}
         onclick={() => onselect(t.id)}
         onkeydown={(e) => move(e, i)}
       >

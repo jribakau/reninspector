@@ -1,3 +1,4 @@
+import { logUi, startApplog } from './applog.svelte'
 import { api, errorText, onBuildLine, onLiveShot, onLiveState, onProjectChanged, onRpaProgress, onSdkProgress, pickFolder, pickProjectFolder, pickSdk } from './api'
 import { pushBuildLine } from './build.svelte'
 import { ask } from './dialog.svelte'
@@ -74,6 +75,18 @@ export function toggleSpell() {
   setSetting('spell', !settings.spell)
 }
 
+let stopErrorWatch: (() => void) | null = null
+
+function watchAppError() {
+  if (stopErrorWatch) return
+  stopErrorWatch = $effect.root(() => {
+    $effect(() => {
+      const message = app.error.trim()
+      if (message) logUi('error', 'ui', message)
+    })
+  })
+}
+
 export async function bootstrap() {
   loadRecent()
   startAutosave()
@@ -90,6 +103,8 @@ export async function bootstrap() {
     void onLiveShot((shot) => noteLiveShot(shot))
     void onSdkProgress((p) => noteProgress(p))
     void onBuildLine((line) => pushBuildLine(line))
+    void startApplog()
+    watchAppError()
   }
   const initial = await api.initialProject().catch(() => null)
   if (initial) {

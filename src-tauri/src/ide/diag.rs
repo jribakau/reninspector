@@ -120,6 +120,14 @@ pub fn diagnostic_bundle(state: State<'_, AppState>) -> String {
     } else {
         out.push_str("No project is open.\n");
     }
+    let app_log = crate::applog::recent_text(60);
+    if !app_log.is_empty() {
+        out.push_str("\n--- app.log\n");
+        out.push_str(&app_log);
+        if !app_log.ends_with('\n') {
+            out.push('\n');
+        }
+    }
     hide_home(&out, home_dir().as_deref())
 }
 

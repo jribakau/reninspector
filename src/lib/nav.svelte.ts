@@ -218,7 +218,7 @@ export function unpinEditor(id: string) {
 
 const sessionKey = (root: string) => `vnide.session.${root}`
 const ACTIVITIES: Activity[] = ['explorer', 'story', 'search', 'renpy', 'git']
-const BOTTOM: BottomTab[] = ['problems', 'log', 'live', 'build']
+const BOTTOM: BottomTab[] = ['problems', 'log', 'events', 'live', 'build']
 const RENPY: RenpySection[] = ['game', 'saves', 'characters', 'images', 'screens', 'variables', 'languages', 'assets', 'archives']
 
 function saveSession() {

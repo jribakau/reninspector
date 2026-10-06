@@ -8,20 +8,6 @@
 </script>
 
 <footer class="status" class:busy-bar={!!app.busy || !!(sdk.installing && sdk.progress)} class:has-errors={errors > 0} aria-busy={!!app.busy || !!(sdk.installing && sdk.progress)}>
-  {#if app.busy}
-    <span class="busy"><i class="spinner"></i>{app.busy}</span>
-  {:else if sdk.installing && sdk.progress}
-    <span class="busy"><i class="spinner"></i>{installProgressText(sdk.progress)}</span>
-  {:else}
-    <span class="dim notice" aria-live="polite">{app.notice}</span>
-    {#if app.noticeAction && app.noticeAction.text === app.notice}
-      <button class="bare" type="button" onclick={() => app.noticeAction?.run()}>{app.noticeAction.label}</button>
-    {/if}
-  {/if}
-  <span class="spacer"></span>
-  <button class="bare wide-only" title="Command palette" aria-label="Open command palette" onclick={() => (app.palette = 'commands')}>
-    <span class="kbd">Ctrl</span><span class="kbd">Shift</span><span class="kbd">P</span> Commands
-  </button>
   {#if app.info}
     <button
       class="bare"
@@ -37,6 +23,17 @@
       <span class="badge" class:warn={warnings > 0}>{warnings}</span>
     </button>
   {/if}
+  {#if app.busy}
+    <span class="busy"><i class="spinner"></i>{app.busy}</span>
+  {:else if sdk.installing && sdk.progress}
+    <span class="busy"><i class="spinner"></i>{installProgressText(sdk.progress)}</span>
+  {:else}
+    <span class="dim notice" aria-live="polite">{app.notice}</span>
+    {#if app.noticeAction && app.noticeAction.text === app.notice}
+      <button class="bare" type="button" onclick={() => app.noticeAction?.run()}>{app.noticeAction.label}</button>
+    {/if}
+  {/if}
+  <span class="spacer"></span>
   {#if app.live.running}
     <button class="bare live" aria-label="Live session" onclick={() => openBottom('live')} title={app.live.file ? `${app.live.file}:${app.live.line}` : 'Waiting for the game'}>
       <Icon name="live" size={12} />
@@ -139,15 +136,6 @@
     color: var(--text);
     background: var(--hover);
     border-color: transparent;
-  }
-  .bare .kbd {
-    padding: 0 3px;
-    min-width: 0;
-    line-height: 13px;
-    border-bottom-width: 1px;
-  }
-  .bare .kbd + .kbd {
-    margin-left: -2px;
   }
   .bare.bad {
     color: var(--error);

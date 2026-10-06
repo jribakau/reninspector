@@ -1,8 +1,10 @@
 <script lang="ts">
+  import { applog } from '../lib/applog.svelte'
   import { buildUi } from '../lib/build.svelte'
   import { app, openBottom, toggleBottom, type BottomTab } from '../lib/store.svelte'
   import BuildPanel from './BuildPanel.svelte'
   import ConsolePanel from './ConsolePanel.svelte'
+  import EventsPanel from './EventsPanel.svelte'
   import Icon from './Icon.svelte'
   import LivePanel from './LivePanel.svelte'
   import ProblemsPanel from './ProblemsPanel.svelte'
@@ -12,7 +14,14 @@
 
   const tabs: { id: BottomTab; label: string; count?: number; bad?: boolean; pulse?: boolean }[] = $derived([
     { id: 'problems', label: 'Problems', count: problemCount > 0 ? problemCount : undefined, bad: (app.diag?.errors ?? 0) > 0 },
-    { id: 'log', label: 'Log' },
+    { id: 'log', label: 'Game', title: "The game's log.txt, traceback.txt and errors.txt" },
+    {
+      id: 'events',
+      label: 'App',
+      title: 'What Ren\'Inspector did: opens, saves, builds and errors',
+      count: applog.unseenErrors > 0 ? applog.unseenErrors : undefined,
+      bad: applog.unseenErrors > 0,
+    },
     { id: 'build', label: 'Build', pulse: buildUi.running },
     { id: 'live', label: 'Live', pulse: app.live.running },
   ])
@@ -45,6 +54,7 @@
       >
         {#if t.id === 'problems'}<ProblemsPanel />
         {:else if t.id === 'log'}<ConsolePanel />
+        {:else if t.id === 'events'}<EventsPanel />
         {:else if t.id === 'build'}<BuildPanel />
         {:else}<LivePanel />{/if}
       </div>

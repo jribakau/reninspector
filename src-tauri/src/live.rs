@@ -1876,7 +1876,8 @@ pub fn live_start(
         });
     }
     let app2 = app.clone();
-    std::thread::spawn(move || watch_session(app2, dir, name, id, stop, root, false));
+    let exe_name = name.clone();
+    std::thread::spawn(move || watch_session(app2, dir, exe_name, id, stop, root, false));
     emit(
         &app,
         &LiveState {
@@ -1885,6 +1886,7 @@ pub fn live_start(
             ..LiveState::default()
         },
     );
+    log::info!(target: "live", "Live session started ({name})");
     Ok(LiveReport {
         notes,
         warp: warp.map(|(f, l)| format!("{f}:{l}")),
@@ -2120,6 +2122,7 @@ pub fn live_images(state: State<'_, AppState>) -> Result<(), AppError> {
 #[tauri::command(async)]
 pub fn live_stop(app: AppHandle) -> Result<(), AppError> {
     stop_session(&app, Duration::from_millis(1200));
+    log::info!(target: "live", "Live session stopped");
     Ok(())
 }
 

@@ -3,7 +3,7 @@ import type { CatalogView, DiagReport, EditImpact, LiveState, ProjectInfo, Proje
 
 export type Activity = 'explorer' | 'story' | 'search' | 'renpy' | 'git'
 
-export type BottomTab = 'problems' | 'log' | 'live' | 'build'
+export type BottomTab = 'problems' | 'log' | 'events' | 'live' | 'build'
 
 export type RenpySection = 'game' | 'saves' | 'characters' | 'images' | 'screens' | 'variables' | 'languages' | 'assets' | 'archives'
 
