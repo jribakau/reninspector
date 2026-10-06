@@ -5,10 +5,12 @@
   import Icon from './Icon.svelte'
   import ZoomControls from './ZoomControls.svelte'
   import {
+    chipLineLimit,
+    chipParts,
     clusterHue,
     layoutProjectMap,
     mapCacheKey,
-    mapChipWidth,
+    mapChipSize,
     type ClusterMode,
     type MapLayout,
   } from '../lib/layout'
@@ -189,6 +191,8 @@
     badge: string
     lx: number
     ly: number
+    ax: number
+    ay: number
     backs: boolean
   }
 
@@ -312,6 +316,8 @@
       badge: e.badge ?? '',
       lx: e.lx ?? (e.x0 + e.x1) / 2,
       ly: e.ly ?? (e.y0 + e.y1) / 2,
+      ax: e.ax ?? e.lx ?? (e.x0 + e.x1) / 2,
+      ay: e.ay ?? e.ly ?? (e.y0 + e.y1) / 2,
       backs: !!e.backs,
     }))
     const clusterEdges: DrawClusterEdge[] = l.clusterEdges.map((e, i) => ({
@@ -716,13 +722,24 @@
         {#if !S.batch}
           {#each S.edges as e (`b${e.i}`)}
             {#if e.badge}
-              {@const w = mapChipWidth(e.badge)}
+              {@const parts = chipParts(e.badge)}
+              {@const size = mapChipSize(e.badge, e.intra)}
+              {@const capLimit = chipLineLimit(size.w)}
+              {@const condLimit = chipLineLimit(size.w, true)}
+              {@const cap = !e.intra && parts.caption.length > capLimit ? `${parts.caption.slice(0, capLimit - 1)}…` : parts.caption}
+              {@const cond = parts.cond.length > condLimit ? `${parts.cond.slice(0, condLimit - 1)}…` : parts.cond}
+              {@const left = e.lx - size.w / 2}
+              {@const top = e.ly - size.h / 2}
               <g class={`chip ${e.kind}`} pointer-events="none">
-                <rect x={e.lx - w / 2} y={e.ly - 9} width={w} height="18" rx="9" />
-                <text x={e.lx} y={e.ly + 4} text-anchor="middle">
-                  {e.badge.length > 42 ? `${e.badge.slice(0, 40)}…` : e.badge}
-                  <title>{e.badge}</title>
-                </text>
+                <rect class="body" x={left} y={top} width={size.w} height={size.h} rx="5" />
+                <rect class="bar" x={left + 2} y={top + 4} width="3" height={size.h - 8} rx="1.5" />
+                {#if cap && !e.intra}
+                  <text class="cap" x={left + 12} y={top + 13}>{cap}</text>
+                  <text class="cond" x={left + 12} y={top + 27}>{cond}</text>
+                {:else}
+                  <text class="cond" x={left + 12} y={e.ly + 4}>{cond}</text>
+                {/if}
+                <title>{e.badge}</title>
               </g>
             {/if}
           {/each}
@@ -904,7 +921,7 @@
               <span class="lg-item"><i class="sw selected"></i>selected</span>
               <span class="lg-item"><i class="sw near"></i>connected to selection</span>
               <span class="lg-note">Thicker lines mean more links. A call's second arrow is the return.</span>
-              <span class="lg-note">A chip on a line is that choice's condition.</span>
+              <span class="lg-note">A card is the condition. Between groups it names the choice too.</span>
               {#if helperCount}
                 <span class="lg-note">
                   Helpers are scenes other scenes call and return from. Select a scene to see which it uses.
@@ -1169,19 +1186,35 @@
   .chip {
     pointer-events: none;
   }
-  .chip rect {
-    fill: var(--panel);
-    stroke: var(--choice);
+  .chip .body {
+    fill: var(--panel-2);
+    stroke: color-mix(in srgb, var(--choice) 50%, var(--line));
+    stroke-width: 1;
   }
-  .chip.call rect {
-    stroke: var(--call);
+  .chip .bar {
+    fill: var(--choice);
+    stroke: none;
   }
-  .chip.jump rect {
-    stroke: var(--accent);
+  .chip.call .body {
+    stroke: color-mix(in srgb, var(--call) 55%, var(--line));
   }
-  .chip text {
+  .chip.call .bar {
+    fill: var(--call);
+  }
+  .chip.jump .body {
+    stroke: color-mix(in srgb, var(--accent) 55%, var(--line));
+  }
+  .chip.jump .bar {
+    fill: var(--accent);
+  }
+  .chip .cap {
+    fill: var(--dim);
+    font-size: 10px;
+  }
+  .chip .cond {
     fill: var(--text);
-    font-size: 11px;
+    font-size: 12.5px;
+    font-weight: 650;
   }
   .edge.flat {
     stroke-dasharray: none;

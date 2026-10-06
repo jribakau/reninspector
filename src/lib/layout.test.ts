@@ -7,7 +7,7 @@ vi.mock('elkjs/lib/elk-api', async () => {
 })
 vi.mock('elkjs/lib/elk-worker.min.js?url', () => ({ default: '' }))
 
-import { layoutProjectMap, mapChipWidth, placeChips, type MapLayout } from './layout'
+import { chipLineLimit, chipParts, layoutProjectMap, mapChipSize, placeChips, type MapLayout } from './layout'
 import { HELPERS_KEY, type GroupMode } from './mapgroups'
 import type { FileInfo, MapEdge, MapEdgeKind, MapNode, MapNodeKind, ProjectMap } from './types'
 
@@ -80,6 +80,19 @@ function rng(seed: number): () => number {
     return s / 2 ** 32
   }
 }
+
+describe('condition cards', () => {
+  it('shows the choice and the condition on separate lines', () => {
+    expect(chipParts('Go to the shop · karma > 5')).toEqual({ caption: 'Go to the shop', cond: 'karma > 5' })
+    expect(chipParts('not (c1) · c2')).toEqual({ caption: '', cond: 'not (c1) · c2' })
+    expect(chipParts('karma > 5')).toEqual({ caption: '', cond: 'karma > 5' })
+    expect(mapChipSize('Go · karma > 5').h).toBeGreaterThan(mapChipSize('karma > 5').h)
+    expect(mapChipSize('Go to the shop · karma > 5', true).h).toBe(mapChipSize('karma > 5').h)
+    expect(chipLineLimit(mapChipSize('energy > 1', true).w, true)).toBeGreaterThanOrEqual('energy > 1'.length)
+    expect(chipLineLimit(mapChipSize('karma > 5', true).w, true)).toBeGreaterThanOrEqual('karma > 5'.length)
+    expect(chipLineLimit(mapChipSize('Go to the shop · karma > 5').w)).toBeGreaterThanOrEqual('Go to the shop'.length)
+  })
+})
 
 describe('placeChips', () => {
   it('stacks overlapping captions and leaves the others where they are', () => {
@@ -363,8 +376,10 @@ describe('layoutProjectMap', () => {
     const chips = layout.edges.filter((e) => e.badge)
     expect(chips.map((e) => e.badge).sort()).toEqual([late, secret])
     const [a, b] = chips
-    const overlapX = Math.abs(a.lx! - b.lx!) < (mapChipWidth(a.badge!) + mapChipWidth(b.badge!)) / 2 - 1
-    const overlapY = Math.abs(a.ly! - b.ly!) < 18 - 1
+    const sa = mapChipSize(a.badge!)
+    const sb = mapChipSize(b.badge!)
+    const overlapX = Math.abs(a.lx! - b.lx!) < (sa.w + sb.w) / 2 - 1
+    const overlapY = Math.abs(a.ly! - b.ly!) < (sa.h + sb.h) / 2 - 1
     expect(overlapX && overlapY).toBe(false)
     expect(Math.abs(a.ly! - b.ly!)).toBeGreaterThanOrEqual(26)
   })

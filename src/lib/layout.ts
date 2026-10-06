@@ -112,10 +112,14 @@ export interface LEdge {
   fan?: string
   /** A link to or from a side group (helpers or unlinked scenes). Drawn only for the selected scene. */
   helper?: boolean
-  /** Short condition chip. Not an elkjs label; placed on the route after layout. */
+  /** Short condition chip. Not an elkjs label; placed beside the route after layout. */
   badge?: string
+  /** Centre of the chip. */
   lx?: number
   ly?: number
+  /** Point on the route the chip points at. */
+  ax?: number
+  ay?: number
   /** The callee returns, so the call edge also wears a return arrow. */
   backs?: boolean
   /** Overall box. Used when a cached layout has no segment boxes. */
@@ -168,7 +172,7 @@ export function mapCacheKey(root: string, map: ProjectMap, mode: ClusterMode, he
   for (const e of map.edges) {
     h = Math.imul(h ^ hashString(`${e.from}>${e.to}:${e.kind}:${e.badge ?? ''}`), 16777619)
   }
-  return `map|v10|${root}|${mode}|${helpers ? 'h' : 'n'}|${map.nodes.length}|${map.edges.length}|${h >>> 0}`
+  return `map|v13|${root}|${mode}|${helpers ? 'h' : 'n'}|${map.nodes.length}|${map.edges.length}|${h >>> 0}`
 }
 
 const INNER_OPTIONS = {
@@ -295,34 +299,33 @@ function tileLayout(members: readonly MapNode[]): {
   return { pos, w: cols * cellW - TILE_GAP_X, h: rows * cellH - TILE_GAP_Y }
 }
 
-/** Drawn chip height in the project map. */
-const MAP_CHIP_H = 18
-/** Clear gap between two chips that would otherwise cover each other. */
-const MAP_CHIP_GAP = 8
+/** Gap between two condition cards that would otherwise cover each other. */
+const MAP_CHIP_GAP = 10
 
 /**
- * Drop overlapping chips downward. Each chip keeps its own x, so a caption
- * stays on the line it belongs to instead of sliding onto a neighbour.
+ * Move overlapping cards down the page. Each card keeps its own x.
  */
-export function placeChips(chips: { lx: number; ly: number; text: string }[]): { lx: number; ly: number }[] {
-  const sorted = chips.map((chip, i) => ({ ...chip, i })).sort((a, b) => a.ly - b.ly || a.lx - b.lx || a.i - b.i)
-  const placed: { lx: number; ly: number; w: number }[] = []
+export function placeChips(chips: { lx: number; ly: number; text: string; compact?: boolean }[]): { lx: number; ly: number }[] {
+  const sorted = chips
+    .map((chip, i) => ({ ...chip, i, ...mapChipSize(chip.text, chip.compact) }))
+    .sort((a, b) => a.ly - b.ly || a.lx - b.lx || a.i - b.i)
+  const placed: { lx: number; ly: number; w: number; h: number }[] = []
   const out: { lx: number; ly: number }[] = new Array(chips.length)
   for (const chip of sorted) {
-    const w = mapChipWidth(chip.text)
     const lx = chip.lx
     let ly = chip.ly
     for (let guard = 0; guard < sorted.length; guard++) {
       const hit = placed.find((other) => {
         const gapX = Math.abs(lx - other.lx)
         const gapY = Math.abs(ly - other.ly)
-        const needX = (w + other.w) / 2 + 6
-        return gapX < needX && gapY < MAP_CHIP_H + MAP_CHIP_GAP
+        const needX = (chip.w + other.w) / 2 + 8
+        const needY = (chip.h + other.h) / 2 + MAP_CHIP_GAP
+        return gapX < needX && gapY < needY
       })
       if (!hit) break
-      ly = Math.max(ly, hit.ly + MAP_CHIP_H + MAP_CHIP_GAP)
+      ly = Math.max(ly, hit.ly + (chip.h + hit.h) / 2 + MAP_CHIP_GAP)
     }
-    placed.push({ lx, ly, w })
+    placed.push({ lx, ly, w: chip.w, h: chip.h })
     out[chip.i] = { lx, ly }
   }
   return out
@@ -330,14 +333,14 @@ export function placeChips(chips: { lx: number; ly: number; text: string }[]): {
 
 function separateBadges(edges: LEdge[]) {
   const chips = edges.filter((e) => e.badge && e.lx != null && e.ly != null)
-  const placed = placeChips(chips.map((e) => ({ lx: e.lx!, ly: e.ly!, text: e.badge! })))
+  const placed = placeChips(chips.map((e) => ({ lx: e.lx!, ly: e.ly!, text: e.badge!, compact: e.intra })))
   chips.forEach((chip, i) => {
     const spot = placed[i]
-    const w = mapChipWidth(chip.badge!)
+    const { w, h } = mapChipSize(chip.badge!, chip.intra)
     chip.lx = spot.lx
     chip.ly = spot.ly
-    chip.y0 = Math.min(chip.y0, spot.ly - MAP_CHIP_H / 2)
-    chip.y1 = Math.max(chip.y1, spot.ly + MAP_CHIP_H / 2)
+    chip.y0 = Math.min(chip.y0, spot.ly - h / 2)
+    chip.y1 = Math.max(chip.y1, spot.ly + h / 2)
     chip.x0 = Math.min(chip.x0, spot.lx - w / 2)
     chip.x1 = Math.max(chip.x1, spot.lx + w / 2)
   })
@@ -347,20 +350,33 @@ function edgeMarks(
   edge: MapEdge,
   pts: readonly RoutePoint[],
   returnsTo: ReadonlySet<string>,
-): { badge?: string; lx: number; ly: number; backs: boolean } {
-  const mid = polylineMidpoint([...pts])
+): { badge?: string; lx: number; ly: number; ax: number; ay: number; backs: boolean } {
   const badge = edge.badge?.trim() || undefined
-  return { badge, lx: mid.x, ly: mid.y, backs: edge.kind === 'call' && returnsTo.has(edge.to) }
+  const mid = polylineMidpoint([...pts])
+  return {
+    badge,
+    lx: mid.x,
+    ly: mid.y,
+    ax: mid.x,
+    ay: mid.y,
+    backs: edge.kind === 'call' && returnsTo.has(edge.to),
+  }
 }
 
-function withChip(box: { x0: number; y0: number; x1: number; y1: number }, badge: string | undefined, lx: number, ly: number) {
+function withChip(
+  box: { x0: number; y0: number; x1: number; y1: number },
+  badge: string | undefined,
+  lx: number,
+  ly: number,
+  compact = false,
+) {
   if (!badge) return box
-  const half = chipWidthFor(badge) / 2
+  const { w, h } = mapChipSize(badge, compact)
   return {
-    x0: Math.min(box.x0, lx - half),
-    y0: Math.min(box.y0, ly - 10),
-    x1: Math.max(box.x1, lx + half),
-    y1: Math.max(box.y1, ly + 10),
+    x0: Math.min(box.x0, lx - w / 2),
+    y0: Math.min(box.y0, ly - h / 2),
+    x1: Math.max(box.x1, lx + w / 2),
+    y1: Math.max(box.y1, ly + h / 2),
   }
 }
 
@@ -624,7 +640,7 @@ export async function layoutProjectMap(
       const pts = dedupePoints(points.map((p) => ({ x: p.x + dx, y: p.y + dy })))
       if (pts.length < 2) continue
       const mark = edgeMarks(edge, pts, returnsTo)
-      const box = withChip(boundsOf(pts), mark.badge, mark.lx, mark.ly)
+      const box = withChip(boundsOf(pts), mark.badge, mark.lx, mark.ly, true)
       edges.push({
         from: edge.from,
         to: edge.to,
@@ -799,9 +815,47 @@ export function chipWidthFor(text: string): number {
   return Math.min(CHIP_MAX, Math.ceil(text.length * PILL_CHAR + CHIP_PAD))
 }
 
-/** Width of a project-map condition chip. Matches the pill drawn in ProjectMap. */
+/**
+ * Split `Go to the shop · karma > 5` into the choice and its condition.
+ * A condition that itself contains ` · ` stays one line.
+ */
+export function chipParts(text: string): { caption: string; cond: string } {
+  const at = text.indexOf(' · ')
+  if (at > 0) {
+    const left = text.slice(0, at)
+    const right = text.slice(at + 3)
+    if (right && !/[()<>=]/.test(left) && !left.startsWith('not ')) return { caption: left, cond: right }
+  }
+  return { caption: '', cond: text }
+}
+
+const COND_EM = 8
+const CAP_EM = 6.6
+const CHIP_INSET = 28
+
+/**
+ * Size of the condition card drawn on the project map.
+ * Inside a group there is no room for the choice name, so the card is the condition only.
+ */
+export function mapChipSize(text: string, compact = false): { w: number; h: number } {
+  const { caption, cond } = chipParts(text)
+  const showCaption = !!caption && !compact
+  const condW = Math.ceil(cond.length * COND_EM)
+  const capW = showCaption ? Math.ceil(caption.length * CAP_EM) : 0
+  return {
+    w: Math.min(280, Math.max(showCaption ? 108 : 84, Math.max(condW, capW) + CHIP_INSET)),
+    h: showCaption ? 34 : 22,
+  }
+}
+
+/** Width of a project-map condition card. Matches the card drawn in ProjectMap. */
 export function mapChipWidth(text: string): number {
-  return Math.min(220, 16 + text.length * 6.2)
+  return mapChipSize(text).w
+}
+
+/** How many characters of one card line fit in `px`. */
+export function chipLineLimit(px: number, wide = false): number {
+  return Math.max(1, Math.floor((px - CHIP_INSET) / (wide ? COND_EM : CAP_EM)))
 }
 
 export function chipCharLimit(w: number): number {
