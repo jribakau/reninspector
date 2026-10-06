@@ -7,7 +7,7 @@ vi.mock('elkjs/lib/elk-api', async () => {
 })
 vi.mock('elkjs/lib/elk-worker.min.js?url', () => ({ default: '' }))
 
-import { layoutProjectMap, type MapLayout } from './layout'
+import { layoutProjectMap, mapChipWidth, type MapLayout } from './layout'
 import { HELPERS_KEY, type GroupMode } from './mapgroups'
 import type { FileInfo, MapEdge, MapEdgeKind, MapNode, MapNodeKind, ProjectMap } from './types'
 
@@ -318,6 +318,37 @@ describe('layoutProjectMap', () => {
       }
     }
   }, 120_000)
+
+  it('stacks condition chips that share a trunk between groups', async () => {
+    const secret = 'Secret ending · karma > 5'
+    const late = 'Open late · energy > 1'
+    const files: FileInfo[] = [
+      file,
+      { ...file, path: 'other.rpy' },
+    ]
+    const map: ProjectMap = {
+      nodes: [
+        node('town', { kind: 'screen', root: true }),
+        node('morning'),
+        node('secret', { file: 1 }),
+        node('night', { file: 1 }),
+      ],
+      edges: [
+        edge('town', 'morning'),
+        { ...edge('town', 'secret', 'jump'), badge: secret },
+        { ...edge('town', 'night', 'jump'), badge: late },
+      ],
+    }
+    const layout = await layoutProjectMap(map, files, 'file', `test-${runs++}`)
+    expectSound(layout, map)
+    const chips = layout.edges.filter((e) => e.badge)
+    expect(chips.map((e) => e.badge).sort()).toEqual([late, secret])
+    const [a, b] = chips
+    const overlapX = Math.abs(a.lx! - b.lx!) < (mapChipWidth(a.badge!) + mapChipWidth(b.badge!)) / 2 - 1
+    const overlapY = Math.abs(a.ly! - b.ly!) < 18 - 1
+    expect(overlapX && overlapY).toBe(false)
+    expect(Math.abs(a.ly! - b.ly!)).toBeGreaterThanOrEqual(26)
+  })
 
   it('keeps room between neighbouring scenes', async () => {
     const map: ProjectMap = {

@@ -8,6 +8,7 @@
     clusterHue,
     layoutProjectMap,
     mapCacheKey,
+    mapChipWidth,
     type ClusterMode,
     type MapLayout,
   } from '../lib/layout'
@@ -715,7 +716,7 @@
         {#if !S.batch}
           {#each S.edges as e (`b${e.i}`)}
             {#if e.badge}
-              {@const w = Math.min(220, 16 + e.badge.length * 6.2)}
+              {@const w = mapChipWidth(e.badge)}
               <g class={`chip ${e.kind}`} pointer-events="none">
                 <rect x={e.lx - w / 2} y={e.ly - 9} width={w} height="18" rx="9" />
                 <text x={e.lx} y={e.ly + 4} text-anchor="middle">

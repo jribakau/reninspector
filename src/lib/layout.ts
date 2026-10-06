@@ -168,7 +168,7 @@ export function mapCacheKey(root: string, map: ProjectMap, mode: ClusterMode, he
   for (const e of map.edges) {
     h = Math.imul(h ^ hashString(`${e.from}>${e.to}:${e.kind}:${e.badge ?? ''}`), 16777619)
   }
-  return `map|v8|${root}|${mode}|${helpers ? 'h' : 'n'}|${map.nodes.length}|${map.edges.length}|${h >>> 0}`
+  return `map|v9|${root}|${mode}|${helpers ? 'h' : 'n'}|${map.nodes.length}|${map.edges.length}|${h >>> 0}`
 }
 
 const INNER_OPTIONS = {
@@ -295,24 +295,42 @@ function tileLayout(members: readonly MapNode[]): {
   return { pos, w: cols * cellW - TILE_GAP_X, h: rows * cellH - TILE_GAP_Y }
 }
 
-/** Shift chips that land on the same spot so two conditions stay readable. */
+/** Drawn chip height in the project map. */
+const MAP_CHIP_H = 18
+/** Clear gap between two chips that would otherwise cover each other. */
+const MAP_CHIP_GAP = 8
+
+/**
+ * Move chips that share a trunk onto a column. Route midpoints sit on the same
+ * horizontal line, and a wide caption still covers the one beside it.
+ */
 function separateBadges(edges: LEdge[]) {
   const chips = edges.filter((e) => e.badge && e.lx != null && e.ly != null)
   chips.sort((a, b) => a.ly! - b.ly! || a.lx! - b.lx!)
-  for (let i = 0; i < chips.length; i++) {
-    const chip = chips[i]
-    const width = chipWidthFor(chip.badge!)
-    for (let j = 0; j < i; j++) {
-      const other = chips[j]
-      const gapX = Math.abs(chip.lx! - other.lx!)
-      const gapY = Math.abs(chip.ly! - other.ly!)
-      const need = (width + chipWidthFor(other.badge!)) / 2 + 10
-      if (gapX < need && gapY < 20) {
-        chip.ly = other.ly! + 22
-        chip.y0 = Math.min(chip.y0, chip.ly - 11)
-        chip.y1 = Math.max(chip.y1, chip.ly + 11)
-      }
+  const placed: { lx: number; ly: number; w: number }[] = []
+  for (const chip of chips) {
+    const w = mapChipWidth(chip.badge!)
+    let ly = chip.ly!
+    let lx = chip.lx!
+    for (let guard = 0; guard < 24; guard++) {
+      const hit = placed.find((other) => {
+        const gapX = Math.abs(lx - other.lx)
+        const gapY = Math.abs(ly - other.ly)
+        const needX = (w + other.w) / 2 + 6
+        return gapX < needX && gapY < MAP_CHIP_H + MAP_CHIP_GAP
+      })
+      if (!hit) break
+      // Line up with the chip already sitting on this trunk, then step down.
+      if (Math.abs(lx - hit.lx) < (w + hit.w) / 2) lx = hit.lx
+      ly = hit.ly + MAP_CHIP_H + MAP_CHIP_GAP
     }
+    chip.lx = lx
+    chip.ly = ly
+    chip.y0 = Math.min(chip.y0, ly - MAP_CHIP_H / 2)
+    chip.y1 = Math.max(chip.y1, ly + MAP_CHIP_H / 2)
+    chip.x0 = Math.min(chip.x0, lx - w / 2)
+    chip.x1 = Math.max(chip.x1, lx + w / 2)
+    placed.push({ lx, ly, w })
   }
 }
 
@@ -770,6 +788,11 @@ const CHIP_MAX = 420
 
 export function chipWidthFor(text: string): number {
   return Math.min(CHIP_MAX, Math.ceil(text.length * PILL_CHAR + CHIP_PAD))
+}
+
+/** Width of a project-map condition chip. Matches the pill drawn in ProjectMap. */
+export function mapChipWidth(text: string): number {
+  return Math.min(220, 16 + text.length * 6.2)
 }
 
 export function chipCharLimit(w: number): number {
