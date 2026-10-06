@@ -118,7 +118,10 @@ impl ScreenTable {
             };
             for action in &info.actions {
                 let seen = out.iter().any(|e: &ScreenAction| {
-                    e.name == action.name && e.how == action.how && e.cond == action.cond
+                    e.name == action.name
+                        && e.how == action.how
+                        && e.cond == action.cond
+                        && e.caption == action.caption
                 });
                 if !seen {
                     out.push(action.clone());

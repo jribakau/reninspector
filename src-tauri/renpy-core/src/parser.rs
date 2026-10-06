@@ -241,10 +241,7 @@ impl<'a> Parser<'a> {
             if let Some(rest) = text.trim_start().strip_prefix("use ") {
                 let name = ident_prefix(rest.trim_start());
                 if !name.is_empty() {
-                    uses.push(NameAt {
-                        name,
-                        line: n.line,
-                    });
+                    uses.push(NameAt { name, line: n.line });
                 }
             }
             while conds.last().is_some_and(|(ind, _)| *ind >= n.indent) {
@@ -253,16 +250,14 @@ impl<'a> Parser<'a> {
             if let Some(cond) = screen_if_header(text) {
                 conds.push((n.indent, cond));
             }
-            let (body, trailing) = split_trailing_if(text);
             let block = active_screen_cond(&conds);
-            let cond = merge_cond(block, trailing);
             let caption = button_caption(text);
-            for hit in scan_screen_transfers(body) {
+            for hit in scan_screen_transfers(text) {
                 labels.push(ScreenAction {
                     name: hit.name,
                     line: n.line,
                     how: hit.how,
-                    cond: merge_cond(cond.clone(), hit.cond),
+                    cond: merge_cond(block.clone(), hit.cond),
                     caption: caption.clone(),
                 });
             }
@@ -272,10 +267,7 @@ impl<'a> Parser<'a> {
                         continue;
                     }
                     let Some(name) = r.name else { continue };
-                    uses.push(NameAt {
-                        name,
-                        line: n.line,
-                    });
+                    uses.push(NameAt { name, line: n.line });
                 }
             }
             harvest_strings(text, &mut self.data);
@@ -1090,7 +1082,13 @@ fn active_screen_cond(stack: &[(u32, String)]) -> Option<String> {
     if stack.is_empty() {
         None
     } else {
-        Some(stack.iter().map(|(_, c)| c.as_str()).collect::<Vec<_>>().join(" · "))
+        Some(
+            stack
+                .iter()
+                .map(|(_, c)| c.as_str())
+                .collect::<Vec<_>>()
+                .join(" · "),
+        )
     }
 }
 
@@ -1102,35 +1100,158 @@ fn merge_cond(outer: Option<String>, inner: Option<String>) -> Option<String> {
     }
 }
 
-/// `textbutton "Go" action Jump("x") if karma > 5` → the line without the `if`, and the condition.
-fn split_trailing_if(text: &str) -> (&str, Option<String>) {
-    let mut last = None;
+struct WordSite {
+    at: usize,
+    end: usize,
+    depth: i32,
+}
+
+/// Keyword sites outside strings. `()` `[]` and `{}` change the depth.
+fn keyword_sites(text: &str, word: &str) -> Vec<WordSite> {
+    let mut out = Vec::new();
     let mut i = 0;
     let mut depth = 0i32;
+    let bytes = text.as_bytes();
     while i < text.len() {
         if let Some(next) = skip_string(text, i) {
             i = next;
             continue;
         }
-        let b = text.as_bytes()[i];
-        if b == b'(' || b == b'[' {
+        let b = bytes[i];
+        if b == b'(' || b == b'[' || b == b'{' {
             depth += 1;
-        } else if b == b')' || b == b']' {
+            i += 1;
+            continue;
+        }
+        if b == b')' || b == b']' || b == b'}' {
             depth -= 1;
-        } else if depth == 0 && word_at(text, i, "if") && !text[..i].trim().is_empty() {
-            last = Some(i);
+            i += 1;
+            continue;
+        }
+        if word_at(text, i, word) {
+            let end = i + word.len();
+            out.push(WordSite { at: i, end, depth });
+            i = end;
+            continue;
         }
         i += 1;
     }
-    let Some(at) = last else {
-        return (text, None);
-    };
-    let cond = text[at + 2..].trim().trim_end_matches(':').trim();
+    out
+}
+
+/// Screen-language `statement if condition`, with no `else` on the line.
+/// A Python ternary (`expr if cond else expr`) is left for `find_ternary`.
+fn split_screen_trailing_if(text: &str) -> Option<(&str, String)> {
+    let ifs = keyword_sites(text, "if");
+    let elses = keyword_sites(text, "else");
+    let site = ifs.iter().rev().find(|site| {
+        site.depth == 0
+            && !text[..site.at].trim().is_empty()
+            && !elses.iter().any(|e| e.depth == 0 && e.at > site.at)
+    })?;
+    let cond = text[site.end..].trim().trim_end_matches(':').trim();
     if cond.is_empty() {
-        (text, None)
+        None
     } else {
-        (&text[..at], Some(cond.to_string()))
+        Some((&text[..site.at], cond.to_string()))
     }
+}
+
+struct TernarySpan {
+    then_start: usize,
+    if_at: usize,
+    if_end: usize,
+    else_at: usize,
+    else_end: usize,
+    else_expr_end: usize,
+}
+
+/// The first `expr if cond else expr`, including one nested in `()` or `[]`.
+fn find_ternary(text: &str) -> Option<TernarySpan> {
+    let ifs = keyword_sites(text, "if");
+    let elses = keyword_sites(text, "else");
+    let site = ifs.iter().find(|site| {
+        !text[..site.at].trim().is_empty()
+            && elses
+                .iter()
+                .any(|e| e.depth == site.depth && e.at > site.end)
+    })?;
+    let else_site = elses
+        .iter()
+        .find(|e| e.depth == site.depth && e.at > site.end)?;
+    Some(TernarySpan {
+        then_start: expr_start(text, site.at, site.depth),
+        if_at: site.at,
+        if_end: site.end,
+        else_at: else_site.at,
+        else_end: else_site.end,
+        else_expr_end: expr_end(text, else_site.end, site.depth),
+    })
+}
+
+/// Index where the expression containing `if_at` begins at `depth_target`.
+fn expr_start(text: &str, if_at: usize, depth_target: i32) -> usize {
+    let mut i = 0;
+    let mut depth = 0i32;
+    let mut start = 0;
+    let bytes = text.as_bytes();
+    while i < if_at {
+        if let Some(next) = skip_string(text, i) {
+            i = next;
+            continue;
+        }
+        let b = bytes[i];
+        if b == b'(' || b == b'[' || b == b'{' {
+            depth += 1;
+            if depth == depth_target {
+                start = i + 1;
+            }
+            i += 1;
+            continue;
+        }
+        if b == b')' || b == b']' || b == b'}' {
+            depth -= 1;
+            i += 1;
+            continue;
+        }
+        if b == b',' && depth == depth_target {
+            start = i + 1;
+        }
+        i += 1;
+    }
+    start
+}
+
+/// Index where the expression that starts at `from` ends, staying at `depth_target`.
+fn expr_end(text: &str, from: usize, depth_target: i32) -> usize {
+    let mut i = from;
+    let mut depth = depth_target;
+    let bytes = text.as_bytes();
+    while i < text.len() {
+        if let Some(next) = skip_string(text, i) {
+            i = next;
+            continue;
+        }
+        let b = bytes[i];
+        if b == b'(' || b == b'[' || b == b'{' {
+            depth += 1;
+            i += 1;
+            continue;
+        }
+        if b == b')' || b == b']' || b == b'}' {
+            if depth == depth_target {
+                return i;
+            }
+            depth -= 1;
+            i += 1;
+            continue;
+        }
+        if b == b',' && depth == depth_target {
+            return i;
+        }
+        i += 1;
+    }
+    text.len()
 }
 
 fn button_caption(text: &str) -> Option<String> {
@@ -1324,9 +1445,45 @@ fn transfers_in(text: &str) -> Vec<Transfer> {
     out
 }
 
+/// Apply `outer` in front of a condition that was already found inside `text`.
+fn wrap_cond(outer: String, hits: Vec<Transfer>) -> Vec<Transfer> {
+    hits.into_iter()
+        .map(|mut hit| {
+            hit.cond = merge_cond(Some(outer.clone()), hit.cond.take());
+            hit
+        })
+        .collect()
+}
+
+/// Story transfers in one expression, including `expr if cond else expr`.
+fn scan_conditional(text: &str) -> Vec<Transfer> {
+    if let Some((body, cond)) = split_screen_trailing_if(text) {
+        return wrap_cond(cond, scan_conditional(body));
+    }
+    if let Some(span) = find_ternary(text) {
+        let cond = text[span.if_end..span.else_at].trim().to_string();
+        let mut out = wrap_cond(
+            cond.clone(),
+            scan_conditional(&text[span.then_start..span.if_at]),
+        );
+        out.extend(wrap_cond(
+            else_cond(&cond),
+            scan_conditional(&text[span.else_end..span.else_expr_end]),
+        ));
+        let mut rest = String::new();
+        rest.push_str(&text[..span.then_start]);
+        rest.push_str(&text[span.else_expr_end..]);
+        if rest.chars().any(|c| !c.is_whitespace()) {
+            out.extend(scan_conditional(&rest));
+        }
+        return out;
+    }
+    transfers_in(text)
+}
+
 /// Story transfers in one screen line. Hover and tooltip actions are dropped.
 fn scan_screen_transfers(text: &str) -> Vec<Transfer> {
-    transfers_in(&mask_hover_clauses(text))
+    scan_conditional(&mask_hover_clauses(text))
 }
 
 /// Find string-literal label references in a code line.
@@ -1414,9 +1571,15 @@ pub fn scan_meta(lines: &[LLine]) -> Meta {
             }
             continue;
         }
-        if t.contains("Jump(") || t.contains("Call(") || t.contains("Start(") {
+        let screen_jump = t.contains("Jump(")
+            || t.contains("Call(")
+            || t.contains("Start(")
+            || t.contains("Function(")
+            || (t.contains("renpy.jump(") && t.contains("action"));
+        if screen_jump {
             // A screen `Call` returns to the screen, so it does not start a story by itself.
-            // Hover and tooltip actions are not ways in either.
+            // Hover and tooltip actions are not ways in either. `Function(renpy.jump, ...)`
+            // and `action renpy.jump(...)` are jumps. A `$ renpy.jump` in a label is not.
             for hit in scan_screen_transfers(t) {
                 if hit.how == "jump" && !meta.action_refs.contains(&hit.name) {
                     meta.action_refs.push(hit.name);
@@ -2024,6 +2187,49 @@ screen town():
         assert!(labels.iter().all(|l| l.name != "peek"));
         assert_eq!(labels[1].caption.as_deref(), Some("Go"));
         assert_eq!(labels[5].caption.as_deref(), Some("Secret"));
+    }
+
+    #[test]
+    fn screen_else_keeps_both_jumps() {
+        let src = r#"
+screen town():
+    textbutton "Go" action Jump("shop") if karma > 5 else Jump("home")
+    textbutton "Next" action [Jump("a") if ready else Jump("b"), Jump("later")]
+    textbutton "Chain" action Jump("one") if c1 else Jump("two") if c2 else Jump("three")
+    textbutton "Secret" action Function(renpy.jump, "secret")
+label start:
+    $ renpy.jump("end")
+"#;
+        let out = parse_src(src);
+        let Kind::Screen { labels, .. } = &out.stmts[0].kind else {
+            panic!()
+        };
+        let brief: Vec<(&str, Option<&str>)> = labels
+            .iter()
+            .map(|l| (l.name.as_str(), l.cond.as_deref()))
+            .collect();
+        assert_eq!(
+            brief,
+            vec![
+                ("shop", Some("karma > 5")),
+                ("home", Some("not (karma > 5)")),
+                ("a", Some("ready")),
+                ("b", Some("not (ready)")),
+                ("later", None),
+                ("one", Some("c1")),
+                ("two", Some("not (c1) · c2")),
+                ("three", Some("not (c1) · not (c2)")),
+                ("secret", None),
+            ]
+        );
+        assert_eq!(labels[0].caption.as_deref(), Some("Go"));
+        assert_eq!(labels[1].caption.as_deref(), Some("Go"));
+        let meta = scan_meta(&lex(src).lines);
+        assert_eq!(
+            meta.action_refs,
+            ["shop", "home", "a", "b", "later", "one", "two", "three", "secret"]
+        );
+        assert!(!meta.action_refs.iter().any(|n| n == "end"));
     }
 
     #[test]

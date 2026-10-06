@@ -311,6 +311,33 @@ export function flowGroups(ids: readonly string[], edges: readonly Link[]): Map<
   return result
 }
 
+/**
+ * Story edges, plus a stand-in for each jump out of a helper.
+ * The stand-in runs from a caller of the helper to the label the helper jumps to.
+ */
+function linksPastHelpers(
+  edges: readonly MapEdge[],
+  inRest: ReadonlySet<string>,
+  helpers: ReadonlySet<string>,
+): MapEdge[] {
+  const story = edges.filter((e) => e.from !== e.to && inRest.has(e.from) && inRest.has(e.to))
+  const callers = new Map<string, string[]>()
+  for (const e of edges) {
+    if (e.from === e.to || !helpers.has(e.to) || !inRest.has(e.from)) continue
+    const list = callers.get(e.to)
+    if (list) list.push(e.from)
+    else callers.set(e.to, [e.from])
+  }
+  const extra: MapEdge[] = []
+  for (const e of edges) {
+    if (e.from === e.to || !helpers.has(e.from) || !inRest.has(e.to)) continue
+    for (const caller of callers.get(e.from) ?? []) {
+      if (caller !== e.to) extra.push({ ...e, from: caller, to: e.to })
+    }
+  }
+  return [...story, ...extra]
+}
+
 // ---------------------------------------------------------------- assignment
 
 /** Share of scenes whose names must carry a prefix before prefix grouping beats story flow. */
@@ -348,6 +375,9 @@ export function assignGroups(
   }
   const inRest = new Set(rest.map((n) => n.id))
   const story = edges.filter((e) => e.from !== e.to && inRest.has(e.from) && inRest.has(e.to))
+  // A helper is not in the story graph. Its jump target still is, so connect that
+  // target to the scenes that call the helper. Otherwise the next scene looks unlinked.
+  const flowStory = linksPastHelpers(edges, inRest, helpers)
   const resolved = resolveMode(mode, rest, story)
   if (resolved === 'file') {
     for (const n of rest) out.set(n.id, files[n.file]?.path ?? '(unknown)')
@@ -357,7 +387,7 @@ export function assignGroups(
   } else {
     const flow = flowGroups(
       rest.map((n) => n.id),
-      story,
+      flowStory,
     )
     for (const n of rest) out.set(n.id, flow.get(n.id) ?? UNLINKED_KEY)
   }

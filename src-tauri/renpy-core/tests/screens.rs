@@ -157,7 +157,57 @@ label peek:
     assert!(peek.indirect);
     assert!(!peek.root);
     let g = p.label_graph("start", false).unwrap();
-    assert!(g.edges.iter().any(|e| e.kind == renpy_core::flow::EKind::Return));
+    assert!(g
+        .edges
+        .iter()
+        .any(|e| e.kind == renpy_core::flow::EKind::Return));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn matching_screen_badges_stay_and_else_is_its_own_edge() {
+    let script = r#"
+screen town():
+    textbutton "Shop" action Jump("shop") if karma > 5
+    textbutton "Shop" action Jump("shop") if karma > 5
+    textbutton "Go" action Jump("park") if energy > 1 else Jump("home")
+    textbutton "Secret" action Function(renpy.jump, "secret")
+
+label start:
+    return
+
+label shop:
+    return
+
+label park:
+    return
+
+label home:
+    return
+
+label secret:
+    return
+"#;
+    let (root, p) = project("badges-else", &[("script.rpy", script)]);
+    let map = &p.analysis.map;
+    let edge = |from: &str, to: &str| {
+        map.edges
+            .iter()
+            .find(|e| e.from == from && e.to == to && e.kind == "jump")
+    };
+    let shop = edge("screen:town", "shop").unwrap();
+    assert_eq!(shop.count, 2);
+    assert_eq!(shop.badge.as_deref(), Some("Shop · karma > 5"));
+    assert_eq!(
+        edge("screen:town", "park").unwrap().badge.as_deref(),
+        Some("Go · energy > 1")
+    );
+    assert_eq!(
+        edge("screen:town", "home").unwrap().badge.as_deref(),
+        Some("Go · not (energy > 1)")
+    );
+    let secret = map.nodes.iter().find(|n| n.id == "secret").unwrap();
+    assert!(secret.root);
     let _ = fs::remove_dir_all(root);
 }
 

@@ -199,6 +199,28 @@ describe('assignGroups', () => {
     expect(resolveMode('file', plain, [])).toBe('file')
   })
 
+  it('keeps the label a helper jumps to in the story', () => {
+    const story = ['start', 'park', 'night', 'end']
+    const nodes = [
+      node('start', { root: true }),
+      node('park'),
+      node('night'),
+      node('end', { endsScript: true }),
+      node('town', { kind: 'screen' }),
+      node('minigame'),
+      node('minigame_done', { returns: true }),
+    ]
+    const edges = story.flatMap((a, i) => story.slice(i + 1).map((b) => edge(a, b)))
+    edges.push(edge('park', 'minigame', 'call'), edge('night', 'minigame', 'call'), edge('town', 'minigame', 'call'))
+    edges.push(edge('minigame', 'minigame_done'))
+    const helpers = findHelpers(nodes, edges)
+    expect([...helpers]).toEqual(['minigame'])
+    const out = assignGroups(nodes, edges, files, 'flow', helpers)
+    expect(out.get('minigame')).toBe(HELPERS_KEY)
+    expect(out.get('minigame_done')).toBe(out.get('park'))
+    expect(out.get('minigame_done')).not.toBe(UNLINKED_KEY)
+  })
+
   it('groups by file when asked', () => {
     const nodes = [node('a'), node('b')]
     const out = assignGroups(nodes, [], files, 'file', new Set())

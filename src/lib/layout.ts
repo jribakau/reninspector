@@ -168,7 +168,7 @@ export function mapCacheKey(root: string, map: ProjectMap, mode: ClusterMode, he
   for (const e of map.edges) {
     h = Math.imul(h ^ hashString(`${e.from}>${e.to}:${e.kind}:${e.badge ?? ''}`), 16777619)
   }
-  return `map|v9|${root}|${mode}|${helpers ? 'h' : 'n'}|${map.nodes.length}|${map.edges.length}|${h >>> 0}`
+  return `map|v10|${root}|${mode}|${helpers ? 'h' : 'n'}|${map.nodes.length}|${map.edges.length}|${h >>> 0}`
 }
 
 const INNER_OPTIONS = {
@@ -301,18 +301,18 @@ const MAP_CHIP_H = 18
 const MAP_CHIP_GAP = 8
 
 /**
- * Move chips that share a trunk onto a column. Route midpoints sit on the same
- * horizontal line, and a wide caption still covers the one beside it.
+ * Drop overlapping chips downward. Each chip keeps its own x, so a caption
+ * stays on the line it belongs to instead of sliding onto a neighbour.
  */
-function separateBadges(edges: LEdge[]) {
-  const chips = edges.filter((e) => e.badge && e.lx != null && e.ly != null)
-  chips.sort((a, b) => a.ly! - b.ly! || a.lx! - b.lx!)
+export function placeChips(chips: { lx: number; ly: number; text: string }[]): { lx: number; ly: number }[] {
+  const sorted = chips.map((chip, i) => ({ ...chip, i })).sort((a, b) => a.ly - b.ly || a.lx - b.lx || a.i - b.i)
   const placed: { lx: number; ly: number; w: number }[] = []
-  for (const chip of chips) {
-    const w = mapChipWidth(chip.badge!)
-    let ly = chip.ly!
-    let lx = chip.lx!
-    for (let guard = 0; guard < 24; guard++) {
+  const out: { lx: number; ly: number }[] = new Array(chips.length)
+  for (const chip of sorted) {
+    const w = mapChipWidth(chip.text)
+    const lx = chip.lx
+    let ly = chip.ly
+    for (let guard = 0; guard < sorted.length; guard++) {
       const hit = placed.find((other) => {
         const gapX = Math.abs(lx - other.lx)
         const gapY = Math.abs(ly - other.ly)
@@ -320,18 +320,27 @@ function separateBadges(edges: LEdge[]) {
         return gapX < needX && gapY < MAP_CHIP_H + MAP_CHIP_GAP
       })
       if (!hit) break
-      // Line up with the chip already sitting on this trunk, then step down.
-      if (Math.abs(lx - hit.lx) < (w + hit.w) / 2) lx = hit.lx
-      ly = hit.ly + MAP_CHIP_H + MAP_CHIP_GAP
+      ly = Math.max(ly, hit.ly + MAP_CHIP_H + MAP_CHIP_GAP)
     }
-    chip.lx = lx
-    chip.ly = ly
-    chip.y0 = Math.min(chip.y0, ly - MAP_CHIP_H / 2)
-    chip.y1 = Math.max(chip.y1, ly + MAP_CHIP_H / 2)
-    chip.x0 = Math.min(chip.x0, lx - w / 2)
-    chip.x1 = Math.max(chip.x1, lx + w / 2)
     placed.push({ lx, ly, w })
+    out[chip.i] = { lx, ly }
   }
+  return out
+}
+
+function separateBadges(edges: LEdge[]) {
+  const chips = edges.filter((e) => e.badge && e.lx != null && e.ly != null)
+  const placed = placeChips(chips.map((e) => ({ lx: e.lx!, ly: e.ly!, text: e.badge! })))
+  chips.forEach((chip, i) => {
+    const spot = placed[i]
+    const w = mapChipWidth(chip.badge!)
+    chip.lx = spot.lx
+    chip.ly = spot.ly
+    chip.y0 = Math.min(chip.y0, spot.ly - MAP_CHIP_H / 2)
+    chip.y1 = Math.max(chip.y1, spot.ly + MAP_CHIP_H / 2)
+    chip.x0 = Math.min(chip.x0, spot.lx - w / 2)
+    chip.x1 = Math.max(chip.x1, spot.lx + w / 2)
+  })
 }
 
 function edgeMarks(

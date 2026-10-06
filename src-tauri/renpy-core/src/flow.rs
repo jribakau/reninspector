@@ -304,9 +304,7 @@ impl Builder<'_> {
 
     fn connect(&mut self, open: Vec<Open>, to: u32) {
         for o in open {
-            if o.from == ROOT
-                || (self.outline && matches!(o.kind, EKind::Next | EKind::Return))
-            {
+            if o.from == ROOT || (self.outline && matches!(o.kind, EKind::Next | EKind::Return)) {
                 continue;
             }
             self.edges.push(GEdge {
@@ -423,13 +421,17 @@ impl Builder<'_> {
                 }
                 Kind::If { branches } => {
                     if branches.iter().any(|b| contains_flow(&b.body)) {
+                        // A jump inside this if is gated by the if, not by the menu choice around it.
+                        let saved = self.choice.take();
                         open = self.cond_node(s, branches, open);
+                        self.choice = saved;
                     } else {
                         open = self.add_run(s, open);
                     }
                 }
                 Kind::While { cond, body } => {
                     if contains_flow(body) {
+                        let saved = self.choice.take();
                         let id = self.new_node(GKind::Cond, s.line, format!("while {cond}"));
                         self.nodes[id as usize].end_line = s.end_line;
                         self.connect(open, id);
@@ -447,6 +449,7 @@ impl Builder<'_> {
                             cond: None,
                         });
                         open = next;
+                        self.choice = saved;
                     } else {
                         open = self.add_run(s, open);
                     }
@@ -1277,5 +1280,25 @@ mod tests {
         let jump = start.nodes.iter().find(|n| n.kind == GKind::Jump).unwrap();
         assert_eq!(jump.choice_label.as_deref(), Some("Go"));
         assert_eq!(jump.choice_cond.as_deref(), Some("karma > 5"));
+    }
+
+    #[test]
+    fn a_jump_inside_an_if_does_not_wear_the_menu_choice() {
+        let src = "label start:\n    menu:\n        \"Go\" if karma > 5:\n            if energy > 1:\n                jump shop\n            jump home\nlabel shop:\n    return\nlabel home:\n    return\n";
+        let gs = graphs(src);
+        let start = gs.iter().find(|g| g.name == "start").unwrap();
+        let shop = start
+            .nodes
+            .iter()
+            .find(|n| n.kind == GKind::Jump && n.target.as_deref() == Some("shop"))
+            .unwrap();
+        assert!(shop.choice_label.is_none());
+        let home = start
+            .nodes
+            .iter()
+            .find(|n| n.kind == GKind::Jump && n.target.as_deref() == Some("home"))
+            .unwrap();
+        assert_eq!(home.choice_label.as_deref(), Some("Go"));
+        assert_eq!(home.choice_cond.as_deref(), Some("karma > 5"));
     }
 }

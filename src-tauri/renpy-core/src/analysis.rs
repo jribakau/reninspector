@@ -208,13 +208,10 @@ fn push_edge(
     });
     if entry.count == 0 {
         entry.badge = badge;
-    } else {
+    } else if entry.badge != badge {
         entry.badge = None;
     }
     entry.count += 1;
-    if entry.count != 1 {
-        entry.badge = None;
-    }
 }
 
 struct Region {
@@ -322,13 +319,7 @@ pub fn analyze(files: &[SourceFile], auto_images: &ImageIndex, ext: &External) -
         for e in &r.edges {
             let badge = edge_badge(e.caption.as_deref(), e.cond.as_deref());
             if e.kind == "screen" {
-                push_edge(
-                    &mut agg,
-                    from.name.clone(),
-                    e.target.clone(),
-                    e.kind,
-                    badge,
-                );
+                push_edge(&mut agg, from.name.clone(), e.target.clone(), e.kind, badge);
                 continue;
             }
             if known.contains(&e.target) && !seen.contains_key(&e.target) {
@@ -344,13 +335,7 @@ pub fn analyze(files: &[SourceFile], auto_images: &ImageIndex, ext: &External) -
                     from: from.name.clone(),
                 });
             }
-            push_edge(
-                &mut agg,
-                from.name.clone(),
-                e.target.clone(),
-                e.kind,
-                badge,
-            );
+            push_edge(&mut agg, from.name.clone(), e.target.clone(), e.kind, badge);
         }
     }
 

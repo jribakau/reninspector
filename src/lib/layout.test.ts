@@ -7,7 +7,7 @@ vi.mock('elkjs/lib/elk-api', async () => {
 })
 vi.mock('elkjs/lib/elk-worker.min.js?url', () => ({ default: '' }))
 
-import { layoutProjectMap, mapChipWidth, type MapLayout } from './layout'
+import { layoutProjectMap, mapChipWidth, placeChips, type MapLayout } from './layout'
 import { HELPERS_KEY, type GroupMode } from './mapgroups'
 import type { FileInfo, MapEdge, MapEdgeKind, MapNode, MapNodeKind, ProjectMap } from './types'
 
@@ -80,6 +80,25 @@ function rng(seed: number): () => number {
     return s / 2 ** 32
   }
 }
+
+describe('placeChips', () => {
+  it('stacks overlapping captions and leaves the others where they are', () => {
+    const placed = placeChips([
+      { lx: 0, ly: 0, text: 'Secret ending · karma > 5' },
+      { lx: 40, ly: 0, text: 'Open late · energy > 1' },
+      { lx: 400, ly: 0, text: 'Sleep · energy > 1' },
+    ])
+    expect(placed.map((p) => p.lx)).toEqual([0, 40, 400])
+    expect(Math.abs(placed[0].ly - placed[1].ly)).toBeGreaterThanOrEqual(26)
+    expect(placed[2].ly).toBe(0)
+  })
+
+  it('separates a whole column of chips that share one spot', () => {
+    const placed = placeChips(Array.from({ length: 30 }, () => ({ lx: 10, ly: 10, text: 'energy > 1' })))
+    expect(new Set(placed.map((p) => p.ly)).size).toBe(30)
+    expect(placed.every((p) => p.lx === 10)).toBe(true)
+  })
+})
 
 describe('layoutProjectMap', () => {
   it('puts the start group on the left and bundles edges between groups', async () => {
