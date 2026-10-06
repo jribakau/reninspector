@@ -285,6 +285,13 @@ init 9999 python:
             line = int(line)
         except Exception:
             line = 0
+        paused_node = _vnide_hold.get("node") if _vnide_hold.get("on") else None
+        if paused_node is not None:
+            filename = _vnide_norm_file(getattr(paused_node, "filename", u""))
+            try:
+                line = int(getattr(paused_node, "linenumber", 0) or 0)
+            except Exception:
+                line = 0
         payload = {
             "file": filename,
             "line": line,
@@ -297,6 +304,8 @@ init 9999 python:
             "replay": _vnide_text(_vnide_replay.get("status") or u""),
             "replayReason": _vnide_text(_vnide_replay.get("reason") or u""),
             "warpNotes": _vnide_warp_note_lines(),
+            "paused": bool(_vnide_hold.get("on")),
+            "stack": _vnide_stack(paused_node),
         }
         try:
             _vnide_atomic(os.path.join(d, "state.json"), json.dumps(payload))
@@ -493,6 +502,160 @@ init 9999 python:
         if _vnide_is_target(node):
             _vnide_replay_finish(u"done", u"")
 
+    _vnide_hold = {"on": False, "step": False, "waiting": False, "node": None, "breaks_at": 0}
+    _vnide_breaks = {}
+
+    def _vnide_read_breaks():
+        d = _vnide_dir()
+        if not d:
+            return
+        try:
+            import time
+            now = time.time()
+        except Exception:
+            now = 0
+        last = _vnide_hold.get("breaks_at") or 0
+        if now and last and (now - last) < 0.2:
+            return
+        _vnide_hold["breaks_at"] = now
+        path = os.path.join(d, "breaks.json")
+        nxt = {}
+        try:
+            if os.path.exists(path):
+                f = open(path, "rb")
+                raw = f.read()
+                f.close()
+                data = json.loads(raw.decode("utf-8"))
+                points = data.get("points") if isinstance(data, dict) else None
+                if isinstance(points, list):
+                    for point in points:
+                        text = _vnide_text(point).replace(u"\\", u"/")
+                        if text:
+                            nxt[text] = True
+        except Exception:
+            return
+        _vnide_breaks.clear()
+        _vnide_breaks.update(nxt)
+
+    def _vnide_node_of(item):
+        if item is None:
+            return None
+        if hasattr(item, "filename") and hasattr(item, "linenumber"):
+            return item
+        if isinstance(item, (list, tuple)):
+            for part in item:
+                found = _vnide_node_of(part)
+                if found is not None:
+                    return found
+        return None
+
+    def _vnide_frame(node):
+        fn = u""
+        ln = 0
+        if node is not None:
+            fn = _vnide_norm_file(getattr(node, "filename", u""))
+            try:
+                ln = int(getattr(node, "linenumber", 0) or 0)
+            except Exception:
+                ln = 0
+        label = _vnide_label(fn, ln) if ln else u""
+        return {"file": fn, "line": ln, "label": label}
+
+    def _vnide_stack(paused_node):
+        frames = []
+        ctx = None
+        try:
+            ctx = renpy.game.context()
+            stack = list(getattr(ctx, "return_stack", None) or [])
+        except Exception:
+            stack = []
+        for item in stack:
+            node = _vnide_node_of(item)
+            if node is None:
+                continue
+            frames.append(_vnide_frame(node))
+            if len(frames) >= 12:
+                break
+        current = paused_node
+        if current is None and ctx is not None:
+            current = getattr(ctx, "current", None)
+        if current is not None:
+            frames.append(_vnide_frame(current))
+        if len(frames) > 12:
+            frames = frames[-12:]
+        return frames
+
+    def _vnide_should_break(node):
+        try:
+            if renpy.predicting():
+                return False
+        except Exception:
+            pass
+        if _vnide_replay.get("status") == u"running":
+            return False
+        if _vnide_hold.get("waiting"):
+            return False
+        try:
+            fn = _vnide_norm_file(getattr(node, "filename", u""))
+            ln = int(getattr(node, "linenumber", 0) or 0)
+        except Exception:
+            return False
+        if not fn or not ln:
+            return False
+        if _vnide_hold.get("step"):
+            _vnide_hold["step"] = False
+            return True
+        _vnide_read_breaks()
+        return bool(_vnide_breaks.get(fn + u":" + _vnide_text(ln)))
+
+    def _vnide_break_wait(node):
+        _vnide_hold["on"] = True
+        _vnide_hold["node"] = node
+        try:
+            _vnide_report()
+        except Exception:
+            pass
+        try:
+            renpy.show_screen("vnide_pause")
+        except Exception:
+            pass
+        while _vnide_hold.get("on"):
+            _vnide_hold["waiting"] = True
+            try:
+                try:
+                    renpy.pause(0.2, hard=True)
+                except TypeError:
+                    renpy.pause(0.2)
+            except Exception as e:
+                _vnide_hold["waiting"] = False
+                _vnide_hold["on"] = False
+                _vnide_hold["node"] = None
+                try:
+                    renpy.hide_screen("vnide_pause")
+                except Exception:
+                    pass
+                if _vnide_control(e):
+                    raise
+                return
+            _vnide_hold["waiting"] = False
+            try:
+                vnide_live_poll()
+            except Exception as e:
+                _vnide_hold["on"] = False
+                _vnide_hold["node"] = None
+                try:
+                    renpy.hide_screen("vnide_pause")
+                except Exception:
+                    pass
+                if _vnide_control(e):
+                    raise
+                return
+        _vnide_hold["node"] = None
+        try:
+            renpy.hide_screen("vnide_pause")
+        except Exception:
+            pass
+
     def _vnide_wrap_nodes():
         try:
             import renpy.ast as ast
@@ -514,6 +677,12 @@ init 9999 python:
                 def _run(self, *a, **k):
                     try:
                         _vnide_replay_on_node(self)
+                    except Exception as e:
+                        if _vnide_control(e):
+                            raise
+                    try:
+                        if _vnide_should_break(self):
+                            _vnide_break_wait(self)
                     except Exception as e:
                         if _vnide_control(e):
                             raise
@@ -854,6 +1023,12 @@ init 9999 python:
                         _vnide_atomic(os.path.join(d, "images.json"), raw)
                     except Exception as e:
                         _vnide_log(e)
+            elif op == u"resume":
+                _vnide_hold["on"] = False
+                _vnide_hold["step"] = False
+            elif op == u"step":
+                _vnide_hold["step"] = True
+                _vnide_hold["on"] = False
             elif op == u"stop":
                 renpy.quit()
         except Exception as e:
@@ -890,6 +1065,7 @@ init 9999 python:
                 config.start_callbacks.append(_vnide_on_start)
             except Exception:
                 pass
+        _vnide_wrap_nodes()
         try:
             config.interact_callbacks.append(_vnide_report)
         except Exception:
@@ -907,6 +1083,10 @@ init 9999 python:
 screen vnide_live():
     zorder 1000
     timer 0.25 action Function(vnide_live_poll) repeat True
+
+screen vnide_pause():
+    zorder 1100
+    text "Paused" xpos 24 ypos 24 color '#ffffff'
 "#;
 
 fn live_shim() -> &'static str {
@@ -955,6 +1135,23 @@ pub struct LiveState {
     /// What this warp filled in: a return label, a cut path, names treated as false.
     #[serde(default)]
     pub warp_notes: Vec<String>,
+    /// The statement wrapper is waiting before `execute`.
+    #[serde(default)]
+    pub paused: bool,
+    /// Return stack, then the statement that is about to run.
+    #[serde(default)]
+    pub stack: Vec<LiveFrame>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveFrame {
+    #[serde(default)]
+    pub file: String,
+    #[serde(default)]
+    pub line: u32,
+    #[serde(default)]
+    pub label: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1426,12 +1623,26 @@ fn watch_session(
                 if let Ok(mut body) = serde_json::from_str::<LiveState>(&text) {
                     body.running = true;
                     body.file = norm_script(&body.file);
-                    if let Some(project) =
-                        crate::util::lock(&app.state::<AppState>().project).as_ref()
                     {
-                        if let Some((file, line)) = project.ide_line(&body.file, body.line) {
-                            body.file = file;
-                            body.line = line;
+                        let app_state = app.state::<AppState>();
+                        let guard = crate::util::lock(&app_state.project);
+                        let project = guard.as_ref();
+                        if let Some(project) = project {
+                            if let Some((file, line)) = project.ide_line(&body.file, body.line) {
+                                body.file = file;
+                                body.line = line;
+                            }
+                        }
+                        for frame in &mut body.stack {
+                            frame.file = norm_script(&frame.file);
+                            if let Some(project) = project {
+                                if let Some((file, line)) =
+                                    project.ide_line(&frame.file, frame.line)
+                                {
+                                    frame.file = file;
+                                    frame.line = line;
+                                }
+                            }
                         }
                     }
                     body.note.clear();
@@ -1946,6 +2157,61 @@ pub fn live_shot(state: State<'_, AppState>) -> Result<tauri::ipc::Response, App
     Ok(tauri::ipc::Response::new(bytes))
 }
 
+#[derive(Serialize)]
+struct BreakFile {
+    points: Vec<String>,
+}
+
+fn break_points(project: &Project, raw: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for point in raw {
+        let Some((file, line)) = split_warp(point) else {
+            continue;
+        };
+        if file.contains("..") || project.file_index(&file).is_none() {
+            continue;
+        }
+        let (engine_file, engine_line) = project.engine_spec(&file, line);
+        let spec = format!("{engine_file}:{engine_line}");
+        if !out.contains(&spec) {
+            out.push(spec);
+        }
+        if out.len() >= 200 {
+            break;
+        }
+    }
+    out
+}
+
+#[tauri::command(async)]
+pub fn live_set_breaks(state: State<'_, AppState>, points: Vec<String>) -> Result<(), AppError> {
+    let dir = {
+        let slot = crate::util::lock(&state.live);
+        let Some(session) = slot.as_ref() else {
+            return Ok(());
+        };
+        session.dir.clone()
+    };
+    let mapped = {
+        let guard = crate::util::lock(&state.project);
+        let Some(project) = guard.as_ref() else {
+            return Ok(());
+        };
+        break_points(project, &points)
+    };
+    write_json(&dir, "breaks.json", &BreakFile { points: mapped })
+}
+
+#[tauri::command(async)]
+pub fn live_resume(state: State<'_, AppState>) -> Result<(), AppError> {
+    send_cmd(&state, "resume", None, None, None)
+}
+
+#[tauri::command(async)]
+pub fn live_step(state: State<'_, AppState>) -> Result<(), AppError> {
+    send_cmd(&state, "step", None, None, None)
+}
+
 #[tauri::command(async)]
 pub fn live_set_watch(state: State<'_, AppState>, names: Vec<String>) -> Result<(), AppError> {
     let names = clean_watch(&names);
@@ -1981,6 +2247,16 @@ mod tests {
         assert!(LIVE_SHIM.contains("shot.json"));
         assert!(LIVE_SHIM.contains("0.15"));
         assert!(LIVE_SHIM.contains("screen vnide_live"));
+        assert!(LIVE_SHIM.contains("screen vnide_pause"));
+        assert!(LIVE_SHIM.contains("_vnide_should_break"));
+        assert!(LIVE_SHIM.contains("_vnide_break_wait"));
+        assert!(LIVE_SHIM.contains("elif op == u\"resume\":"));
+        assert!(LIVE_SHIM.contains("elif op == u\"step\":"));
+        assert!(LIVE_SHIM.contains("breaks.json"));
+        // Installed for every live launch, not only while a replay is running.
+        assert!(LIVE_SHIM.contains("pass\n        _vnide_wrap_nodes()\n        try:\n            config.interact_callbacks"));
+        assert!(LIVE_SHIM.contains("\"paused\""));
+        assert!(LIVE_SHIM.contains("\"stack\""));
         assert!(LIVE_SHIM.contains("replay.json"));
         assert!(LIVE_SHIM.contains("jump_out_of_context"));
         assert!(LIVE_SHIM.contains("_vnide_menu"));

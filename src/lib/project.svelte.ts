@@ -4,6 +4,7 @@ import { ask } from './dialog.svelte'
 import { applyStartupPatch, confirmDiscard, revertStartup } from './edit.svelte'
 import { checkWithEngine, runEngineLint } from './engine.svelte'
 import { nodeByName, setDiag, setInfo, setMap } from './indexes.svelte'
+import { loadBreaks } from './breaks.svelte'
 import { applyLive, loadWatch, playFromCursor, runGame } from './live.svelte'
 import { app, emptyLive } from './model.svelte'
 import { openBottom, openLabelGraph, resetEditorMemory, restoreSession, selectLabel } from './nav.svelte'
@@ -146,6 +147,7 @@ export async function openProject(path: string) {
     app.live = emptyLive()
     app.visitedLabels = []
     app.watchVars = loadWatch(info.root)
+    loadBreaks(info.root)
     loadStageVars(info.root)
     app.dirtyFiles = []
     app.impact = null

@@ -113,6 +113,60 @@ class LiveSpacer extends GutterMarker {
   }
 }
 
+export const setBreaks = StateEffect.define<number[]>()
+
+const breakField = StateField.define<number[]>({
+  create: () => [],
+  update(value, tr) {
+    for (const e of tr.effects) if (e.is(setBreaks)) return e.value
+    return value
+  },
+})
+
+class BreakMarker extends GutterMarker {
+  eq(other: BreakMarker) {
+    return other instanceof BreakMarker
+  }
+  toDOM() {
+    const el = document.createElement('span')
+    el.className = 'break-dot'
+    el.title = 'Breakpoint. The game pauses before this line.'
+    return el
+  }
+}
+
+class BreakSpacer extends GutterMarker {
+  toDOM() {
+    const el = document.createElement('span')
+    el.className = 'break-spacer'
+    return el
+  }
+}
+
+let toggleBreakLine: (line: number) => void = () => {}
+
+/** The editor sets this so a gutter click knows which script is open. */
+export function bindBreakToggle(fn: (line: number) => void) {
+  toggleBreakLine = fn
+}
+
+const breakGutter = gutter({
+  class: 'cm-break-gutter',
+  lineMarker(v, line) {
+    const n = v.state.doc.lineAt(line.from).number
+    return v.state.field(breakField).includes(n) ? new BreakMarker() : null
+  },
+  lineMarkerChange: (u) => u.transactions.some((tr) => tr.effects.some((e) => e.is(setBreaks)) || tr.docChanged),
+  initialSpacer: () => new BreakSpacer(),
+  domEventHandlers: {
+    mousedown(view, line) {
+      const n = view.state.doc.lineAt(line.from).number
+      toggleBreakLine(n)
+      return true
+    },
+  },
+})
+
 const liveGutter = gutter({
   class: 'cm-live-gutter',
   lineMarker(v, line) {
@@ -160,7 +214,7 @@ const diagGutter = gutter({
   initialSpacer: () => new DiagMarker('info', ''),
 })
 
-export const markerExtensions: Extension[] = [liveGutter, liveField, liveDecoField, diagGutter, diagField, diagDecoField, rangeField]
+export const markerExtensions: Extension[] = [breakGutter, breakField, liveGutter, liveField, liveDecoField, diagGutter, diagField, diagDecoField, rangeField]
 
 export interface PythonMark {
   line: number

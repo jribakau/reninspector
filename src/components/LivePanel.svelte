@@ -2,6 +2,7 @@
   import { onMount } from 'svelte'
   import Icon from './Icon.svelte'
   import { copyText, labelItems, openContextMenu } from '../lib/context.svelte'
+  import { resumeLive, stepLive } from '../lib/breaks.svelte'
   import { app, goTo, jumpGameHere, jumpLiveLabel, reloadLive, setWatchVars, toggleFollowGame, toggleLive } from '../lib/store.svelte'
 
   let name = $state('')
@@ -101,6 +102,26 @@
       {/if}
       {#if app.live.showing.length}
         <div class="sb-meta">On screen: {app.live.showing.join(', ')}</div>
+      {/if}
+      {#if app.live.paused}
+        <div class="sb-meta">Paused before this statement. Step runs it and stops at the next one.</div>
+        <div class="row">
+          <button onclick={() => void stepLive()}>Step</button>
+          <button class="primary" onclick={() => void resumeLive()}>Resume</button>
+        </div>
+      {:else}
+        <button onclick={() => void stepLive()} title="Pause before the next statement">Step</button>
+      {/if}
+      {#if app.live.stack.length}
+        <details open={app.live.paused}>
+          <summary class="sb-meta">Call stack</summary>
+          {#each app.live.stack as frame, i (`${frame.file}:${frame.line}:${i}`)}
+            <button class="sb-item" onclick={() => frame.file && goTo(frame.file, frame.line)} disabled={!frame.file}>
+              <span class="sb-name">{frame.label || 'statement'}</span>
+              <span class="sb-meta">{frame.file ? `${frame.file}:${frame.line}` : ''}</span>
+            </button>
+          {/each}
+        </details>
       {/if}
       {#if app.live.canReload}
         <button onclick={reloadLive} title="Reload scripts in the running game">Reload scripts</button>

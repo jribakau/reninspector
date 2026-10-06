@@ -24,7 +24,8 @@ import { editorTheme } from '../lib/editor/theme'
   import { appearance } from '../lib/project.svelte'
   import { settings } from '../lib/settings.svelte'
   import { renpyHighlight, renpyLanguage } from '../lib/renpyLang'
-  import { diagnosticMarks, markerExtensions, setDiags, setLive, setRange } from '../lib/editor/diagGutter'
+  import { breakPoints, linesFor, stepLive, toggleBreakpoint } from '../lib/breaks.svelte'
+  import { bindBreakToggle, diagnosticMarks, markerExtensions, setBreaks, setDiags, setLive, setRange } from '../lib/editor/diagGutter'
   import { renpyFold, renpyIndent } from '../lib/editor/fold'
   import { gitChangeExtensions, setIndex } from '../lib/editor/gitGutter'
   import { docText, docTip } from '../lib/editor/hoverDocs'
@@ -227,6 +228,17 @@ import { app, fileInfo, fileOfNode, lookupSymbol, nodeByName, openDiff, register
     })
   }
 
+  function toggleAt(view: EditorView) {
+    if (!loadedFile || !highlighted(loadedFile)) return
+    const line = view.state.doc.lineAt(view.state.selection.main.head).number
+    void toggleBreakpoint(loadedFile, line)
+  }
+
+  bindBreakToggle((line) => {
+    if (!loadedFile || !highlighted(loadedFile)) return
+    void toggleBreakpoint(loadedFile, line)
+  })
+
   function highlighted(file: string): boolean {
     const ext = file.split('.').pop()?.toLowerCase() ?? ''
     return ext === 'rpy' || ext === 'rpym' || ext === 'py'
@@ -260,6 +272,8 @@ import { app, fileInfo, fileOfNode, lookupSymbol, nodeByName, openDiff, register
           { key: 'F12', run: (v) => ctx.goto(v) },
           { key: 'Shift-F12', run: (v) => ctx.refs(v) },
           { key: 'F2', run: (v) => ctx.rename(v) },
+          { key: 'F9', run: (v) => { toggleAt(v); return true } },
+          { key: 'F10', run: () => { if (app.live.running) void stepLive(); return true } },
           { key: 'Mod-g', run: (v) => { jumpToLine(v); return true } },
           { key: 'Mod-h', run: (v) => { openReplace(v); return true } },
           { key: 'Mod-d', run: selectNextOccurrence, preventDefault: true },
@@ -849,6 +863,13 @@ import { app, fileInfo, fileOfNode, lookupSymbol, nodeByName, openDiff, register
     const line = liveLine
     if (!view || !loadedFile) return
     view.dispatch({ effects: setLive.of(line && line > 0 ? line : null) })
+  })
+
+  $effect(() => {
+    const file = loadedFile
+    const points = breakPoints.list
+    if (!view || !file) return
+    view.dispatch({ effects: setBreaks.of(linesFor(file, points)) })
   })
   }
 
