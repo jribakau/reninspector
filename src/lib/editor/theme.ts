@@ -165,6 +165,16 @@ export function editorTheme(dark: boolean) {
       '.git-tip button': { fontSize: 'var(--fs-sm)', padding: '3px 8px' },
       '.cm-live-line': { backgroundColor: 'color-mix(in srgb, var(--ok) 18%, transparent)' },
       '.cm-live-gutter': { width: '14px', color: 'var(--ok)' },
+      '.cm-break-gutter': { width: '14px', cursor: 'pointer' },
+      '.cm-break-gutter .break-dot': {
+        display: 'block',
+        width: '8px',
+        height: '8px',
+        margin: '6px auto 0',
+        borderRadius: '50%',
+        backgroundColor: 'var(--error)',
+      },
+      '.cm-break-gutter .break-spacer': { display: 'block', width: '8px', height: '8px' },
       '.cm-ctrl-link': {
         cursor: 'pointer',
         textDecorationLine: 'underline',

@@ -1,4 +1,5 @@
 import { api, errorText } from './api'
+import { syncBreaks } from './breaks.svelte'
 import { fileOfNode, hasFile, labelAt, nodeByName } from './indexes.svelte'
 import { app, emptyLive } from './model.svelte'
 import { goTo, openBottom } from './nav.svelte'
@@ -31,6 +32,8 @@ export function applyLive(s: LiveState) {
     vars: s.vars ?? {},
     showing: s.showing ?? [],
     warpNotes: s.warpNotes ?? [],
+    paused: s.paused ?? false,
+    stack: s.stack ?? [],
     receivedAt: Date.now(),
   }
   if (s.running && !was) app.visitedLabels = []
@@ -129,6 +132,7 @@ export async function replayToCursor() {
     }
     app.notice = r.notes.join(' ')
     openBottom('live')
+    await syncBreaks()
   } catch (e) {
     app.replayBlocked = true
     app.replayAssumptions = []
@@ -214,6 +218,7 @@ async function startLive(at: { file: string; line: number } | null) {
     app.live = { ...app.live, running: true, note: r.notes.join(' '), receivedAt: Date.now() }
     app.notice = r.notes.join(' ')
     openBottom('live')
+    await syncBreaks()
   } catch (e) {
     app.error = errorText(e)
   } finally {

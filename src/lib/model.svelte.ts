@@ -51,6 +51,8 @@ export function emptyLive(): LiveView {
     replayReason: '',
     note: '',
     warpNotes: [],
+    paused: false,
+    stack: [],
     receivedAt: 0,
   }
 }

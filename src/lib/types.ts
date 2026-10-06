@@ -376,6 +376,10 @@ export interface LiveState {
   note: string
   /** Lines from the last warp: return target, a cut path, names treated as false. */
   warpNotes: string[]
+  /** The game is waiting before the statement at `file:line`. */
+  paused: boolean
+  /** Return stack, oldest first, then the statement that is about to run. */
+  stack: { file: string; line: number; label: string }[]
 }
 
 export interface LiveReport {

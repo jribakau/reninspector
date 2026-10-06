@@ -71,6 +71,8 @@ function live(filePath: string, line: number): LiveState {
     replayReason: base.replayReason,
     note: base.note,
     warpNotes: base.warpNotes,
+    paused: base.paused,
+    stack: base.stack,
   }
 }
 
