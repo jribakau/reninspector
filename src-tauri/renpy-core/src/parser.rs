@@ -975,17 +975,21 @@ struct Transfer {
     cond: Option<String>,
 }
 
+/// ASCII `word` at byte `i`, not as part of a longer identifier.
+///
+/// Uses `str::get` so a range that ends inside a multibyte character (▶, an
+/// emoji) is a miss. `&text[i..end]` panics there. New keyword scans should
+/// go through this instead of slicing the line.
 fn word_at(text: &str, i: usize, word: &str) -> bool {
+    let Some(end) = i.checked_add(word.len()) else {
+        return false;
+    };
+    if text.get(i..end) != Some(word) {
+        return false;
+    }
     let b = text.as_bytes();
-    if i + word.len() > b.len() || !text.is_char_boundary(i) {
-        return false;
-    }
-    if &text[i..i + word.len()] != word {
-        return false;
-    }
     let before_ok = i == 0 || !is_ident_byte(b[i - 1]);
-    let after = i + word.len();
-    let after_ok = after >= b.len() || !is_ident_byte(b[after]);
+    let after_ok = end >= b.len() || !is_ident_byte(b[end]);
     before_ok && after_ok
 }
 
@@ -2150,6 +2154,50 @@ mod tests {
             panic!()
         };
         assert_eq!(refs[0].name, None);
+    }
+
+    #[test]
+    fn multibyte_glyph_does_not_split_a_keyword_scan() {
+        // 12 ASCII bytes, then ▶ (bytes 12..15). Looking for "key" at byte 10
+        // used to slice [10..13] through the middle of that character.
+        let line = "xxxxxxxxxxxx▶ action Jump(\"home\")";
+        let hits = scan_screen_transfers(line);
+        assert!(hits.iter().any(|h| h.name == "home" && h.how == "jump"));
+    }
+
+    #[test]
+    fn multibyte_glyphs_do_not_panic_the_parser() {
+        // 2-byte, 3-byte and 4-byte characters, dropped at every byte of the
+        // lines that scan for keywords. A slice through one of them panics.
+        let glyphs = ["é", "▶", "あ", "😀"];
+        let lines = [
+            "textbutton \"Go\" action Jump(\"home\")",
+            "hotspot (0, 0, 1, 1) hovered Jump(\"peek\") action Jump(\"home\")",
+            "textbutton \"Go\" unhovered Hide(\"map\") tooltip \"hint\" action Jump(\"home\")",
+            "textbutton \"Go\" action If(flag, Jump(\"good\"), Jump(\"bad\"))",
+            "textbutton \"Secret\" action Jump(\"end\") if karma > 5",
+            "textbutton \"Play\" action Function(renpy.call, \"mini\")",
+            "textbutton \"Stay\" action Show(\"info\") alternate Jump(\"away\")",
+        ];
+        for glyph in glyphs {
+            for line in lines {
+                for at in 0..=line.len() {
+                    if !line.is_char_boundary(at) {
+                        continue;
+                    }
+                    let mut with = String::new();
+                    with.push_str(&line[..at]);
+                    with.push_str(glyph);
+                    with.push_str(&line[at..]);
+                    let src = format!(
+                        "screen s():\n    {with}\nlabel start:\n    \"{glyph}\"\n    menu:\n        \"Go {glyph}\":\n            jump start\n"
+                    );
+                    let _ = check_syntax(&src);
+                    let lexed = lex(&src);
+                    let _ = scan_meta(&lexed.lines);
+                }
+            }
+        }
     }
 
     #[test]
