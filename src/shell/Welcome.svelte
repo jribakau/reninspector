@@ -11,13 +11,6 @@
     return parts[parts.length - 1] ?? path
   }
 
-  const keys: { keys: string[]; label: string }[] = [
-    { keys: ['Ctrl', 'P'], label: 'Go to file' },
-    { keys: ['Ctrl', 'Shift', 'P'], label: 'Commands' },
-    { keys: ['Ctrl', 'T'], label: 'Go to symbol' },
-    { keys: ['F5'], label: 'Run live' },
-  ]
-
   onMount(() => {
     const stops: Array<() => void> = []
     const win = getCurrentWindow()
@@ -80,16 +73,6 @@
         <p class="dim empty">No recent projects yet. Open one and it will show up here.</p>
       {/if}
     </section>
-
-    <ul class="keys" aria-label="Keyboard shortcuts">
-      {#each keys as k (k.label)}
-        <li>
-          <span class="combo">{#each k.keys as key (key)}<kbd class="kbd">{key}</kbd>{/each}</span>
-          <span class="dim">{k.label}</span>
-        </li>
-      {/each}
-    </ul>
-    <p class="drop dim">{dropping ? 'Release to open' : 'Drop a game folder anywhere on this screen'}</p>
   </div>
 </div>
 
@@ -184,7 +167,7 @@
     padding: 0;
     margin: 0;
     display: grid;
-    gap: var(--sp-1);
+    gap: var(--sp-3);
   }
   .row {
     width: 100%;
@@ -192,15 +175,15 @@
     align-items: center;
     gap: var(--sp-4);
     text-align: left;
-    background: var(--panel);
-    border: 1px solid var(--line-soft);
+    background: color-mix(in srgb, var(--panel) 35%, transparent);
+    border: 1px solid color-mix(in srgb, var(--line) 40%, transparent);
     border-radius: var(--r-md);
     padding: var(--sp-3) var(--sp-4);
     color: var(--dim);
   }
   .row:hover:not(:disabled) {
     background: var(--hover);
-    border-color: var(--line);
+    border-color: color-mix(in srgb, var(--line) 70%, transparent);
     color: var(--text);
   }
   .row:active:not(:disabled) {
@@ -227,32 +210,5 @@
   }
   .empty {
     padding: var(--sp-3) var(--sp-4);
-  }
-  .keys {
-    list-style: none;
-    width: 100%;
-    margin: 0;
-    padding: var(--sp-4) 0 0;
-    border-top: 1px solid var(--line-soft);
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: center;
-    gap: var(--sp-3) var(--sp-5);
-  }
-  .keys li {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-3);
-  }
-  .combo {
-    display: inline-flex;
-    gap: var(--sp-1);
-  }
-  .drop {
-    margin: 0;
-    font-size: var(--fs-sm);
-  }
-  .dropping .drop {
-    color: var(--accent);
   }
 </style>

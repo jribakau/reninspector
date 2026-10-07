@@ -204,7 +204,7 @@ export async function resolveEngine(info: ProjectInfo) {
     if (info.bundledEngine) {
       app.launcher = null
       sdk.kind = 'bundled'
-      sdk.label = `Game engine ${info.engineVersion ?? 'bundled'}`
+      sdk.label = info.engineVersion ? `Python ${info.engineVersion}` : 'bundled'
       return
     }
     const match = matchSdk(sdk.items, version)
@@ -232,7 +232,7 @@ export async function resolveEngine(info: ProjectInfo) {
   } else if (choice === 'bundled' && info.bundledEngine) {
     app.launcher = null
     sdk.kind = 'bundled'
-    sdk.label = `Game engine ${info.engineVersion ?? 'bundled'}`
+    sdk.label = info.engineVersion ? `Python ${info.engineVersion}` : 'bundled'
   } else if (choice.startsWith('custom:')) {
     app.launcher = choice.slice('custom:'.length)
     sdk.kind = 'custom'
